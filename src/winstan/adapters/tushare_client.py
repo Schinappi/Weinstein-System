@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import os
 
-TUSHARE_TOKEN = "a578bfb4d131b134844e4fbc4a68960dd91"
-
 
 def _disable_proxy_env() -> None:
     for key in [
@@ -27,7 +25,10 @@ def build_tushare_pro(token: str | None = None):
     except ImportError as exc:
         raise ImportError("chinadata is not installed. Install with `pip install chinadata`.") from exc
 
-    pro = ts.pro_api(token or TUSHARE_TOKEN)
+    resolved_token = token or os.getenv("TUSHARE_TOKEN")
+    if not resolved_token:
+        raise ValueError("TUSHARE_TOKEN is required. Set it in .env or the environment.")
+    pro = ts.pro_api(resolved_token)
     try:
         pro._DataApi__timeout = 20
     except Exception:

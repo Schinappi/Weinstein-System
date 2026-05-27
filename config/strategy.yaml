@@ -1,0 +1,67 @@
+universe:
+  mode: all_a
+  custom_symbols: []
+  exclude_st: true
+  exclude_new_listing_days: 180
+  min_avg_turnover: null
+
+data:
+  primary_source: tushare
+  fallback_source: tickflow
+  adjust_type: forward
+  batch_size: 20
+  tushare_calls_per_minute: 400
+  tushare_retry_times: 3
+  tushare_retry_sleep_seconds: 5
+  tushare_timeout_seconds: 20
+  start_date: 2022-01-01
+  end_date: null
+  use_cache: true
+  force_refresh: false
+  tushare_token_env: TUSHARE_TOKEN
+  tickflow_api_key_env: TICKFLOW_API_KEY
+  tickflow_base_url: https://api.tickflow.org
+  tickflow_free_base_url: https://free-api.tickflow.org
+
+market:
+  benchmark_symbol: 000906.SH
+  use_market_filter: true
+
+strategy:
+  ma_window_weeks: 30
+  short_ma_window_weeks: 10
+  ma_slope_lookback_weeks: 4
+  volume_avg_weeks: 10
+  daily_volume_avg_days: 50
+  rs_rank_threshold_pct: 30
+  resistance_min_headroom_pct: 12
+  resistance_lookback_weeks: 52
+  breakout_lookback_weeks: 10
+  breakout_min_pct: 1.5
+  enable_breakout_filter: false
+  min_stage2_weeks: 5
+  watch_near_breakout_pct: 3
+  watch_breakout_max_pct: 8
+  watch_max_price_vs_ma_pct: 15
+  watch_base_lookback_weeks: 12
+  watch_base_max_range_pct: 25
+  watch_base_max_close_std_pct: 6
+  watch_ma_spread_max_pct: 5
+
+ranking:
+  top_n: 20
+  stage2_top_n: 10
+  weights:
+    trend: 0.25
+    rs: 0.30
+    volume: 0.25
+    resistance: 0.15
+    breakout_bonus: 0.05
+
+output:
+  export_candidates: true
+  export_top_n: true
+  export_summary: true
+  export_debug: false
+  reports_dir: reports
+  logs_dir: logs

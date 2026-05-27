@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>温斯坦选股看板</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <header class="hero">
+      <div>
+        <div class="eyebrow">Weinstein Dashboard</div>
+        <h1>温斯坦选股看板</h1>
+        <p>复用现有 Stage1 / Stage2 排行逻辑，支持全 A 股查询与单股分析。</p>
+      </div>
+      <div class="summary-grid" id="summaryCards"></div>
+    </header>
+
+    <main class="content-grid">
+      <section class="panel full-width">
+        <div class="update-status" id="updateStatusPanel">
+          <div class="update-status-head">
+            <div>
+              <h2 id="updateStatusTitle">缓存更新状态</h2>
+              <p id="updateStatusMessage">--</p>
+            </div>
+            <div class="update-status-actions">
+              <button id="systemLogButton" class="secondary-btn" type="button">System Log</button>
+              <span class="tag" id="updateStatusLevel">--</span>
+            </div>
+          </div>
+          <div class="update-status-metrics" id="updateStatusMetrics"></div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <div>
+            <h2>Stage1 排行榜</h2>
+            <p>观察池与临近突破标的</p>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>排名</th>
+                <th>代码</th>
+                <th>名称</th>
+                <th>阶段</th>
+                <th>观察类型</th>
+                <th>观察得分</th>
+                <th>总分</th>
+              </tr>
+            </thead>
+            <tbody id="stage1Table"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <div>
+            <h2>Stage2 排行榜</h2>
+            <p>最接近阶段 II 的趋势股</p>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>排名</th>
+                <th>代码</th>
+                <th>名称</th>
+                <th>阶段</th>
+                <th>观察说明</th>
+                <th>综合分</th>
+                <th>结构分</th>
+                <th>时机分</th>
+                <th>强度分</th>
+                <th>风险分</th>
+              </tr>
+            </thead>
+            <tbody id="stage2Table"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel full-width">
+        <div class="panel-header">
+          <div>
+            <h2>准 Stage2 排行榜</h2>
+            <p>高分但被硬过滤拦下的近失误标的</p>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>排名</th>
+                <th>代码</th>
+                <th>名称</th>
+                <th>阶段</th>
+                <th>缺失条件</th>
+                <th>观察说明</th>
+                <th>综合分</th>
+                <th>结构分</th>
+                <th>时机分</th>
+                <th>强度分</th>
+                <th>风险分</th>
+              </tr>
+            </thead>
+            <tbody id="quasiStage2Table"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel full-width">
+        <div class="panel-header query-header">
+          <div>
+            <h2>个股查询</h2>
+            <p>输入股票代码或名称，点击任意结果查看 K 线与温斯坦分析</p>
+          </div>
+          <div class="search-box">
+            <input id="searchInput" type="text" placeholder="例如：000001、平安银行、美的集团">
+            <button id="searchButton">查询</button>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>代码</th>
+                <th>名称</th>
+                <th>结果覆盖</th>
+                <th>Stage1</th>
+                <th>Stage2</th>
+              </tr>
+            </thead>
+            <tbody id="searchTable"></tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div id="detailModal" class="modal hidden">
+    <div class="modal-backdrop" data-close="true"></div>
+    <div class="modal-card">
+      <div class="modal-head">
+        <div>
+          <div class="eyebrow" id="modalSymbol"></div>
+          <h3 id="modalTitle">个股详情</h3>
+        </div>
+        <button class="close-btn" id="closeModal">关闭</button>
+      </div>
+      <div class="modal-body">
+        <section class="chart-panel">
+          <canvas id="chartCanvas" width="980" height="560"></canvas>
+          <div id="chartTooltip" class="chart-tooltip hidden"></div>
+          <div class="analysis-box">
+            <div class="analysis-head">
+              <h4>温斯坦分析</h4>
+              <div id="analysisLoading" class="analysis-loading hidden">
+                <span class="loading-spinner"></span>
+                <span>LLM 正在生成分析...</span>
+              </div>
+            </div>
+            <div id="analysisMarkdown" class="analysis-markdown"></div>
+          </div>
+        </section>
+        <aside class="analysis-panel">
+          <div class="badge-row">
+            <span class="pill" id="stage1Pill">Stage1: --</span>
+            <span class="pill" id="stage2Pill">Stage2: --</span>
+          </div>
+          <div class="metric-grid" id="metricGrid"></div>
+        </aside>
+      </div>
+    </div>
+  </div>
+
+  <div id="systemLogModal" class="modal hidden">
+    <div class="modal-backdrop" data-system-log-close="true"></div>
+    <div class="modal-card system-log-modal-card">
+      <div class="modal-head">
+        <div>
+          <div class="eyebrow">System Log</div>
+          <h3>增量更新系统日志</h3>
+        </div>
+        <button class="close-btn" id="closeSystemLogModal" type="button">关闭</button>
+      </div>
+      <div class="system-log-body">
+        <div class="system-log-banner">
+          <span class="tag" id="systemLogStatusTag">--</span>
+          <div>
+            <div class="system-log-title" id="systemLogTitle">--</div>
+            <p class="system-log-subtitle" id="systemLogSubtitle">--</p>
+          </div>
+        </div>
+        <div class="system-log-grid" id="systemLogGrid"></div>
+        <section class="analysis-box">
+          <div class="analysis-head">
+            <h4>执行消息</h4>
+          </div>
+          <div id="systemLogMessage" class="analysis-markdown"></div>
+        </section>
+        <section class="analysis-box">
+          <div class="analysis-head">
+            <h4>原始状态</h4>
+          </div>
+          <pre id="systemLogRaw" class="system-log-raw"></pre>
+        </section>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

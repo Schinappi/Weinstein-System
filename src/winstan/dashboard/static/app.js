@@ -398,7 +398,7 @@ function renderMarkdown(markdown) {
     if (!paragraph.length) {
       return;
     }
-    blocks.push(`<p>${formatInlineMarkdown(paragraph.join(' '))}</p>`);
+    blocks.push(`<p>${formatInlineMarkdown(paragraph.join('\n')).replace(/\n/g, '<br>')}</p>`);
     paragraph = [];
   };
 

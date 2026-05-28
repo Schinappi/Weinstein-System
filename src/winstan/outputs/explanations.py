@@ -116,13 +116,13 @@ def build_stock_analysis_report(results: pd.DataFrame, config: AppConfig) -> pd.
 
 def build_weinstein_analysis(row: pd.Series, config: AppConfig) -> str:
     sections = [
-        f"趋势阶段：{_describe_trend_stage(row, config)}",
-        f"交易状态：{_describe_trade_setup(row, config)}",
-        f"候选等级：{_describe_watch_rank(row)}",
-        f"主要风险：{_describe_risk(row, config)}",
-        f"操作关注：{_describe_action(row, config)}",
+        ("趋势阶段", _describe_trend_stage(row, config)),
+        ("交易状态", _describe_trade_setup(row, config)),
+        ("候选等级", _describe_watch_rank(row)),
+        ("主要风险", _describe_risk(row, config)),
+        ("操作关注", _describe_action(row, config)),
     ]
-    return "\n".join(section for section in sections if section)
+    return "\n\n".join(f"## {title}\n{content}" for title, content in sections if content)
 
 
 def get_trend_stage_label(row: pd.Series, config: AppConfig) -> str:

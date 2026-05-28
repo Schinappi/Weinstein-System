@@ -24,6 +24,8 @@ from winstan.rules.volume_confirmation import evaluate_volume
 from winstan.scoring.ranker import build_quasi_stage2_top_n, build_stage2_top_n, score_and_rank
 from winstan.storage.duckdb_store import DuckDBStore
 from winstan.storage.parquet_store import ParquetStore
+from winstan.storage.watchlist_store import WatchlistStore
+from winstan.signals.trade_watch import build_trade_watch_signal
 
 STAGE_LABELS = {
     "I": "阶段I",
@@ -47,6 +49,7 @@ class DashboardService:
         self.config = load_config(Path(config_path))
         self.parquet_store = ParquetStore(self.config.parquet_root)
         self.duckdb_store = DuckDBStore(self.config.duckdb_path)
+        self.watchlist_store = WatchlistStore(self.config.duckdb_path)
         self._router: DataSourceRouter | None = None
         self._results: pd.DataFrame | None = None
         self._stage1: pd.DataFrame | None = None
@@ -176,6 +179,7 @@ class DashboardService:
     def get_dashboard_payload(self) -> dict[str, object]:
         results = self.get_results()
         stage1, stage2, quasi_stage2 = self.get_rankings()
+        stage2_tracking = self._build_stage2_tracking_summary()
         return {
             "summary": {
                 "total_symbols": int(len(results)),
@@ -183,11 +187,68 @@ class DashboardService:
                 "stage1_count": int(len(stage1)),
                 "stage2_count": int(len(stage2)),
                 "quasi_stage2_count": int(len(quasi_stage2)),
+                "watching_count": int(stage2_tracking["watching_count"]),
+                "holding_count": int(stage2_tracking["holding_count"]),
             },
             "update_status": self._get_update_status(),
             "stage1": self._serialize_stage1(stage1),
             "stage2": self._serialize_stage2(stage2),
             "quasi_stage2": self._serialize_quasi_stage2(quasi_stage2),
+            "stage2_tracking": stage2_tracking,
+        }
+
+    def get_navigation_payload(self) -> dict[str, object]:
+        return {
+            "items": [
+                {"key": "dashboard", "label": "总览"},
+                {"key": "watchlist", "label": "Stage2 监控"},
+                {"key": "holdings", "label": "持有看板"},
+            ]
+        }
+
+    def get_stage2_watchlist_payload(self) -> dict[str, object]:
+        self.refresh_stage2_tracking()
+        watchlist = self.watchlist_store.list_watchlist(["watching", "triggered", "expired", "cancelled"])
+        active = watchlist[watchlist["status"].astype(str) == "watching"].copy() if not watchlist.empty else pd.DataFrame()
+        if not active.empty:
+            active = active.sort_values(["days_waited", "distance_to_entry_pct"], ascending=[True, True], na_position="last")
+        return {
+            "summary": self._build_stage2_tracking_summary(watchlist=watchlist),
+            "items": self._serialize_watchlist(active),
+        }
+
+    def get_stage2_holdings_payload(self) -> dict[str, object]:
+        self.refresh_stage2_tracking()
+        holdings = self.watchlist_store.list_holdings(["holding"])
+        if not holdings.empty:
+            holdings = holdings.sort_values(["current_return_pct", "mfe_pct"], ascending=[False, False], na_position="last")
+        return {
+            "summary": self._build_holdings_summary(holdings),
+            "items": self._serialize_holdings(holdings),
+        }
+
+    def add_stage2_watch(self, symbol: str) -> dict[str, object]:
+        normalized = symbol.strip().upper()
+        if not normalized:
+            raise ValueError("股票代码不能为空")
+        row = self._resolve_stock_row(normalized)
+        if not _to_text(row.get("name")):
+            row = row.copy()
+            row["name"] = self._lookup_stock_name(normalized)
+        signal = build_trade_watch_signal(row, self.config, watch_source="manual")
+        created = self.watchlist_store.add_watch_item(self._prepare_watch_item(signal))
+        return {"item": self._serialize_watchlist(pd.DataFrame([created]))[0]}
+
+    def refresh_stage2_tracking(self) -> dict[str, object]:
+        with self._lock:
+            self._sync_auto_watch_candidates()
+            self._refresh_watchlist_states()
+            self._refresh_holding_states()
+        watchlist = self.watchlist_store.list_watchlist(["watching", "triggered", "expired", "cancelled"])
+        holdings = self.watchlist_store.list_holdings(["holding", "closed"])
+        return {
+            "watching_count": int((watchlist["status"].astype(str) == "watching").sum()) if not watchlist.empty else 0,
+            "holding_count": int((holdings["status"].astype(str) == "holding").sum()) if not holdings.empty else 0,
         }
 
     def search_stocks(self, query: str, limit: int = 30) -> list[dict[str, object]]:
@@ -494,6 +555,282 @@ class DashboardService:
             )
         return rows
 
+    def _build_stage2_tracking_summary(self, watchlist: pd.DataFrame | None = None) -> dict[str, object]:
+        local_watchlist = watchlist if watchlist is not None else self.watchlist_store.list_watchlist(["watching", "triggered", "expired", "cancelled"])
+        holdings = self.watchlist_store.list_holdings(["holding", "closed"])
+        watching_count = int((local_watchlist["status"].astype(str) == "watching").sum()) if not local_watchlist.empty else 0
+        triggered_count = int((local_watchlist["status"].astype(str) == "triggered").sum()) if not local_watchlist.empty else 0
+        expired_count = int((local_watchlist["status"].astype(str) == "expired").sum()) if not local_watchlist.empty else 0
+        holding_count = int((holdings["status"].astype(str) == "holding").sum()) if not holdings.empty else 0
+        return {
+            "watching_count": watching_count,
+            "triggered_count": triggered_count,
+            "expired_count": expired_count,
+            "holding_count": holding_count,
+        }
+
+    def _build_holdings_summary(self, holdings: pd.DataFrame) -> dict[str, object]:
+        if holdings.empty:
+            return {
+                "holding_count": 0,
+                "avg_return_pct": None,
+                "median_mfe_pct": None,
+                "median_mae_pct": None,
+            }
+        return {
+            "holding_count": int(len(holdings)),
+            "avg_return_pct": _series_mean(holdings.get("current_return_pct")),
+            "median_mfe_pct": _series_median(holdings.get("mfe_pct")),
+            "median_mae_pct": _series_median(holdings.get("mae_pct")),
+        }
+
+    def _serialize_watchlist(self, frame: pd.DataFrame) -> list[dict[str, object]]:
+        if frame.empty:
+            return []
+        rows: list[dict[str, object]] = []
+        for _, row in frame.iterrows():
+            rows.append(
+                {
+                    "id": _to_text(row.get("id")),
+                    "symbol": _to_text(row.get("symbol")),
+                    "name": _to_text(row.get("name")),
+                    "watch_date": _format_date(row.get("watch_date")),
+                    "expire_date": _format_date(row.get("expire_date")),
+                    "status": _to_text(row.get("status")),
+                    "days_waited": _to_int(row.get("days_waited")),
+                    "target_entry_price": _format_number(row.get("target_entry_price")),
+                    "latest_close": _format_number(row.get("latest_close")),
+                    "distance_to_entry_pct": _format_percent(row.get("distance_to_entry_pct")),
+                    "stage_label": _to_text(row.get("stage_label")),
+                    "watch_rank_label": _to_text(row.get("watch_rank_label")),
+                    "rs_rank_pct": _format_percent_rank(row.get("rs_rank_pct")),
+                    "headroom_pct": _format_percent(row.get("headroom_pct")),
+                    "volume_label": _to_text(row.get("volume_label")),
+                }
+            )
+        return rows
+
+    def _serialize_holdings(self, frame: pd.DataFrame) -> list[dict[str, object]]:
+        if frame.empty:
+            return []
+        rows: list[dict[str, object]] = []
+        for _, row in frame.iterrows():
+            rows.append(
+                {
+                    "id": _to_text(row.get("id")),
+                    "symbol": _to_text(row.get("symbol")),
+                    "name": _to_text(row.get("name")),
+                    "entry_date": _format_date(row.get("entry_date")),
+                    "entry_price": _format_number(row.get("entry_price")),
+                    "latest_close": _format_number(row.get("latest_close")),
+                    "current_return_pct": _format_percent(row.get("current_return_pct")),
+                    "mfe_pct": _format_percent(row.get("mfe_pct")),
+                    "mae_pct": _format_percent(row.get("mae_pct")),
+                    "holding_days": _to_int(row.get("holding_days")),
+                    "stage_label_latest": _to_text(row.get("stage_label_latest")),
+                    "watch_rank_latest": _to_text(row.get("watch_rank_latest")),
+                    "risk_flag": _to_text(row.get("risk_flag")),
+                    "volume_confirmed_on_trigger": _to_bool(row.get("volume_confirmed_on_trigger")),
+                }
+            )
+        return rows
+
+    def _sync_auto_watch_candidates(self) -> None:
+        candidates = self._default_stage2_watch_pool()
+        if candidates.empty:
+            return
+        active_symbols = self.watchlist_store.list_active_symbols()
+        for _, row in candidates.iterrows():
+            symbol = _to_text(row.get("symbol")).upper()
+            if not symbol or symbol in active_symbols:
+                continue
+            signal = build_trade_watch_signal(row, self.config, watch_source="stage2_auto")
+            self.watchlist_store.add_watch_item(self._prepare_watch_item(signal))
+            active_symbols.add(symbol)
+
+    def _refresh_watchlist_states(self) -> None:
+        watchlist = self.watchlist_store.list_watchlist(["watching"])
+        if watchlist.empty:
+            return
+        for _, watch_row in watchlist.iterrows():
+            item = watch_row.to_dict()
+            daily = self._ensure_daily_bars(_to_text(item.get("symbol")))
+            if daily.empty:
+                continue
+            updated = self._update_watch_item_from_daily(item, daily)
+            if updated.get("status") == "triggered":
+                self.watchlist_store.update_watch_item(_to_text(item.get("id")), updated)
+                self.watchlist_store.add_holding_item(self._build_holding_from_watch(updated))
+                continue
+            self.watchlist_store.update_watch_item(_to_text(item.get("id")), updated)
+
+    def _refresh_holding_states(self) -> None:
+        holdings = self.watchlist_store.list_holdings(["holding"])
+        if holdings.empty:
+            return
+        for _, holding_row in holdings.iterrows():
+            item = holding_row.to_dict()
+            daily = self._ensure_daily_bars(_to_text(item.get("symbol")))
+            if daily.empty:
+                continue
+            updated = self._update_holding_item_from_daily(item, daily)
+            self.watchlist_store.update_holding_item(_to_text(item.get("id")), updated)
+
+    def _default_stage2_watch_pool(self) -> pd.DataFrame:
+        results = self.get_results()
+        if results.empty:
+            return pd.DataFrame()
+        _, stage2, _ = self.get_rankings()
+        watch_rows = results.copy()
+        watch_rows["watch_rank_label"] = watch_rows.apply(get_watch_rank_label, axis=1)
+        watch_rows["trend_stage_label"] = watch_rows.apply(lambda row: get_trend_stage_label(row, self.config), axis=1)
+        strong_pool = watch_rows[
+            watch_rows["watch_rank_label"].isin(["核心候选", "强观察"])
+            & watch_rows["trend_stage_label"].astype(str).str.contains("Stage II", case=False, na=False)
+        ]
+        frames = [frame for frame in [stage2, strong_pool] if not frame.empty]
+        if not frames:
+            return pd.DataFrame()
+        merged = pd.concat(frames, ignore_index=True).drop_duplicates(subset=["symbol"], keep="first")
+        return merged.reset_index(drop=True)
+
+    def _prepare_watch_item(self, signal: dict[str, object]) -> dict[str, object]:
+        prepared = dict(signal)
+        prepared["expire_date"] = self._compute_watch_expire_date(prepared)
+        return prepared
+
+    def _update_watch_item_from_daily(self, item: dict[str, object], daily: pd.DataFrame) -> dict[str, object]:
+        updated = dict(item)
+        watch_date = pd.to_datetime(item.get("watch_date"), errors="coerce")
+        updated["expire_date"] = self._compute_watch_expire_date(updated)
+        frame = daily.sort_values("trade_date").copy()
+        latest = frame.iloc[-1]
+        updated["latest_trade_date"] = _format_date(latest.get("trade_date"))
+        updated["latest_close"] = _to_float(latest.get("close"))
+        target_entry_price = _to_float(item.get("target_entry_price"))
+        if target_entry_price is not None and _to_float(latest.get("close")) not in {None, 0.0}:
+            updated["distance_to_entry_pct"] = (target_entry_price / float(latest.get("close")) - 1.0) * 100.0
+        watch_window_days = max(_to_int(item.get("watch_window_days")), 1)
+        if pd.isna(watch_date):
+            updated["days_waited"] = 0
+            return updated
+        future = frame[frame["trade_date"] > watch_date].copy()
+        updated["days_waited"] = int(min(len(future), watch_window_days))
+        if future.empty or target_entry_price is None:
+            return updated
+        window = future.head(watch_window_days).copy()
+        trigger_rows = window[window["high"].astype(float) >= target_entry_price]
+        if not trigger_rows.empty:
+            trigger = trigger_rows.iloc[0]
+            updated["status"] = "triggered"
+            updated["trigger_date"] = _format_date(trigger.get("trade_date"))
+            updated["trigger_price_observed"] = target_entry_price
+            updated["volume_confirmed_on_trigger"] = self._daily_volume_confirmed(frame, trigger.get("trade_date"))
+            return updated
+        if len(window) >= watch_window_days:
+            updated["status"] = "expired"
+        return updated
+
+    def _build_holding_from_watch(self, item: dict[str, object]) -> dict[str, object]:
+        entry_date = _to_text(item.get("trigger_date")) or _to_text(item.get("watch_date"))
+        entry_price = _to_float(item.get("target_entry_price"))
+        return {
+            "watchlist_id": _to_text(item.get("id")),
+            "symbol": _to_text(item.get("symbol")),
+            "name": _to_text(item.get("name")),
+            "from_watch_date": _to_text(item.get("watch_date")),
+            "trigger_date": _to_text(item.get("trigger_date")),
+            "entry_date": entry_date,
+            "entry_price": entry_price,
+            "entry_mode": "target_price",
+            "latest_trade_date": _to_text(item.get("latest_trade_date")),
+            "latest_close": _to_float(item.get("latest_close")),
+            "holding_days": 0,
+            "current_return_pct": 0.0 if entry_price is not None else None,
+            "highest_price_since_entry": entry_price,
+            "lowest_price_since_entry": entry_price,
+            "mfe_pct": 0.0,
+            "mae_pct": 0.0,
+            "stage_label_latest": _to_text(item.get("stage_label")),
+            "watch_rank_latest": _to_text(item.get("watch_rank_label")),
+            "volume_confirmed_on_trigger": _to_bool(item.get("volume_confirmed_on_trigger")),
+            "breakout_level": _to_float(item.get("breakout_level")),
+            "stop_loss_reference": _to_float(item.get("stop_loss_reference")),
+            "risk_flag": "",
+            "status": "holding",
+            "close_date": "",
+            "close_reason": "",
+        }
+
+    def _update_holding_item_from_daily(self, item: dict[str, object], daily: pd.DataFrame) -> dict[str, object]:
+        updated = dict(item)
+        entry_date = pd.to_datetime(item.get("entry_date"), errors="coerce")
+        entry_price = _to_float(item.get("entry_price"))
+        frame = daily.sort_values("trade_date").copy()
+        if pd.isna(entry_date) or entry_price is None:
+            return updated
+        holding_frame = frame[frame["trade_date"] >= entry_date].copy()
+        if holding_frame.empty:
+            return updated
+        latest = holding_frame.iloc[-1]
+        highest_price = float(holding_frame["high"].max())
+        lowest_price = float(holding_frame["low"].min())
+        current_return_pct = (float(latest.get("close")) / entry_price - 1.0) * 100.0 if entry_price else None
+        mfe_pct = (highest_price / entry_price - 1.0) * 100.0 if entry_price else None
+        mae_pct = (lowest_price / entry_price - 1.0) * 100.0 if entry_price else None
+        updated["latest_trade_date"] = _format_date(latest.get("trade_date"))
+        updated["latest_close"] = _to_float(latest.get("close"))
+        updated["holding_days"] = max(len(holding_frame) - 1, 0)
+        updated["current_return_pct"] = current_return_pct
+        updated["highest_price_since_entry"] = highest_price
+        updated["lowest_price_since_entry"] = lowest_price
+        updated["mfe_pct"] = mfe_pct
+        updated["mae_pct"] = mae_pct
+        latest_row = self._resolve_stock_row(_to_text(item.get("symbol")))
+        updated["stage_label_latest"] = get_trend_stage_label(latest_row, self.config)
+        updated["watch_rank_latest"] = get_watch_rank_label(latest_row)
+        updated["risk_flag"] = self._build_holding_risk_flag(updated)
+        return updated
+
+    def _build_holding_risk_flag(self, item: dict[str, object]) -> str:
+        latest_close = _to_float(item.get("latest_close"))
+        stop_loss_reference = _to_float(item.get("stop_loss_reference"))
+        breakout_level = _to_float(item.get("breakout_level"))
+        stage_label_latest = _to_text(item.get("stage_label_latest"))
+        if latest_close is not None and stop_loss_reference is not None and latest_close < stop_loss_reference:
+            return "跌破止损参考"
+        if latest_close is not None and breakout_level is not None and latest_close < breakout_level:
+            return "跌回突破位下方"
+        if "Stage II" not in stage_label_latest:
+            return "趋势阶段转弱"
+        return "正常"
+
+    def _daily_volume_confirmed(self, frame: pd.DataFrame, trade_date: object) -> bool:
+        marker = pd.to_datetime(trade_date, errors="coerce")
+        if pd.isna(marker):
+            return False
+        ordered = frame.sort_values("trade_date").copy().reset_index(drop=True)
+        ordered["volume"] = pd.to_numeric(ordered["volume"], errors="coerce")
+        matched = ordered[ordered["trade_date"] == marker]
+        if matched.empty:
+            return False
+        idx = int(matched.index[0])
+        start_idx = max(0, idx - max(self.config.strategy.daily_volume_avg_days, 5))
+        baseline = ordered.iloc[start_idx:idx]["volume"].dropna()
+        if baseline.empty:
+            return False
+        return float(ordered.iloc[idx]["volume"]) >= float(baseline.mean())
+
+    def _compute_watch_expire_date(self, item: dict[str, object]) -> str:
+        watch_date = pd.to_datetime(item.get("watch_date"), errors="coerce")
+        if pd.isna(watch_date):
+            return ""
+        watch_window_days = max(_to_int(item.get("watch_window_days")), 1)
+        future_business_days = pd.bdate_range(watch_date + pd.offsets.BDay(1), periods=watch_window_days)
+        if len(future_business_days) == 0:
+            return _format_date(watch_date)
+        return future_business_days[-1].strftime("%Y-%m-%d")
+
     def _serialize_quasi_stage2(self, frame: pd.DataFrame) -> list[dict[str, object]]:
         rows: list[dict[str, object]] = []
         for _, row in frame.iterrows():
@@ -625,3 +962,21 @@ def _format_date(value: object) -> str:
     if value is None or pd.isna(value):
         return "--"
     return pd.to_datetime(value).strftime("%Y-%m-%d")
+
+
+def _series_mean(series: object) -> float | None:
+    if series is None:
+        return None
+    numeric = pd.to_numeric(series, errors="coerce")
+    if numeric.dropna().empty:
+        return None
+    return float(numeric.mean())
+
+
+def _series_median(series: object) -> float | None:
+    if series is None:
+        return None
+    numeric = pd.to_numeric(series, errors="coerce")
+    if numeric.dropna().empty:
+        return None
+    return float(numeric.median())

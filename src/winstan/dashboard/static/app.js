@@ -1,4 +1,10 @@
 const summaryCards = document.getElementById('summaryCards');
+const navDashboard = document.getElementById('navDashboard');
+const navWatchlist = document.getElementById('navWatchlist');
+const navHoldings = document.getElementById('navHoldings');
+const pageDashboard = document.getElementById('pageDashboard');
+const pageWatchlist = document.getElementById('pageWatchlist');
+const pageHoldings = document.getElementById('pageHoldings');
 const updateStatusTitle = document.getElementById('updateStatusTitle');
 const updateStatusMessage = document.getElementById('updateStatusMessage');
 const updateStatusLevel = document.getElementById('updateStatusLevel');
@@ -29,22 +35,43 @@ const stage1Pill = document.getElementById('stage1Pill');
 const stage2Pill = document.getElementById('stage2Pill');
 const chartCanvas = document.getElementById('chartCanvas');
 const chartTooltip = document.getElementById('chartTooltip');
+const watchlistSummaryCards = document.getElementById('watchlistSummaryCards');
+const holdingsSummaryCards = document.getElementById('holdingsSummaryCards');
+const watchlistTable = document.getElementById('watchlistTable');
+const holdingsTable = document.getElementById('holdingsTable');
+const refreshTrackingButton = document.getElementById('refreshTrackingButton');
+const manualWatchSymbol = document.getElementById('manualWatchSymbol');
+const addWatchButton = document.getElementById('addWatchButton');
 
 let currentChartState = null;
 let currentDetailRequestId = 0;
 let latestUpdateStatus = {};
+let currentPage = 'dashboard';
 
 async function boot() {
-  await loadDashboard();
   bindEvents();
+  switchPage('dashboard');
+  await loadDashboard();
+  await loadWatchlist();
+  await loadHoldings();
   await runSearch('');
 }
 
 function bindEvents() {
+  [navDashboard, navWatchlist, navHoldings].forEach((button) => {
+    button.addEventListener('click', () => switchPage(button.dataset.page));
+  });
   searchButton.addEventListener('click', () => runSearch(searchInput.value));
   searchInput.addEventListener('keydown', (event) => {
     if (event.key === 'Enter') {
       runSearch(searchInput.value);
+    }
+  });
+  refreshTrackingButton.addEventListener('click', refreshTrackingViews);
+  addWatchButton.addEventListener('click', submitManualWatch);
+  manualWatchSymbol.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') {
+      submitManualWatch();
     }
   });
   systemLogButton.addEventListener('click', showSystemLogModal);
@@ -59,6 +86,21 @@ function bindEvents() {
     if (event.target.dataset.systemLogClose === 'true') {
       hideSystemLogModal();
     }
+  });
+}
+
+function switchPage(pageKey) {
+  currentPage = pageKey;
+  const pageMap = {
+    dashboard: pageDashboard,
+    watchlist: pageWatchlist,
+    holdings: pageHoldings,
+  };
+  Object.entries(pageMap).forEach(([key, node]) => {
+    node.classList.toggle('hidden', key !== pageKey);
+  });
+  [navDashboard, navWatchlist, navHoldings].forEach((button) => {
+    button.classList.toggle('active', button.dataset.page === pageKey);
   });
 }
 
@@ -79,6 +121,8 @@ function renderSummary(summary) {
     { label: 'Stage1榜单数量', value: summary.stage1_count ?? '--' },
     { label: 'Stage2榜单数量', value: summary.stage2_count ?? '--' },
     { label: '准Stage2榜单数量', value: summary.quasi_stage2_count ?? '--' },
+    { label: '监控中', value: summary.watching_count ?? '--' },
+    { label: '持有中', value: summary.holding_count ?? '--' },
   ];
   summaryCards.innerHTML = cards.map((item) => `
     <div class="summary-card">
@@ -111,6 +155,137 @@ function renderUpdateStatus(status) {
       <div class="value">${item.value}</div>
     </div>
   `).join('');
+}
+
+async function loadWatchlist() {
+  const response = await fetch('/api/stage2/watchlist');
+  const payload = await response.json();
+  renderWatchlistSummary(payload.summary || {});
+  renderWatchlistTable(payload.items || []);
+}
+
+async function loadHoldings() {
+  const response = await fetch('/api/stage2/holdings');
+  const payload = await response.json();
+  renderHoldingsSummary(payload.summary || {});
+  renderHoldingsTable(payload.items || []);
+}
+
+async function refreshTrackingViews() {
+  refreshTrackingButton.disabled = true;
+  try {
+    await fetch('/api/stage2/refresh', { method: 'POST' });
+    await Promise.all([loadDashboard(), loadWatchlist(), loadHoldings()]);
+  } finally {
+    refreshTrackingButton.disabled = false;
+  }
+}
+
+async function submitManualWatch() {
+  const symbol = (manualWatchSymbol.value || '').trim().toUpperCase();
+  if (!symbol) {
+    return;
+  }
+  addWatchButton.disabled = true;
+  try {
+    const response = await fetch('/api/stage2/watchlist', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ symbol }),
+    });
+    const payload = await response.json();
+    if (!response.ok || payload.error) {
+      throw new Error(payload.error || '加入监控失败');
+    }
+    manualWatchSymbol.value = '';
+    switchPage('watchlist');
+    await Promise.all([loadDashboard(), loadWatchlist(), loadHoldings()]);
+  } catch (error) {
+    window.alert(error.message || '加入监控失败');
+  } finally {
+    addWatchButton.disabled = false;
+  }
+}
+
+function renderWatchlistSummary(summary) {
+  const cards = [
+    { label: '监控中', value: summary.watching_count ?? '--' },
+    { label: '已触发', value: summary.triggered_count ?? '--' },
+    { label: '已失效', value: summary.expired_count ?? '--' },
+    { label: '持有中', value: summary.holding_count ?? '--' },
+  ];
+  watchlistSummaryCards.innerHTML = cards.map((item) => `
+    <div class="summary-card">
+      <div class="label">${item.label}</div>
+      <div class="value">${item.value}</div>
+    </div>
+  `).join('');
+}
+
+function renderHoldingsSummary(summary) {
+  const cards = [
+    { label: '持有中', value: summary.holding_count ?? '--' },
+    { label: '平均收益', value: formatPercentValue(summary.avg_return_pct) },
+    { label: '中位数最高涨幅', value: formatPercentValue(summary.median_mfe_pct) },
+    { label: '中位数最大跌幅', value: formatPercentValue(summary.median_mae_pct) },
+  ];
+  holdingsSummaryCards.innerHTML = cards.map((item) => `
+    <div class="summary-card">
+      <div class="label">${item.label}</div>
+      <div class="value">${item.value}</div>
+    </div>
+  `).join('');
+}
+
+function renderWatchlistTable(items) {
+  if (!items.length) {
+    watchlistTable.innerHTML = '<tr class="empty-row"><td colspan="12">当前没有处于监控中的 Stage2 股票。</td></tr>';
+    return;
+  }
+  watchlistTable.innerHTML = items.map((item) => `
+    <tr class="clickable" data-symbol="${item.symbol}">
+      <td>${item.symbol}</td>
+      <td>${escapeHtml(item.name || '')}</td>
+      <td>${item.watch_date || '--'}</td>
+      <td>${item.expire_date || '--'}</td>
+      <td>${item.days_waited ?? '--'}</td>
+      <td>${item.target_entry_price ?? '--'}</td>
+      <td>${item.latest_close ?? '--'}</td>
+      <td>${item.distance_to_entry_pct ?? '--'}</td>
+      <td>${escapeHtml(item.stage_label || '')}</td>
+      <td>${escapeHtml(item.watch_rank_label || '')}</td>
+      <td>${item.rs_rank_pct ?? '--'}</td>
+      <td>${escapeHtml(item.volume_label || '')}</td>
+    </tr>
+  `).join('');
+  watchlistTable.querySelectorAll('tr[data-symbol]').forEach((row) => {
+    row.addEventListener('click', () => openStockDetail(row.dataset.symbol));
+  });
+}
+
+function renderHoldingsTable(items) {
+  if (!items.length) {
+    holdingsTable.innerHTML = '<tr class="empty-row"><td colspan="11">当前没有已触发并处于持有跟踪中的股票。</td></tr>';
+    return;
+  }
+  holdingsTable.innerHTML = items.map((item) => `
+    <tr class="clickable" data-symbol="${item.symbol}">
+      <td>${item.symbol}</td>
+      <td>${escapeHtml(item.name || '')}</td>
+      <td>${item.entry_date || '--'}</td>
+      <td>${item.entry_price || '--'}</td>
+      <td>${item.latest_close || '--'}</td>
+      <td>${item.current_return_pct || '--'}</td>
+      <td>${item.mfe_pct || '--'}</td>
+      <td>${item.mae_pct || '--'}</td>
+      <td>${item.holding_days ?? '--'}</td>
+      <td>${escapeHtml(item.stage_label_latest || '')}</td>
+      <td>${escapeHtml(item.risk_flag || '')}</td>
+    </tr>
+  `).join('');
+  holdingsTable.querySelectorAll('tr[data-symbol]').forEach((row) => {
+    row.addEventListener('click', () => openStockDetail(row.dataset.symbol));
+  });
 }
 
 function showSystemLogModal() {
@@ -280,6 +455,13 @@ function formatCount(value) {
     return '--';
   }
   return `${Number(value)}`;
+}
+
+function formatPercentValue(value) {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) {
+    return '--';
+  }
+  return `${Number(value).toFixed(2)}%`;
 }
 
 function formatBoolean(value) {

@@ -8,141 +8,232 @@
 </head>
 <body>
   <div class="app-shell">
-    <header class="hero">
+    <aside class="sidebar">
       <div>
         <div class="eyebrow">Weinstein Dashboard</div>
-        <h1>温斯坦选股看板</h1>
-        <p>复用现有 Stage1 / Stage2 排行逻辑，支持全 A 股查询与单股分析。</p>
+        <h1 class="sidebar-title">温斯坦选股看板</h1>
+        <p class="sidebar-subtitle">Stage2 监控、持有观察与排行总览</p>
       </div>
-      <div class="summary-grid" id="summaryCards"></div>
-    </header>
+      <nav class="sidebar-nav">
+        <button id="navDashboard" class="nav-btn active" data-page="dashboard" type="button">总览</button>
+        <button id="navWatchlist" class="nav-btn" data-page="watchlist" type="button">Stage2 监控</button>
+        <button id="navHoldings" class="nav-btn" data-page="holdings" type="button">持有看板</button>
+      </nav>
+    </aside>
 
-    <main class="content-grid">
-      <section class="panel full-width">
-        <div class="update-status" id="updateStatusPanel">
-          <div class="update-status-head">
-            <div>
-              <h2 id="updateStatusTitle">缓存更新状态</h2>
-              <p id="updateStatusMessage">--</p>
+    <div class="workspace">
+      <section class="page" id="pageDashboard" data-page="dashboard">
+        <header class="hero">
+          <div>
+            <div class="eyebrow">Overview</div>
+            <h1>温斯坦选股总览</h1>
+            <p>复用现有 Stage1 / Stage2 排行逻辑，支持全 A 股查询与单股分析。</p>
+          </div>
+          <div class="summary-grid" id="summaryCards"></div>
+        </header>
+
+        <main class="content-grid">
+          <section class="panel full-width">
+            <div class="update-status" id="updateStatusPanel">
+              <div class="update-status-head">
+                <div>
+                  <h2 id="updateStatusTitle">缓存更新状态</h2>
+                  <p id="updateStatusMessage">--</p>
+                </div>
+                <div class="update-status-actions">
+                  <button id="systemLogButton" class="secondary-btn" type="button">System Log</button>
+                  <span class="tag" id="updateStatusLevel">--</span>
+                </div>
+              </div>
+              <div class="update-status-metrics" id="updateStatusMetrics"></div>
             </div>
-            <div class="update-status-actions">
-              <button id="systemLogButton" class="secondary-btn" type="button">System Log</button>
-              <span class="tag" id="updateStatusLevel">--</span>
+          </section>
+
+          <section class="panel">
+            <div class="panel-header">
+              <div>
+                <h2>Stage1 排行榜</h2>
+                <p>观察池与临近突破标的</p>
+              </div>
             </div>
-          </div>
-          <div class="update-status-metrics" id="updateStatusMetrics"></div>
-        </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>排名</th>
+                    <th>代码</th>
+                    <th>名称</th>
+                    <th>阶段</th>
+                    <th>观察类型</th>
+                    <th>观察得分</th>
+                    <th>总分</th>
+                  </tr>
+                </thead>
+                <tbody id="stage1Table"></tbody>
+              </table>
+            </div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-header">
+              <div>
+                <h2>Stage2 排行榜</h2>
+                <p>最接近阶段 II 的趋势股</p>
+              </div>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>排名</th>
+                    <th>代码</th>
+                    <th>名称</th>
+                    <th>阶段</th>
+                    <th>观察说明</th>
+                    <th>综合分</th>
+                    <th>结构分</th>
+                    <th>时机分</th>
+                    <th>强度分</th>
+                    <th>风险分</th>
+                  </tr>
+                </thead>
+                <tbody id="stage2Table"></tbody>
+              </table>
+            </div>
+          </section>
+
+          <section class="panel full-width">
+            <div class="panel-header">
+              <div>
+                <h2>准 Stage2 排行榜</h2>
+                <p>高分但被硬过滤拦下的近失误标的</p>
+              </div>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>排名</th>
+                    <th>代码</th>
+                    <th>名称</th>
+                    <th>阶段</th>
+                    <th>缺失条件</th>
+                    <th>观察说明</th>
+                    <th>综合分</th>
+                    <th>结构分</th>
+                    <th>时机分</th>
+                    <th>强度分</th>
+                    <th>风险分</th>
+                  </tr>
+                </thead>
+                <tbody id="quasiStage2Table"></tbody>
+              </table>
+            </div>
+          </section>
+
+          <section class="panel full-width">
+            <div class="panel-header query-header">
+              <div>
+                <h2>个股查询</h2>
+                <p>输入股票代码或名称，点击任意结果查看 K 线与温斯坦分析</p>
+              </div>
+              <div class="search-box">
+                <input id="searchInput" type="text" placeholder="例如：000001、平安银行、美的集团">
+                <button id="searchButton">查询</button>
+              </div>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>代码</th>
+                    <th>名称</th>
+                    <th>结果覆盖</th>
+                    <th>Stage1</th>
+                    <th>Stage2</th>
+                  </tr>
+                </thead>
+                <tbody id="searchTable"></tbody>
+              </table>
+            </div>
+          </section>
+        </main>
       </section>
 
-      <section class="panel">
-        <div class="panel-header">
+      <section class="page hidden" id="pageWatchlist" data-page="watchlist">
+        <header class="page-header">
           <div>
-            <h2>Stage1 排行榜</h2>
-            <p>观察池与临近突破标的</p>
+            <div class="eyebrow">Stage2 Monitor</div>
+            <h2>Stage2 监控</h2>
+            <p>默认监控 3 个交易日，只按目标买点触发，量能作为标签保留。</p>
           </div>
-        </div>
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>排名</th>
-                <th>代码</th>
-                <th>名称</th>
-                <th>阶段</th>
-                <th>观察类型</th>
-                <th>观察得分</th>
-                <th>总分</th>
-              </tr>
-            </thead>
-            <tbody id="stage1Table"></tbody>
-          </table>
-        </div>
+          <div class="page-actions">
+            <div class="search-box compact-box">
+              <input id="manualWatchSymbol" type="text" placeholder="手动加入，例如 600011.SH">
+              <button id="addWatchButton" type="button">加入监控</button>
+            </div>
+            <button id="refreshTrackingButton" class="secondary-btn" type="button">刷新状态</button>
+          </div>
+        </header>
+        <div class="summary-grid" id="watchlistSummaryCards"></div>
+        <section class="panel full-width">
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>代码</th>
+                  <th>名称</th>
+                  <th>监控日期</th>
+                  <th>到期日期</th>
+                  <th>等待天数</th>
+                  <th>目标买点</th>
+                  <th>最新价</th>
+                  <th>距买点</th>
+                  <th>趋势阶段</th>
+                  <th>候选等级</th>
+                  <th>RS 排名</th>
+                  <th>量能</th>
+                </tr>
+              </thead>
+              <tbody id="watchlistTable"></tbody>
+            </table>
+          </div>
+        </section>
       </section>
 
-      <section class="panel">
-        <div class="panel-header">
+      <section class="page hidden" id="pageHoldings" data-page="holdings">
+        <header class="page-header">
           <div>
-            <h2>Stage2 排行榜</h2>
-            <p>最接近阶段 II 的趋势股</p>
+            <div class="eyebrow">Holdings Board</div>
+            <h2>持有看板</h2>
+            <p>展示触发买点后的当前收益、最高涨幅和最大跌幅。</p>
           </div>
-        </div>
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>排名</th>
-                <th>代码</th>
-                <th>名称</th>
-                <th>阶段</th>
-                <th>观察说明</th>
-                <th>综合分</th>
-                <th>结构分</th>
-                <th>时机分</th>
-                <th>强度分</th>
-                <th>风险分</th>
-              </tr>
-            </thead>
-            <tbody id="stage2Table"></tbody>
-          </table>
-        </div>
+        </header>
+        <div class="summary-grid" id="holdingsSummaryCards"></div>
+        <section class="panel full-width">
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>代码</th>
+                  <th>名称</th>
+                  <th>买入日期</th>
+                  <th>买入价</th>
+                  <th>最新价</th>
+                  <th>当前收益率</th>
+                  <th>最高涨幅</th>
+                  <th>最大跌幅</th>
+                  <th>持有天数</th>
+                  <th>趋势阶段</th>
+                  <th>风险提醒</th>
+                </tr>
+              </thead>
+              <tbody id="holdingsTable"></tbody>
+            </table>
+          </div>
+        </section>
       </section>
-
-      <section class="panel full-width">
-        <div class="panel-header">
-          <div>
-            <h2>准 Stage2 排行榜</h2>
-            <p>高分但被硬过滤拦下的近失误标的</p>
-          </div>
-        </div>
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>排名</th>
-                <th>代码</th>
-                <th>名称</th>
-                <th>阶段</th>
-                <th>缺失条件</th>
-                <th>观察说明</th>
-                <th>综合分</th>
-                <th>结构分</th>
-                <th>时机分</th>
-                <th>强度分</th>
-                <th>风险分</th>
-              </tr>
-            </thead>
-            <tbody id="quasiStage2Table"></tbody>
-          </table>
-        </div>
-      </section>
-
-      <section class="panel full-width">
-        <div class="panel-header query-header">
-          <div>
-            <h2>个股查询</h2>
-            <p>输入股票代码或名称，点击任意结果查看 K 线与温斯坦分析</p>
-          </div>
-          <div class="search-box">
-            <input id="searchInput" type="text" placeholder="例如：000001、平安银行、美的集团">
-            <button id="searchButton">查询</button>
-          </div>
-        </div>
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>代码</th>
-                <th>名称</th>
-                <th>结果覆盖</th>
-                <th>Stage1</th>
-                <th>Stage2</th>
-              </tr>
-            </thead>
-            <tbody id="searchTable"></tbody>
-          </table>
-        </div>
-      </section>
-    </main>
+    </div>
   </div>
 
   <div id="detailModal" class="modal hidden">

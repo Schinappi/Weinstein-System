@@ -22,6 +22,18 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._send_json(self.service.get_dashboard_payload())
             return
 
+        if path == "/api/navigation":
+            self._send_json(self.service.get_navigation_payload())
+            return
+
+        if path == "/api/stage2/watchlist":
+            self._send_json(self.service.get_stage2_watchlist_payload())
+            return
+
+        if path == "/api/stage2/holdings":
+            self._send_json(self.service.get_stage2_holdings_payload())
+            return
+
         if path == "/api/search":
             query = parse_qs(parsed.query).get("q", [""])[0]
             self._send_json({"items": self.service.search_stocks(query)})
@@ -44,6 +56,25 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
 
         self._serve_static(path)
+
+    def do_POST(self) -> None:
+        parsed = urlparse(self.path)
+        path = parsed.path
+        payload = self._read_json_body()
+
+        if path == "/api/stage2/refresh":
+            self._send_json(self.service.refresh_stage2_tracking())
+            return
+
+        if path == "/api/stage2/watchlist":
+            try:
+                symbol = str(payload.get("symbol") or "")
+                self._send_json(self.service.add_stage2_watch(symbol), status=HTTPStatus.CREATED)
+            except Exception as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            return
+
+        self._send_json({"error": "Unsupported endpoint"}, status=HTTPStatus.NOT_FOUND)
 
     def log_message(self, format: str, *args) -> None:
         return
@@ -74,6 +105,19 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def _read_json_body(self) -> dict[str, object]:
+        content_length = int(self.headers.get("Content-Length") or 0)
+        if content_length <= 0:
+            return {}
+        raw = self.rfile.read(content_length)
+        if not raw:
+            return {}
+        try:
+            payload = json.loads(raw.decode("utf-8"))
+        except Exception:
+            return {}
+        return payload if isinstance(payload, dict) else {}
 
 
 def run_server(config_path: str | Path, host: str = "127.0.0.1", port: int = 8765) -> None:

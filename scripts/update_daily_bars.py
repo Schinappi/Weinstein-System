@@ -115,7 +115,7 @@ def _planned_start_date(parquet_store: ParquetStore, dataset: str, symbol: str, 
     latest = _to_iso_date(cached["trade_date"].max())
     if not latest:
         return fallback_start_date
-    return _next_day(latest)
+    return latest
 
 
 
@@ -127,15 +127,17 @@ def _merge_and_write(parquet_store: ParquetStore, dataset: str, symbol: str, new
     merge_started_counter = time.perf_counter()
     merged = clean_daily_bars(pd.concat([cached, new_rows], ignore_index=True))
     added_rows = max(0, len(merged) - len(cached))
+    cache_changed = not merged.reset_index(drop=True).equals(cached.reset_index(drop=True))
     merge_runtime_seconds = _round_seconds(time.perf_counter() - merge_started_counter)
 
     write_runtime_seconds = 0.0
-    if added_rows > 0:
+    if cache_changed:
         write_started_counter = time.perf_counter()
         parquet_store.write_symbol_frame(dataset, symbol, merged)
         write_runtime_seconds = _round_seconds(time.perf_counter() - write_started_counter)
     return {
         "added_rows": int(added_rows),
+        "cache_changed": int(cache_changed),
         "cache_read_runtime_seconds": read_runtime_seconds,
         "merge_runtime_seconds": merge_runtime_seconds,
         "write_runtime_seconds": write_runtime_seconds,
@@ -285,7 +287,8 @@ def _update_stock_daily_bars(
             batch_merge_runtime_seconds += float(merge_result["merge_runtime_seconds"])
             batch_write_runtime_seconds += float(merge_result["write_runtime_seconds"])
             added_rows = int(merge_result["added_rows"])
-            if added_rows <= 0:
+            cache_changed = bool(merge_result["cache_changed"])
+            if not cache_changed:
                 summary["stock_symbols_processed"] += 1
                 summary["stock_symbols_fetch_empty"] += 1
                 batch_symbols_empty += 1
@@ -383,12 +386,12 @@ def _update_index_daily_bars(
 
     merge_result = _merge_and_write(parquet_store, "index_bars", symbol, fetched)
     added_rows = int(merge_result["added_rows"])
-    summary["index_updated"] = added_rows > 0
+    summary["index_updated"] = bool(merge_result["cache_changed"])
     summary["index_rows_added"] = added_rows
     summary["index_cache_read_runtime_seconds"] = float(merge_result["cache_read_runtime_seconds"])
     summary["index_merge_runtime_seconds"] = float(merge_result["merge_runtime_seconds"])
     summary["index_write_runtime_seconds"] = float(merge_result["write_runtime_seconds"])
-    if added_rows <= 0:
+    if not summary["index_updated"]:
         summary["index_fetch_empty"] = True
     _round_timing_fields(
         summary,
@@ -502,7 +505,7 @@ def main() -> None:
                 duckdb_store.refresh_parquet_view("index_bars", str(config.parquet_root / "index_bars" / "*.parquet"))
 
         phase1_requested = not args.dry_run and not args.skip_phase1
-        should_run_phase1 = phase1_requested and (stock_summary["stock_rows_added"] > 0 or bool(index_summary["index_updated"]))
+        should_run_phase1 = phase1_requested and (stock_summary["stock_symbols_updated"] > 0 or bool(index_summary["index_updated"]))
         phase1_started_counter = time.perf_counter()
         if should_run_phase1:
             phase1_summary = _rerun_phase1(config)

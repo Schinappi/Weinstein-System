@@ -238,12 +238,14 @@ class DashboardService:
 
         stage1, stage2, _ = self.get_rankings()
 
+        latest_trade_date = daily.sort_values("trade_date")["trade_date"].iloc[-1]
+
         return {
             "symbol": normalized,
             "name": name,
             "stage1_rank": self._lookup_rank(stage1, normalized, "top_n_rank"),
             "stage2_rank": self._lookup_rank(stage2, normalized, "stage2_top_n_rank"),
-            "metrics": self._build_metrics(row),
+            "metrics": self._build_metrics(row, latest_trade_date=latest_trade_date),
             "chart": self._build_chart_payload(daily, row),
         }
 
@@ -253,6 +255,10 @@ class DashboardService:
             raise ValueError("股票代码不能为空")
 
         row = self._resolve_stock_row(normalized)
+        daily = self._ensure_daily_bars(normalized)
+        if not daily.empty:
+            row = row.copy()
+            row["trade_date"] = daily.sort_values("trade_date")["trade_date"].iloc[-1]
         if not _to_text(row.get("name")):
             row = row.copy()
             row["name"] = self._lookup_stock_name(normalized)
@@ -309,7 +315,8 @@ class DashboardService:
             return self._universe.copy()
 
     def _build_detail_analysis(self, symbol: str, row: pd.Series) -> str:
-        cached = self._detail_analysis_cache.get(symbol)
+        cache_key = f"{symbol}:{_format_date(row.get('trade_date'))}"
+        cached = self._detail_analysis_cache.get(cache_key)
         if cached:
             return cached
         try:
@@ -318,7 +325,7 @@ class DashboardService:
             analysis = build_weinstein_analysis(row, self.config)
         except Exception:
             analysis = build_weinstein_analysis(row, self.config)
-        self._detail_analysis_cache[symbol] = analysis
+        self._detail_analysis_cache[cache_key] = analysis
         return analysis
 
     def _resolve_stock_row(self, symbol: str) -> pd.Series:
@@ -424,12 +431,13 @@ class DashboardService:
         scored = apply_stage2_scoring(pd.DataFrame([record]), self.config)
         return scored.iloc[0].copy()
 
-    def _build_metrics(self, row: pd.Series) -> list[dict[str, str]]:
+    def _build_metrics(self, row: pd.Series, latest_trade_date=None) -> list[dict[str, str]]:
+        trade_date_value = latest_trade_date if latest_trade_date is not None else row.get("trade_date")
         return [
             {"label": "趋势阶段", "value": get_trend_stage_label(row, self.config)},
             {"label": "候选等级", "value": get_watch_rank_label(row)},
             {"label": "收盘价", "value": _format_number(row.get("close"))},
-            {"label": "交易日期", "value": _format_date(row.get("trade_date"))},
+            {"label": "交易日期", "value": _format_date(trade_date_value)},
             {"label": "综合分", "value": _format_number(row.get("final_score"))},
             {"label": "结构分", "value": _format_number(row.get("structure_score"))},
             {"label": "时机分", "value": _format_number(row.get("timing_score"))},

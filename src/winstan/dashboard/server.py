@@ -67,11 +67,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/stage2/watchlist":
-            try:
-                symbol = str(payload.get("symbol") or "")
-                self._send_json(self.service.add_stage2_watch(symbol), status=HTTPStatus.CREATED)
-            except Exception as exc:
-                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            self._send_json({"error": "手动加入监控已暂停"}, status=HTTPStatus.FORBIDDEN)
             return
 
         self._send_json({"error": "Unsupported endpoint"}, status=HTTPStatus.NOT_FOUND)

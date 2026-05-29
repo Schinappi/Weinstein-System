@@ -68,12 +68,6 @@ function bindEvents() {
     }
   });
   refreshTrackingButton.addEventListener('click', refreshTrackingViews);
-  addWatchButton.addEventListener('click', submitManualWatch);
-  manualWatchSymbol.addEventListener('keydown', (event) => {
-    if (event.key === 'Enter') {
-      submitManualWatch();
-    }
-  });
   systemLogButton.addEventListener('click', showSystemLogModal);
   closeModal.addEventListener('click', hideModal);
   closeSystemLogModal.addEventListener('click', hideSystemLogModal);
@@ -182,29 +176,7 @@ async function refreshTrackingViews() {
 }
 
 async function submitManualWatch() {
-  const symbol = (manualWatchSymbol.value || '').trim().toUpperCase();
-  if (!symbol) {
-    return;
-  }
-  addWatchButton.disabled = true;
-  try {
-    const response = await fetch('/api/stage2/watchlist', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ symbol }),
-    });
-    const payload = await response.json();
-    if (!response.ok || payload.error) {
-      throw new Error(payload.error || '加入监控失败');
-    }
-    manualWatchSymbol.value = '';
-    switchPage('watchlist');
-    await Promise.all([loadDashboard(), loadWatchlist(), loadHoldings()]);
-  } catch (error) {
-    window.alert(error.message || '加入监控失败');
-  } finally {
-    addWatchButton.disabled = false;
-  }
+  window.alert('手动加入监控已暂停');
 }
 
 function renderWatchlistSummary(summary) {

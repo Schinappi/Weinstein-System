@@ -20,12 +20,16 @@ def build_trade_watch_signal(
     close = _to_float(row.get("close"))
     breakout_level = _to_float(row.get("breakout_level"))
     nearest_resistance = _to_float(row.get("nearest_resistance"))
-    target_entry_price = _resolve_target_entry_price(row, config)
+    breakout_entry_price = _resolve_target_entry_price(row, config)
+    pullback_entry_price = _resolve_pullback_entry_price(row)
     stop_loss_reference = _resolve_stop_loss_reference(row)
     latest_close = close
     distance_to_entry_pct = None
-    if latest_close is not None and target_entry_price is not None and latest_close != 0:
-        distance_to_entry_pct = (target_entry_price / latest_close - 1.0) * 100.0
+    distance_to_pullback_pct = None
+    if latest_close is not None and breakout_entry_price is not None and latest_close != 0:
+        distance_to_entry_pct = (breakout_entry_price / latest_close - 1.0) * 100.0
+    if latest_close is not None and pullback_entry_price is not None and latest_close != 0:
+        distance_to_pullback_pct = (pullback_entry_price / latest_close - 1.0) * 100.0
 
     volume_ratio = _to_float(row.get("volume_ratio"))
     return {
@@ -36,7 +40,8 @@ def build_trade_watch_signal(
         "status": "watching",
         "watch_source": watch_source,
         "watch_window_days": int(max(watch_window_days, 1)),
-        "target_entry_price": target_entry_price,
+        "target_entry_price": breakout_entry_price,
+        "pullback_entry_price": pullback_entry_price,
         "breakout_level": breakout_level,
         "stop_loss_reference": stop_loss_reference,
         "volume_confirmation_needed": False,
@@ -58,10 +63,12 @@ def build_trade_watch_signal(
         "latest_trade_date": _to_iso_date(row.get("trade_date")),
         "latest_close": latest_close,
         "distance_to_entry_pct": distance_to_entry_pct,
+        "distance_to_pullback_pct": distance_to_pullback_pct,
         "days_waited": 0,
         "expire_date": "",
         "trigger_date": "",
         "trigger_price_observed": None,
+        "trigger_mode": "",
         "volume_confirmed_on_trigger": False,
     }
 
@@ -90,6 +97,14 @@ def _resolve_target_entry_price(row: pd.Series, config: AppConfig) -> float | No
     if close is not None:
         return round(close + max(confirm_step, 0.01), 4)
     return None
+
+
+def _resolve_pullback_entry_price(row: pd.Series) -> float | None:
+    breakout_level = _to_float(row.get("breakout_level"))
+    breakout_status = _to_text(row.get("breakout_status")) or "no_breakout_level"
+    if breakout_status != "just_broke_out" or breakout_level is None:
+        return None
+    return round(breakout_level, 4)
 
 
 def _resolve_stop_loss_reference(row: pd.Series) -> float | None:

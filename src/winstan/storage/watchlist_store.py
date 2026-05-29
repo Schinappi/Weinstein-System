@@ -20,6 +20,7 @@ WATCHLIST_COLUMNS = [
     "watch_source",
     "watch_window_days",
     "target_entry_price",
+    "pullback_entry_price",
     "breakout_level",
     "stop_loss_reference",
     "volume_confirmation_needed",
@@ -41,9 +42,11 @@ WATCHLIST_COLUMNS = [
     "latest_trade_date",
     "latest_close",
     "distance_to_entry_pct",
+    "distance_to_pullback_pct",
     "days_waited",
     "trigger_date",
     "trigger_price_observed",
+    "trigger_mode",
     "volume_confirmed_on_trigger",
     "created_at",
     "updated_at",
@@ -141,9 +144,9 @@ class WatchlistStore:
         existing.update({key: value for key, value in payload.items() if key in WATCHLIST_COLUMNS and key != "created_at"})
         existing["updated_at"] = _now_iso()
         normalized = self._normalize_watch_item(existing, preserve_identity=True)
-        for column in WATCHLIST_COLUMNS:
-            frame.loc[mask, column] = normalized.get(column)
-        self._write_table("stage2_watchlist", frame)
+        updated_frame = frame.loc[~mask].copy()
+        updated_frame = pd.concat([updated_frame, pd.DataFrame([normalized])], ignore_index=True)
+        self._write_table("stage2_watchlist", updated_frame)
         return normalized
 
     def add_holding_item(self, item: dict[str, object]) -> dict[str, object]:
@@ -174,9 +177,9 @@ class WatchlistStore:
         existing.update({key: value for key, value in payload.items() if key in HOLDING_COLUMNS and key != "created_at"})
         existing["updated_at"] = _now_iso()
         normalized = self._normalize_holding_item(existing, preserve_identity=True)
-        for column in HOLDING_COLUMNS:
-            frame.loc[mask, column] = normalized.get(column)
-        self._write_table("stage2_holdings", frame)
+        updated_frame = frame.loc[~mask].copy()
+        updated_frame = pd.concat([updated_frame, pd.DataFrame([normalized])], ignore_index=True)
+        self._write_table("stage2_holdings", updated_frame)
         return normalized
 
     def _read_table(self, table_name: str, empty_frame: pd.DataFrame) -> pd.DataFrame:

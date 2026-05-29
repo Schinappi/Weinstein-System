@@ -599,8 +599,10 @@ class DashboardService:
                     "status": _to_text(row.get("status")),
                     "days_waited": _to_int(row.get("days_waited")),
                     "target_entry_price": _format_number(row.get("target_entry_price")),
+                    "pullback_entry_price": _format_number(row.get("pullback_entry_price")),
                     "latest_close": _format_number(row.get("latest_close")),
                     "distance_to_entry_pct": _format_percent(row.get("distance_to_entry_pct")),
+                    "distance_to_pullback_pct": _format_percent(row.get("distance_to_pullback_pct")),
                     "stage_label": _to_text(row.get("stage_label")),
                     "watch_rank_label": _to_text(row.get("watch_rank_label")),
                     "rs_rank_pct": _format_percent_rank(row.get("rs_rank_pct")),
@@ -630,6 +632,7 @@ class DashboardService:
                     "stage_label_latest": _to_text(row.get("stage_label_latest")),
                     "watch_rank_latest": _to_text(row.get("watch_rank_latest")),
                     "risk_flag": _to_text(row.get("risk_flag")),
+                    "entry_mode": _to_text(row.get("entry_mode")),
                     "volume_confirmed_on_trigger": _to_bool(row.get("volume_confirmed_on_trigger")),
                 }
             )
@@ -639,12 +642,24 @@ class DashboardService:
         candidates = self._default_stage2_watch_pool()
         if candidates.empty:
             return
+        active_watchlist = self.watchlist_store.list_watchlist(["watching", "triggered"])
+        active_watch_map = {
+            _to_text(row.get("symbol")).upper(): row.to_dict()
+            for _, row in active_watchlist.iterrows()
+            if _to_text(row.get("symbol"))
+        }
         active_symbols = self.watchlist_store.list_active_symbols()
         for _, row in candidates.iterrows():
             symbol = _to_text(row.get("symbol")).upper()
-            if not symbol or symbol in active_symbols:
+            if not symbol:
                 continue
             signal = build_trade_watch_signal(row, self.config, watch_source="stage2_auto")
+            if symbol in active_watch_map:
+                merged = self._merge_signal_into_watch_item(active_watch_map[symbol], signal)
+                self.watchlist_store.update_watch_item(_to_text(active_watch_map[symbol].get("id")), self._prepare_watch_item(merged))
+                continue
+            if symbol in active_symbols:
+                continue
             self.watchlist_store.add_watch_item(self._prepare_watch_item(signal))
             active_symbols.add(symbol)
 
@@ -699,6 +714,14 @@ class DashboardService:
         prepared["expire_date"] = self._compute_watch_expire_date(prepared)
         return prepared
 
+    def _merge_signal_into_watch_item(self, existing: dict[str, object], signal: dict[str, object]) -> dict[str, object]:
+        merged = dict(existing)
+        for key, value in signal.items():
+            if key in {"id", "created_at", "watch_date", "source_trade_date", "status", "trigger_date", "trigger_price_observed", "trigger_mode"}:
+                continue
+            merged[key] = value
+        return merged
+
     def _update_watch_item_from_daily(self, item: dict[str, object], daily: pd.DataFrame) -> dict[str, object]:
         updated = dict(item)
         watch_date = pd.to_datetime(item.get("watch_date"), errors="coerce")
@@ -708,23 +731,49 @@ class DashboardService:
         updated["latest_trade_date"] = _format_date(latest.get("trade_date"))
         updated["latest_close"] = _to_float(latest.get("close"))
         target_entry_price = _to_float(item.get("target_entry_price"))
+        pullback_entry_price = _to_float(item.get("pullback_entry_price"))
         if target_entry_price is not None and _to_float(latest.get("close")) not in {None, 0.0}:
             updated["distance_to_entry_pct"] = (target_entry_price / float(latest.get("close")) - 1.0) * 100.0
+        if pullback_entry_price is not None and _to_float(latest.get("close")) not in {None, 0.0}:
+            updated["distance_to_pullback_pct"] = (pullback_entry_price / float(latest.get("close")) - 1.0) * 100.0
         watch_window_days = max(_to_int(item.get("watch_window_days")), 1)
         if pd.isna(watch_date):
             updated["days_waited"] = 0
             return updated
         future = frame[frame["trade_date"] > watch_date].copy()
         updated["days_waited"] = int(min(len(future), watch_window_days))
-        if future.empty or target_entry_price is None:
+        if future.empty:
             return updated
         window = future.head(watch_window_days).copy()
-        trigger_rows = window[window["high"].astype(float) >= target_entry_price]
-        if not trigger_rows.empty:
-            trigger = trigger_rows.iloc[0]
+        breakout_trigger = self._find_breakout_trigger_row(window, target_entry_price)
+        pullback_trigger = self._find_pullback_trigger_row(window, pullback_entry_price)
+        trigger: pd.Series | None = None
+        trigger_mode = ""
+        trigger_price_observed: float | None = None
+        if breakout_trigger is not None and pullback_trigger is not None:
+            breakout_date = pd.to_datetime(breakout_trigger.get("trade_date"), errors="coerce")
+            pullback_date = pd.to_datetime(pullback_trigger.get("trade_date"), errors="coerce")
+            if pd.isna(pullback_date) or (not pd.isna(breakout_date) and breakout_date <= pullback_date):
+                trigger = breakout_trigger
+                trigger_mode = "breakout"
+                trigger_price_observed = target_entry_price
+            else:
+                trigger = pullback_trigger
+                trigger_mode = "pullback_hold"
+                trigger_price_observed = pullback_entry_price
+        elif breakout_trigger is not None:
+            trigger = breakout_trigger
+            trigger_mode = "breakout"
+            trigger_price_observed = target_entry_price
+        elif pullback_trigger is not None:
+            trigger = pullback_trigger
+            trigger_mode = "pullback_hold"
+            trigger_price_observed = pullback_entry_price
+        if trigger is not None:
             updated["status"] = "triggered"
             updated["trigger_date"] = _format_date(trigger.get("trade_date"))
-            updated["trigger_price_observed"] = target_entry_price
+            updated["trigger_price_observed"] = trigger_price_observed
+            updated["trigger_mode"] = trigger_mode
             updated["volume_confirmed_on_trigger"] = self._daily_volume_confirmed(frame, trigger.get("trade_date"))
             return updated
         if len(window) >= watch_window_days:
@@ -733,7 +782,12 @@ class DashboardService:
 
     def _build_holding_from_watch(self, item: dict[str, object]) -> dict[str, object]:
         entry_date = _to_text(item.get("trigger_date")) or _to_text(item.get("watch_date"))
-        entry_price = _to_float(item.get("target_entry_price"))
+        entry_mode = _to_text(item.get("trigger_mode")) or "breakout"
+        entry_price = _to_float(item.get("trigger_price_observed"))
+        if entry_price is None and entry_mode == "pullback_hold":
+            entry_price = _to_float(item.get("pullback_entry_price"))
+        if entry_price is None:
+            entry_price = _to_float(item.get("target_entry_price"))
         return {
             "watchlist_id": _to_text(item.get("id")),
             "symbol": _to_text(item.get("symbol")),
@@ -742,7 +796,7 @@ class DashboardService:
             "trigger_date": _to_text(item.get("trigger_date")),
             "entry_date": entry_date,
             "entry_price": entry_price,
-            "entry_mode": "target_price",
+            "entry_mode": entry_mode,
             "latest_trade_date": _to_text(item.get("latest_trade_date")),
             "latest_close": _to_float(item.get("latest_close")),
             "holding_days": 0,
@@ -820,6 +874,24 @@ class DashboardService:
         if baseline.empty:
             return False
         return float(ordered.iloc[idx]["volume"]) >= float(baseline.mean())
+
+    def _find_breakout_trigger_row(self, window: pd.DataFrame, target_entry_price: float | None) -> pd.Series | None:
+        if target_entry_price is None or window.empty:
+            return None
+        trigger_rows = window[pd.to_numeric(window["high"], errors="coerce") >= target_entry_price]
+        if trigger_rows.empty:
+            return None
+        return trigger_rows.iloc[0]
+
+    def _find_pullback_trigger_row(self, window: pd.DataFrame, pullback_entry_price: float | None) -> pd.Series | None:
+        if pullback_entry_price is None or window.empty:
+            return None
+        lows = pd.to_numeric(window["low"], errors="coerce")
+        closes = pd.to_numeric(window["close"], errors="coerce")
+        trigger_rows = window[(lows <= pullback_entry_price) & (closes >= pullback_entry_price)]
+        if trigger_rows.empty:
+            return None
+        return trigger_rows.iloc[0]
 
     def _compute_watch_expire_date(self, item: dict[str, object]) -> str:
         watch_date = pd.to_datetime(item.get("watch_date"), errors="coerce")

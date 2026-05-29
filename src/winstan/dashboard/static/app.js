@@ -239,7 +239,7 @@ function renderHoldingsSummary(summary) {
 
 function renderWatchlistTable(items) {
   if (!items.length) {
-    watchlistTable.innerHTML = '<tr class="empty-row"><td colspan="12">当前没有处于监控中的 Stage2 股票。</td></tr>';
+    watchlistTable.innerHTML = '<tr class="empty-row"><td colspan="14">当前没有处于监控中的 Stage2 股票。</td></tr>';
     return;
   }
   watchlistTable.innerHTML = items.map((item) => `
@@ -250,8 +250,10 @@ function renderWatchlistTable(items) {
       <td>${item.expire_date || '--'}</td>
       <td>${item.days_waited ?? '--'}</td>
       <td>${item.target_entry_price ?? '--'}</td>
+      <td>${item.pullback_entry_price ?? '--'}</td>
       <td>${item.latest_close ?? '--'}</td>
       <td>${item.distance_to_entry_pct ?? '--'}</td>
+      <td>${item.distance_to_pullback_pct ?? '--'}</td>
       <td>${escapeHtml(item.stage_label || '')}</td>
       <td>${escapeHtml(item.watch_rank_label || '')}</td>
       <td>${item.rs_rank_pct ?? '--'}</td>
@@ -265,7 +267,7 @@ function renderWatchlistTable(items) {
 
 function renderHoldingsTable(items) {
   if (!items.length) {
-    holdingsTable.innerHTML = '<tr class="empty-row"><td colspan="11">当前没有已触发并处于持有跟踪中的股票。</td></tr>';
+    holdingsTable.innerHTML = '<tr class="empty-row"><td colspan="12">当前没有已触发并处于持有跟踪中的股票。</td></tr>';
     return;
   }
   holdingsTable.innerHTML = items.map((item) => `
@@ -273,6 +275,7 @@ function renderHoldingsTable(items) {
       <td>${item.symbol}</td>
       <td>${escapeHtml(item.name || '')}</td>
       <td>${item.entry_date || '--'}</td>
+      <td>${formatEntryMode(item.entry_mode)}</td>
       <td>${item.entry_price || '--'}</td>
       <td>${item.latest_close || '--'}</td>
       <td>${item.current_return_pct || '--'}</td>
@@ -462,6 +465,16 @@ function formatPercentValue(value) {
     return '--';
   }
   return `${Number(value).toFixed(2)}%`;
+}
+
+function formatEntryMode(value) {
+  if (value === 'pullback_hold') {
+    return '回踩不破';
+  }
+  if (value === 'breakout') {
+    return '突破';
+  }
+  return value || '--';
 }
 
 function formatBoolean(value) {

@@ -20,7 +20,6 @@ WATCHLIST_COLUMNS = [
     "watch_source",
     "watch_window_days",
     "target_entry_price",
-    "pullback_entry_price",
     "breakout_level",
     "stop_loss_reference",
     "volume_confirmation_needed",
@@ -42,7 +41,6 @@ WATCHLIST_COLUMNS = [
     "latest_trade_date",
     "latest_close",
     "distance_to_entry_pct",
-    "distance_to_pullback_pct",
     "days_waited",
     "trigger_date",
     "trigger_price_observed",
@@ -110,8 +108,8 @@ class WatchlistStore:
         return frame.reset_index(drop=True)
 
     def list_active_symbols(self) -> set[str]:
-        watchlist = self.list_watchlist(["watching", "triggered"])
-        holdings = self.list_holdings(["holding"])
+        watchlist = self.list_watchlist(["watching", "triggered", "cancelled"])
+        holdings = self.list_holdings(["holding", "closed"])
         symbols = set(watchlist["symbol"].dropna().astype(str).str.upper())
         symbols.update(holdings["symbol"].dropna().astype(str).str.upper())
         return symbols
@@ -181,6 +179,28 @@ class WatchlistStore:
         updated_frame = pd.concat([updated_frame, pd.DataFrame([normalized])], ignore_index=True)
         self._write_table("stage2_holdings", updated_frame)
         return normalized
+
+    def cancel_watch_item(self, watch_id: str) -> bool:
+        frame = self.list_watchlist()
+        mask = frame["id"].astype(str) == str(watch_id)
+        if not mask.any():
+            return False
+        frame.loc[mask, "status"] = "cancelled"
+        frame.loc[mask, "updated_at"] = _now_iso()
+        self._write_table("stage2_watchlist", frame)
+        return True
+
+    def close_holding_item(self, holding_id: str) -> bool:
+        frame = self.list_holdings()
+        mask = frame["id"].astype(str) == str(holding_id)
+        if not mask.any():
+            return False
+        frame.loc[mask, "status"] = "closed"
+        frame.loc[mask, "close_date"] = _now_iso()
+        frame.loc[mask, "close_reason"] = "手动删除"
+        frame.loc[mask, "updated_at"] = _now_iso()
+        self._write_table("stage2_holdings", frame)
+        return True
 
     def _read_table(self, table_name: str, empty_frame: pd.DataFrame) -> pd.DataFrame:
         try:

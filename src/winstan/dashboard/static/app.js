@@ -1,4 +1,3 @@
-const summaryCards = document.getElementById('summaryCards');
 const navDashboard = document.getElementById('navDashboard');
 const navWatchlist = document.getElementById('navWatchlist');
 const navHoldings = document.getElementById('navHoldings');
@@ -10,9 +9,7 @@ const updateStatusMessage = document.getElementById('updateStatusMessage');
 const updateStatusLevel = document.getElementById('updateStatusLevel');
 const updateStatusMetrics = document.getElementById('updateStatusMetrics');
 const systemLogButton = document.getElementById('systemLogButton');
-const stage1Table = document.getElementById('stage1Table');
 const stage2Table = document.getElementById('stage2Table');
-const quasiStage2Table = document.getElementById('quasiStage2Table');
 const searchTable = document.getElementById('searchTable');
 const searchInput = document.getElementById('searchInput');
 const searchButton = document.getElementById('searchButton');
@@ -42,6 +39,8 @@ const holdingsTable = document.getElementById('holdingsTable');
 const refreshTrackingButton = document.getElementById('refreshTrackingButton');
 const manualWatchSymbol = document.getElementById('manualWatchSymbol');
 const addWatchButton = document.getElementById('addWatchButton');
+const batchDeleteWatchBtn = document.getElementById('batchDeleteWatchBtn');
+const selectAllWatch = document.getElementById('selectAllWatch');
 
 let currentChartState = null;
 let currentDetailRequestId = 0;
@@ -68,6 +67,14 @@ function bindEvents() {
     }
   });
   refreshTrackingButton.addEventListener('click', refreshTrackingViews);
+  selectAllWatch.addEventListener('change', () => {
+    const checked = selectAllWatch.checked;
+    watchlistTable.querySelectorAll('.watch-checkbox').forEach((cb) => {
+      cb.checked = checked;
+    });
+    updateBatchDeleteButton();
+  });
+  batchDeleteWatchBtn.addEventListener('click', batchDeleteWatch);
   systemLogButton.addEventListener('click', showSystemLogModal);
   closeModal.addEventListener('click', hideModal);
   closeSystemLogModal.addEventListener('click', hideSystemLogModal);
@@ -101,29 +108,8 @@ function switchPage(pageKey) {
 async function loadDashboard() {
   const response = await fetch('/api/dashboard');
   const payload = await response.json();
-  renderSummary(payload.summary || {});
   renderUpdateStatus(payload.update_status || {});
-  renderRankingTable(stage1Table, payload.stage1 || [], 'stage1');
   renderRankingTable(stage2Table, payload.stage2 || [], 'stage2');
-  renderRankingTable(quasiStage2Table, payload.quasi_stage2 || [], 'quasi-stage2');
-}
-
-function renderSummary(summary) {
-  const cards = [
-    { label: '结果覆盖股票数', value: summary.total_symbols ?? '--' },
-    { label: '阶段II候选数', value: summary.candidate_count ?? '--' },
-    { label: 'Stage1榜单数量', value: summary.stage1_count ?? '--' },
-    { label: 'Stage2榜单数量', value: summary.stage2_count ?? '--' },
-    { label: '准Stage2榜单数量', value: summary.quasi_stage2_count ?? '--' },
-    { label: '监控中', value: summary.watching_count ?? '--' },
-    { label: '持有中', value: summary.holding_count ?? '--' },
-  ];
-  summaryCards.innerHTML = cards.map((item) => `
-    <div class="summary-card">
-      <div class="label">${item.label}</div>
-      <div class="value">${item.value}</div>
-    </div>
-  `).join('');
 }
 
 function renderUpdateStatus(status) {
@@ -211,39 +197,77 @@ function renderHoldingsSummary(summary) {
 
 function renderWatchlistTable(items) {
   if (!items.length) {
-    watchlistTable.innerHTML = '<tr class="empty-row"><td colspan="14">当前没有处于监控中的 Stage2 股票。</td></tr>';
+    watchlistTable.innerHTML = '<tr class="empty-row"><td colspan="12">当前没有处于监控中的 Stage2 股票。</td></tr>';
     return;
   }
-  watchlistTable.innerHTML = items.map((item) => `
-    <tr class="clickable" data-symbol="${item.symbol}">
+  watchlistTable.innerHTML = items.map((item) => {
+    const triggered = item.status === 'triggered';
+    const rowClass = triggered ? 'clickable triggered-row' : 'clickable';
+    const triggerInfo = triggered
+      ? `${item.trigger_date || '--'}`
+      : '--';
+    return `
+    <tr class="${rowClass}" data-symbol="${item.symbol}" data-id="${item.id}">
+      <td><input type="checkbox" class="watch-checkbox" data-id="${item.id}"></td>
       <td>${item.symbol}</td>
       <td>${escapeHtml(item.name || '')}</td>
       <td>${item.watch_date || '--'}</td>
       <td>${item.expire_date || '--'}</td>
       <td>${item.days_waited ?? '--'}</td>
       <td>${item.target_entry_price ?? '--'}</td>
-      <td>${item.pullback_entry_price ?? '--'}</td>
       <td>${item.latest_close ?? '--'}</td>
       <td>${item.distance_to_entry_pct ?? '--'}</td>
-      <td>${item.distance_to_pullback_pct ?? '--'}</td>
-      <td>${escapeHtml(item.stage_label || '')}</td>
+      <td>${triggerInfo}</td>
       <td>${escapeHtml(item.watch_rank_label || '')}</td>
-      <td>${item.rs_rank_pct ?? '--'}</td>
-      <td>${escapeHtml(item.volume_label || '')}</td>
+      <td><button class=\"delete-btn\" data-delete-id=\"${item.id}\" data-delete-type=\"watchlist\" title=\"删除\">✕</button></td>
     </tr>
-  `).join('');
+  `}).join('');
+  selectAllWatch.checked = false;
+  batchDeleteWatchBtn.classList.add('hidden');
+  bindWatchlistRowEvents();
+}
+
+function bindWatchlistRowEvents() {
   watchlistTable.querySelectorAll('tr[data-symbol]').forEach((row) => {
-    row.addEventListener('click', () => openStockDetail(row.dataset.symbol));
+    row.addEventListener('click', (event) => {
+      if (event.target.closest('.delete-btn') || event.target.type === 'checkbox') return;
+      openStockDetail(row.dataset.symbol);
+    });
   });
+  watchlistTable.querySelectorAll('.delete-btn').forEach((btn) => {
+    btn.addEventListener('click', async (event) => {
+      event.stopPropagation();
+      await handleDelete(btn.dataset.deleteId, btn.dataset.deleteType);
+    });
+  });
+  watchlistTable.querySelectorAll('.watch-checkbox').forEach((cb) => {
+    cb.addEventListener('click', (event) => {
+      event.stopPropagation();
+      updateBatchDeleteButton();
+    });
+  });
+}
+
+function getSelectedWatchIds() {
+  const checked = watchlistTable.querySelectorAll('.watch-checkbox:checked');
+  return Array.from(checked).map((cb) => cb.dataset.id).filter(Boolean);
+}
+
+function updateBatchDeleteButton() {
+  const selected = getSelectedWatchIds();
+  batchDeleteWatchBtn.classList.toggle('hidden', selected.length === 0);
+  if (selected.length > 0) {
+    batchDeleteWatchBtn.textContent = `批量删除 (${selected.length})`;
+  }
 }
 
 function renderHoldingsTable(items) {
   if (!items.length) {
-    holdingsTable.innerHTML = '<tr class="empty-row"><td colspan="12">当前没有已触发并处于持有跟踪中的股票。</td></tr>';
+    holdingsTable.innerHTML = '<tr class="empty-row"><td colspan="13">当前没有已触发并处于持有跟踪中的股票。</td></tr>';
     return;
   }
   holdingsTable.innerHTML = items.map((item) => `
-    <tr class="clickable" data-symbol="${item.symbol}">
+    <tr class="clickable" data-symbol="${item.symbol}" data-id="${item.id}">
       <td>${item.symbol}</td>
       <td>${escapeHtml(item.name || '')}</td>
       <td>${item.entry_date || '--'}</td>
@@ -256,10 +280,24 @@ function renderHoldingsTable(items) {
       <td>${item.holding_days ?? '--'}</td>
       <td>${escapeHtml(item.stage_label_latest || '')}</td>
       <td>${escapeHtml(item.risk_flag || '')}</td>
+      <td><button class=\"delete-btn\" data-delete-id=\"${item.id}\" data-delete-type=\"holdings\" title=\"删除\">✕</button></td>
     </tr>
   `).join('');
+  bindHoldingsRowEvents();
+}
+
+function bindHoldingsRowEvents() {
   holdingsTable.querySelectorAll('tr[data-symbol]').forEach((row) => {
-    row.addEventListener('click', () => openStockDetail(row.dataset.symbol));
+    row.addEventListener('click', (event) => {
+      if (event.target.closest('.delete-btn')) return;
+      openStockDetail(row.dataset.symbol);
+    });
+  });
+  holdingsTable.querySelectorAll('.delete-btn').forEach((btn) => {
+    btn.addEventListener('click', async (event) => {
+      event.stopPropagation();
+      await handleDelete(btn.dataset.deleteId, btn.dataset.deleteType);
+    });
   });
 }
 
@@ -324,54 +362,23 @@ function buildSystemLogSubtitle(status) {
 
 function renderRankingTable(container, items, mode) {
   if (!items.length) {
-    const emptyCols = mode === 'stage2' ? 10 : mode === 'quasi-stage2' ? 11 : 7;
-    container.innerHTML = `<tr class="empty-row"><td colspan="${emptyCols}">暂无数据，请先运行筛选。</td></tr>`;
+    container.innerHTML = '<tr class="empty-row"><td colspan="10">暂无数据，请先运行筛选。</td></tr>';
     return;
   }
-  if (mode === 'stage2') {
-    container.innerHTML = items.map((item) => `
-      <tr class="clickable" data-symbol="${item.symbol}">
-        <td>${item.rank ?? '--'}</td>
-        <td>${item.symbol}</td>
-        <td>${escapeHtml(item.name || '')}</td>
-        <td>${escapeHtml(item.stage || '')}</td>
-        <td title="${escapeHtml(item.analysis || '')}">${escapeHtml(item.watch_reason || '')}</td>
-        <td>${item.final_score ?? '--'}</td>
-        <td>${item.structure_score ?? '--'}</td>
-        <td>${item.timing_score ?? '--'}</td>
-        <td>${item.strength_score ?? '--'}</td>
-        <td>${item.risk_score ?? '--'}</td>
-      </tr>
-    `).join('');
-  } else if (mode === 'quasi-stage2') {
-    container.innerHTML = items.map((item) => `
-      <tr class="clickable" data-symbol="${item.symbol}">
-        <td>${item.rank ?? '--'}</td>
-        <td>${item.symbol}</td>
-        <td>${escapeHtml(item.name || '')}</td>
-        <td>${escapeHtml(item.stage || '')}</td>
-        <td>${escapeHtml(item.missing_gates || '')}</td>
-        <td title="${escapeHtml(item.analysis || '')}">${escapeHtml(item.watch_reason || '')}</td>
-        <td>${item.final_score ?? '--'}</td>
-        <td>${item.structure_score ?? '--'}</td>
-        <td>${item.timing_score ?? '--'}</td>
-        <td>${item.strength_score ?? '--'}</td>
-        <td>${item.risk_score ?? '--'}</td>
-      </tr>
-    `).join('');
-  } else {
-    container.innerHTML = items.map((item) => `
-      <tr class="clickable" data-symbol="${item.symbol}">
-        <td>${item.rank ?? '--'}</td>
-        <td>${item.symbol}</td>
-        <td>${escapeHtml(item.name || '')}</td>
-        <td>${escapeHtml(item.stage || '')}</td>
-        <td title="${escapeHtml(item.analysis || '')}">${escapeHtml(item.watch_reason || '')}</td>
-        <td>${item.watch_score ?? '--'}</td>
-        <td>${item.total_score ?? '--'}</td>
-      </tr>
-    `).join('');
-  }
+  container.innerHTML = items.map((item) => `
+    <tr class="clickable" data-symbol="${item.symbol}">
+      <td>${item.rank ?? '--'}</td>
+      <td>${item.symbol}</td>
+      <td>${escapeHtml(item.name || '')}</td>
+      <td>${escapeHtml(item.stage || '')}</td>
+      <td title="${escapeHtml(item.analysis || '')}">${escapeHtml(item.watch_reason || '')}</td>
+      <td>${item.final_score ?? '--'}</td>
+      <td>${item.structure_score ?? '--'}</td>
+      <td>${item.timing_score ?? '--'}</td>
+      <td>${item.strength_score ?? '--'}</td>
+      <td>${item.risk_score ?? '--'}</td>
+    </tr>
+  `).join('');
 
   container.querySelectorAll('tr[data-symbol]').forEach((row) => {
     row.addEventListener('click', () => openStockDetail(row.dataset.symbol, mode));
@@ -440,11 +447,8 @@ function formatPercentValue(value) {
 }
 
 function formatEntryMode(value) {
-  if (value === 'pullback_hold') {
-    return '回踩不破';
-  }
   if (value === 'breakout') {
-    return '突破';
+    return '突破买点';
   }
   return value || '--';
 }
@@ -934,6 +938,46 @@ function formatChartVolume(value) {
     return `${(value / 10000).toFixed(2)}万`;
   }
   return value.toFixed(0);
+}
+
+async function batchDeleteWatch() {
+  const ids = getSelectedWatchIds();
+  if (!ids.length) return;
+  if (!window.confirm(`确定要批量删除 ${ids.length} 条监控记录吗？`)) return;
+
+  let deleted = 0;
+  for (const id of ids) {
+    try {
+      const response = await fetch(`/api/stage2/watchlist/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      if (response.ok) deleted++;
+    } catch (e) {
+      // continue
+    }
+  }
+  selectAllWatch.checked = false;
+  batchDeleteWatchBtn.classList.add('hidden');
+  await Promise.all([loadDashboard(), loadWatchlist(), loadHoldings()]);
+}
+
+async function handleDelete(id, type) {
+  if (!id || !type) return;
+  if (!window.confirm(`确定要删除这条${type === 'watchlist' ? '监控' : '持有'}记录吗？`)) return;
+
+  const endpoint = type === 'watchlist'
+    ? `/api/stage2/watchlist/${encodeURIComponent(id)}`
+    : `/api/stage2/holdings/${encodeURIComponent(id)}`;
+
+  try {
+    const response = await fetch(endpoint, { method: 'DELETE' });
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({}));
+      window.alert(`删除失败：${payload.error || response.statusText}`);
+      return;
+    }
+    await Promise.all([loadDashboard(), loadWatchlist(), loadHoldings()]);
+  } catch (error) {
+    window.alert(`删除请求失败：${error.message}`);
+  }
 }
 
 function escapeHtml(value) {

@@ -297,6 +297,22 @@ p {
   background: rgba(239, 246, 255, 0.96);
 }
 
+.danger-btn {
+  border: 1px solid rgba(220, 38, 38, 0.25);
+  background: rgba(255, 255, 255, 0.92);
+  color: #991b1b;
+  border-radius: 12px;
+  padding: 10px 14px;
+  cursor: pointer;
+  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.06);
+  white-space: nowrap;
+}
+
+.danger-btn:hover {
+  background: rgba(254, 226, 226, 0.96);
+  border-color: rgba(220, 38, 38, 0.45);
+}
+
 .table-wrap {
   overflow: auto;
 }
@@ -634,6 +650,31 @@ tr.clickable:hover {
   to {
     transform: rotate(360deg);
   }
+}
+
+tr.triggered-row {
+  background: rgba(22, 163, 74, 0.1);
+}
+
+tr.triggered-row:hover {
+  background: rgba(22, 163, 74, 0.18) !important;
+}
+
+.delete-btn {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: 14px;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 6px;
+  transition: all 0.15s ease;
+  line-height: 1;
+}
+
+.delete-btn:hover {
+  background: rgba(220, 38, 38, 0.12);
+  color: #dc2626;
 }
 
 .empty-row td {

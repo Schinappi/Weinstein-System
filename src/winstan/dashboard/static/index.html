@@ -27,9 +27,8 @@
           <div>
             <div class="eyebrow">Overview</div>
             <h1>温斯坦选股总览</h1>
-            <p>复用现有 Stage1 / Stage2 排行逻辑，支持全 A 股查询与单股分析。</p>
+            <p>基于温斯坦阶段分析法的 A 股 Stage2 筛选系统。</p>
           </div>
-          <div class="summary-grid" id="summaryCards"></div>
         </header>
 
         <main class="content-grid">
@@ -49,36 +48,11 @@
             </div>
           </section>
 
-          <section class="panel">
+          <section class="panel full-width">
             <div class="panel-header">
               <div>
-                <h2>Stage1 排行榜</h2>
-                <p>观察池与临近突破标的</p>
-              </div>
-            </div>
-            <div class="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>排名</th>
-                    <th>代码</th>
-                    <th>名称</th>
-                    <th>阶段</th>
-                    <th>观察类型</th>
-                    <th>观察得分</th>
-                    <th>总分</th>
-                  </tr>
-                </thead>
-                <tbody id="stage1Table"></tbody>
-              </table>
-            </div>
-          </section>
-
-          <section class="panel">
-            <div class="panel-header">
-              <div>
-                <h2>Stage2 排行榜</h2>
-                <p>最接近阶段 II 的趋势股</p>
+                <h2>排行榜</h2>
+                <p>最接近阶段 II 的趋势股，按综合分排序。</p>
               </div>
             </div>
             <div class="table-wrap">
@@ -98,35 +72,6 @@
                   </tr>
                 </thead>
                 <tbody id="stage2Table"></tbody>
-              </table>
-            </div>
-          </section>
-
-          <section class="panel full-width">
-            <div class="panel-header">
-              <div>
-                <h2>准 Stage2 排行榜</h2>
-                <p>高分但被硬过滤拦下的近失误标的</p>
-              </div>
-            </div>
-            <div class="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>排名</th>
-                    <th>代码</th>
-                    <th>名称</th>
-                    <th>阶段</th>
-                    <th>缺失条件</th>
-                    <th>观察说明</th>
-                    <th>综合分</th>
-                    <th>结构分</th>
-                    <th>时机分</th>
-                    <th>强度分</th>
-                    <th>风险分</th>
-                  </tr>
-                </thead>
-                <tbody id="quasiStage2Table"></tbody>
               </table>
             </div>
           </section>
@@ -165,9 +110,10 @@
           <div>
             <div class="eyebrow">Stage2 Monitor</div>
             <h2>Stage2 监控</h2>
-            <p>默认监控 3 个交易日，同时跟踪突破买点与回踩不破买点，手动加入监控暂时关闭。</p>
+            <p>默认监控 3 个交易日，跟踪突破买点。命中后保留在监控列表中（绿色高亮），同时加入持有看板。</p>
           </div>
           <div class="page-actions">
+            <button id="batchDeleteWatchBtn" class="danger-btn hidden" type="button">批量删除</button>
             <div class="search-box compact-box">
               <input id="manualWatchSymbol" type="text" placeholder="手动加入监控已暂停" disabled>
               <button id="addWatchButton" type="button" disabled>已暂停</button>
@@ -181,20 +127,18 @@
             <table>
               <thead>
                 <tr>
+                  <th><input type="checkbox" id="selectAllWatch" title="全选"></th>
                   <th>代码</th>
                   <th>名称</th>
                   <th>监控日期</th>
                   <th>到期日期</th>
                   <th>等待天数</th>
                   <th>突破买点</th>
-                  <th>回踩买点</th>
                   <th>最新价</th>
                   <th>距突破买点</th>
-                  <th>距回踩买点</th>
-                  <th>趋势阶段</th>
+                  <th>触发日期</th>
                   <th>候选等级</th>
-                  <th>RS 排名</th>
-                  <th>量能</th>
+                  <th>操作</th>
                 </tr>
               </thead>
               <tbody id="watchlistTable"></tbody>
@@ -229,6 +173,7 @@
                   <th>持有天数</th>
                   <th>趋势阶段</th>
                   <th>风险提醒</th>
+                  <th>操作</th>
                 </tr>
               </thead>
               <tbody id="holdingsTable"></tbody>

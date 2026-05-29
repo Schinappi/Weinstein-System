@@ -72,6 +72,28 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
         self._send_json({"error": "Unsupported endpoint"}, status=HTTPStatus.NOT_FOUND)
 
+    def do_DELETE(self) -> None:
+        parsed = urlparse(self.path)
+        path = parsed.path
+
+        if path.startswith("/api/stage2/watchlist/"):
+            watch_id = unquote(path.removeprefix("/api/stage2/watchlist/").rstrip("/"))
+            try:
+                self._send_json(self.service.delete_watch_item(watch_id))
+            except Exception as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            return
+
+        if path.startswith("/api/stage2/holdings/"):
+            holding_id = unquote(path.removeprefix("/api/stage2/holdings/").rstrip("/"))
+            try:
+                self._send_json(self.service.delete_holding_item(holding_id))
+            except Exception as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            return
+
+        self._send_json({"error": "Unsupported endpoint"}, status=HTTPStatus.NOT_FOUND)
+
     def log_message(self, format: str, *args) -> None:
         return
 

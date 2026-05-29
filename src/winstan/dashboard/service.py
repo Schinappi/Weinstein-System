@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import date
 from pathlib import Path
 from threading import RLock
 
@@ -209,7 +210,7 @@ class DashboardService:
     def get_stage2_watchlist_payload(self) -> dict[str, object]:
         self.refresh_stage2_tracking()
         watchlist = self.watchlist_store.list_watchlist(["watching", "triggered", "expired", "cancelled"])
-        active = watchlist[watchlist["status"].astype(str) == "watching"].copy() if not watchlist.empty else pd.DataFrame()
+        active = watchlist[watchlist["status"].astype(str).isin(["watching", "triggered"])].copy() if not watchlist.empty else pd.DataFrame()
         if not active.empty:
             active = active.sort_values(["days_waited", "distance_to_entry_pct"], ascending=[True, True], na_position="last")
         return {
@@ -226,6 +227,18 @@ class DashboardService:
             "summary": self._build_holdings_summary(holdings),
             "items": self._serialize_holdings(holdings),
         }
+
+    def delete_watch_item(self, watch_id: str) -> dict[str, object]:
+        ok = self.watchlist_store.cancel_watch_item(watch_id)
+        if not ok:
+            raise ValueError(f"未找到监控记录: {watch_id}")
+        return {"deleted": True, "id": watch_id}
+
+    def delete_holding_item(self, holding_id: str) -> dict[str, object]:
+        ok = self.watchlist_store.close_holding_item(holding_id)
+        if not ok:
+            raise ValueError(f"未找到持有记录: {holding_id}")
+        return {"deleted": True, "id": holding_id}
 
     def add_stage2_watch(self, symbol: str) -> dict[str, object]:
         normalized = symbol.strip().upper()
@@ -599,10 +612,10 @@ class DashboardService:
                     "status": _to_text(row.get("status")),
                     "days_waited": _to_int(row.get("days_waited")),
                     "target_entry_price": _format_number(row.get("target_entry_price")),
-                    "pullback_entry_price": _format_number(row.get("pullback_entry_price")),
                     "latest_close": _format_number(row.get("latest_close")),
                     "distance_to_entry_pct": _format_percent(row.get("distance_to_entry_pct")),
-                    "distance_to_pullback_pct": _format_percent(row.get("distance_to_pullback_pct")),
+                    "trigger_date": _format_date(row.get("trigger_date")),
+                    "trigger_mode": _to_text(row.get("trigger_mode")),
                     "stage_label": _to_text(row.get("stage_label")),
                     "watch_rank_label": _to_text(row.get("watch_rank_label")),
                     "rs_rank_pct": _format_percent_rank(row.get("rs_rank_pct")),
@@ -715,9 +728,37 @@ class DashboardService:
         return prepared
 
     def _merge_signal_into_watch_item(self, existing: dict[str, object], signal: dict[str, object]) -> dict[str, object]:
+        """Merge latest screening signal into an existing watch item.
+
+        Cross-day protection: fields that define the entry contract
+        (target_entry_price, breakout_level, stop_loss_reference) are
+        locked once the watch_date is before today.  This prevents a
+        data re-fetch + Phase 1 re-run from silently mutating a
+        yesterday entry.
+
+        Same-day correction: when watch_date equals today a re-run is
+        likely fixing incomplete data, so the contract fields ARE
+        refreshed from the latest signal.
+        """
         merged = dict(existing)
+        today = date.today().isoformat()
+        watch_date = _to_text(existing.get("watch_date"))
+        is_same_day = bool(watch_date) and watch_date == today
+
+        always_locked = {
+            "id", "created_at",
+            "watch_date", "source_trade_date",
+            "status", "trigger_date", "trigger_price_observed", "trigger_mode",
+        }
+        cross_day_locked = {
+            "target_entry_price", "breakout_level", "stop_loss_reference",
+            "watch_window_days",
+        }
+
         for key, value in signal.items():
-            if key in {"id", "created_at", "watch_date", "source_trade_date", "status", "trigger_date", "trigger_price_observed", "trigger_mode"}:
+            if key in always_locked:
+                continue
+            if not is_same_day and key in cross_day_locked:
                 continue
             merged[key] = value
         return merged
@@ -725,56 +766,37 @@ class DashboardService:
     def _update_watch_item_from_daily(self, item: dict[str, object], daily: pd.DataFrame) -> dict[str, object]:
         updated = dict(item)
         watch_date = pd.to_datetime(item.get("watch_date"), errors="coerce")
+        current_status = _to_text(item.get("status"))
         updated["expire_date"] = self._compute_watch_expire_date(updated)
         frame = daily.sort_values("trade_date").copy()
         latest = frame.iloc[-1]
         updated["latest_trade_date"] = _format_date(latest.get("trade_date"))
         updated["latest_close"] = _to_float(latest.get("close"))
         target_entry_price = _to_float(item.get("target_entry_price"))
-        pullback_entry_price = _to_float(item.get("pullback_entry_price"))
         if target_entry_price is not None and _to_float(latest.get("close")) not in {None, 0.0}:
             updated["distance_to_entry_pct"] = (target_entry_price / float(latest.get("close")) - 1.0) * 100.0
-        if pullback_entry_price is not None and _to_float(latest.get("close")) not in {None, 0.0}:
-            updated["distance_to_pullback_pct"] = (pullback_entry_price / float(latest.get("close")) - 1.0) * 100.0
         watch_window_days = max(_to_int(item.get("watch_window_days")), 1)
         if pd.isna(watch_date):
             updated["days_waited"] = 0
             return updated
+
+        # Already triggered items stay triggered (shown in green), no state change back
+        if current_status == "triggered":
+            updated["days_waited"] = int(max(_to_int(item.get("days_waited")), 0))
+            return updated
+
         future = frame[frame["trade_date"] > watch_date].copy()
         updated["days_waited"] = int(min(len(future), watch_window_days))
         if future.empty:
             return updated
         window = future.head(watch_window_days).copy()
         breakout_trigger = self._find_breakout_trigger_row(window, target_entry_price)
-        pullback_trigger = self._find_pullback_trigger_row(window, pullback_entry_price)
-        trigger: pd.Series | None = None
-        trigger_mode = ""
-        trigger_price_observed: float | None = None
-        if breakout_trigger is not None and pullback_trigger is not None:
-            breakout_date = pd.to_datetime(breakout_trigger.get("trade_date"), errors="coerce")
-            pullback_date = pd.to_datetime(pullback_trigger.get("trade_date"), errors="coerce")
-            if pd.isna(pullback_date) or (not pd.isna(breakout_date) and breakout_date <= pullback_date):
-                trigger = breakout_trigger
-                trigger_mode = "breakout"
-                trigger_price_observed = target_entry_price
-            else:
-                trigger = pullback_trigger
-                trigger_mode = "pullback_hold"
-                trigger_price_observed = pullback_entry_price
-        elif breakout_trigger is not None:
-            trigger = breakout_trigger
-            trigger_mode = "breakout"
-            trigger_price_observed = target_entry_price
-        elif pullback_trigger is not None:
-            trigger = pullback_trigger
-            trigger_mode = "pullback_hold"
-            trigger_price_observed = pullback_entry_price
-        if trigger is not None:
+        if breakout_trigger is not None:
             updated["status"] = "triggered"
-            updated["trigger_date"] = _format_date(trigger.get("trade_date"))
-            updated["trigger_price_observed"] = trigger_price_observed
-            updated["trigger_mode"] = trigger_mode
-            updated["volume_confirmed_on_trigger"] = self._daily_volume_confirmed(frame, trigger.get("trade_date"))
+            updated["trigger_date"] = _format_date(breakout_trigger.get("trade_date"))
+            updated["trigger_price_observed"] = target_entry_price
+            updated["trigger_mode"] = "breakout"
+            updated["volume_confirmed_on_trigger"] = self._daily_volume_confirmed(frame, breakout_trigger.get("trade_date"))
             return updated
         if len(window) >= watch_window_days:
             updated["status"] = "expired"
@@ -784,8 +806,6 @@ class DashboardService:
         entry_date = _to_text(item.get("trigger_date")) or _to_text(item.get("watch_date"))
         entry_mode = _to_text(item.get("trigger_mode")) or "breakout"
         entry_price = _to_float(item.get("trigger_price_observed"))
-        if entry_price is None and entry_mode == "pullback_hold":
-            entry_price = _to_float(item.get("pullback_entry_price"))
         if entry_price is None:
             entry_price = _to_float(item.get("target_entry_price"))
         return {
@@ -879,16 +899,6 @@ class DashboardService:
         if target_entry_price is None or window.empty:
             return None
         trigger_rows = window[pd.to_numeric(window["high"], errors="coerce") >= target_entry_price]
-        if trigger_rows.empty:
-            return None
-        return trigger_rows.iloc[0]
-
-    def _find_pullback_trigger_row(self, window: pd.DataFrame, pullback_entry_price: float | None) -> pd.Series | None:
-        if pullback_entry_price is None or window.empty:
-            return None
-        lows = pd.to_numeric(window["low"], errors="coerce")
-        closes = pd.to_numeric(window["close"], errors="coerce")
-        trigger_rows = window[(lows <= pullback_entry_price) & (closes >= pullback_entry_price)]
         if trigger_rows.empty:
             return None
         return trigger_rows.iloc[0]
@@ -1033,7 +1043,13 @@ def _format_percent_rank(value: object) -> str:
 def _format_date(value: object) -> str:
     if value is None or pd.isna(value):
         return "--"
-    return pd.to_datetime(value).strftime("%Y-%m-%d")
+    text = str(value).strip()
+    if not text:
+        return "--"
+    parsed = pd.to_datetime(value, errors="coerce")
+    if pd.isna(parsed):
+        return "--"
+    return parsed.strftime("%Y-%m-%d")
 
 
 def _series_mean(series: object) -> float | None:

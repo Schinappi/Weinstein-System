@@ -15,7 +15,6 @@ def build_weekly_bars(daily_bars: pd.DataFrame) -> pd.DataFrame:
 
     frame = daily_bars.copy()
     frame["trade_date"] = pd.to_datetime(frame["trade_date"])
-    frame["actual_trade_date"] = frame["trade_date"]
     frame = frame.sort_values(["symbol", "trade_date"])
 
     weekly_frames: list[pd.DataFrame] = []
@@ -33,14 +32,11 @@ def build_weekly_bars(daily_bars: pd.DataFrame) -> pd.DataFrame:
                     "amount": "sum",
                     "adj_factor": "last",
                     "source": "last",
-                    "actual_trade_date": "last",
                 }
             )
             .dropna(subset=["open", "high", "low", "close"], how="any")
             .reset_index()
         )
-        weekly["trade_date"] = weekly["actual_trade_date"]
-        weekly = weekly.drop(columns=["actual_trade_date"])
         weekly["symbol"] = symbol
         weekly_frames.append(weekly)
 

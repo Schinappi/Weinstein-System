@@ -16,6 +16,7 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from winstan.adapters.factory import DataSourceRouter
+from winstan.adapters.tushare_adapter import TushareAdapter
 from winstan.adapters.tushare_client import build_tushare_pro
 from winstan.calendar.trading_calendar import clean_daily_bars
 from winstan.config import load_config, normalize_date_like
@@ -119,13 +120,25 @@ def _planned_start_date(parquet_store: ParquetStore, dataset: str, symbol: str, 
 
 
 
-def _merge_and_write(parquet_store: ParquetStore, dataset: str, symbol: str, new_rows: pd.DataFrame) -> dict[str, float | int]:
+def _merge_and_write(parquet_store: ParquetStore, dataset: str, symbol: str, new_rows: pd.DataFrame, config=None) -> dict[str, float | int]:
     read_started_counter = time.perf_counter()
     cached = clean_daily_bars(parquet_store.read_symbol_frame(dataset, symbol))
     read_runtime_seconds = _round_seconds(time.perf_counter() - read_started_counter)
 
     merge_started_counter = time.perf_counter()
     merged = clean_daily_bars(pd.concat([cached, new_rows], ignore_index=True))
+
+    # Re-apply forward adjustment when adj_factor column is present.
+    # Incremental updates may bring new adj_factor values after corporate
+    # actions, making the cached adj_factor rows stale.
+    if "adj_factor" in merged.columns and dataset == "daily_bars":
+        # When a corporate action changed the latest adj_factor the
+        # cached historical rows still carry the old value.  Refresh
+        # the full adj_factor series first, then re-apply adjustment.
+        if config is not None and _needs_adj_factor_refresh(cached, new_rows):
+            merged = _refresh_adj_factors_on_merged(symbol, merged, config)
+        merged = _reapply_forward_adjustment(merged, symbol)
+
     added_rows = max(0, len(merged) - len(cached))
     cache_changed = not merged.reset_index(drop=True).equals(cached.reset_index(drop=True))
     merge_runtime_seconds = _round_seconds(time.perf_counter() - merge_started_counter)
@@ -142,6 +155,69 @@ def _merge_and_write(parquet_store: ParquetStore, dataset: str, symbol: str, new
         "merge_runtime_seconds": merge_runtime_seconds,
         "write_runtime_seconds": write_runtime_seconds,
     }
+
+
+def _reapply_forward_adjustment(frame: pd.DataFrame, symbol: str) -> pd.DataFrame:
+    """Re-compute forward-adjusted OHLC for *all* rows in *frame*.
+
+    When a corporate action changes the latest ``adj_factor``, historical
+    rows that were cached before the action still carry the old factor.
+    Simply calling :meth:`TushareAdapter._apply_forward_adjustment` on the
+    merged dataset fixes this: each row is rescaled with
+    ``adj_factor / latest_adj_factor``.
+    """
+    if frame.empty or "adj_factor" not in frame.columns:
+        return frame
+    # _apply_forward_adjustment expects a "ts_code" column.
+    working = frame.copy()
+    if "ts_code" not in working.columns and "symbol" in working.columns:
+        working["ts_code"] = working["symbol"]
+    return TushareAdapter._apply_forward_adjustment(working)
+
+
+def _needs_adj_factor_refresh(cached: pd.DataFrame, new_rows: pd.DataFrame) -> bool:
+    """Return True when *new_rows* carry a different latest adj_factor."""
+    if "adj_factor" not in cached.columns or "adj_factor" not in new_rows.columns:
+        return False
+    cached_af = pd.to_numeric(cached["adj_factor"], errors="coerce")
+    new_af = pd.to_numeric(new_rows["adj_factor"], errors="coerce")
+    if cached_af.dropna().empty or new_af.dropna().empty:
+        return False
+    return float(cached_af.max()) != float(new_af.max())
+
+
+def _refresh_adj_factors_on_merged(symbol: str, merged: pd.DataFrame, config) -> pd.DataFrame:
+    """Re-fetch *symbol*'s adj_factor for its full history and merge into *merged*."""
+    token = config.data.tushare_token if config else None
+    if not token:
+        return merged
+    start_date = config.data.effective_start_date
+    end_date = config.data.effective_end_date
+    try:
+        _, pro = build_tushare_pro(token)
+        adj_frame = pro.adj_factor(
+            ts_code=symbol,
+            start_date=start_date.replace("-", ""),
+            end_date=end_date.replace("-", ""),
+            fields="ts_code,trade_date,adj_factor",
+        )
+    except Exception:
+        return merged
+
+    if adj_frame is None or adj_frame.empty:
+        return merged
+
+    adj_frame["trade_date"] = pd.to_datetime(adj_frame["trade_date"], format="%Y%m%d", errors="coerce")
+    working = merged.copy()
+    working["trade_date"] = pd.to_datetime(working["trade_date"], errors="coerce")
+    # Drop stale adj_factor from all rows, re-merge fresh values.
+    working = working.drop(columns=["adj_factor"], errors="ignore")
+    working = working.merge(
+        adj_frame[["ts_code", "trade_date", "adj_factor"]].rename(columns={"ts_code": "symbol"}),
+        on=["symbol", "trade_date"],
+        how="left",
+    )
+    return working
 
 
 
@@ -279,7 +355,7 @@ def _update_stock_daily_bars(
                 batch_symbols_empty += 1
                 next_progress_counter = _maybe_print_stock_progress(summary, progress_started_counter, next_progress_counter)
                 continue
-            merge_result = _merge_and_write(parquet_store, "daily_bars", symbol, new_rows)
+            merge_result = _merge_and_write(parquet_store, "daily_bars", symbol, new_rows, config=router.config)
             summary["stock_cache_read_runtime_seconds"] += float(merge_result["cache_read_runtime_seconds"])
             summary["stock_merge_runtime_seconds"] += float(merge_result["merge_runtime_seconds"])
             summary["stock_write_runtime_seconds"] += float(merge_result["write_runtime_seconds"])

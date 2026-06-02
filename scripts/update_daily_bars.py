@@ -120,7 +120,7 @@ def _planned_start_date(parquet_store: ParquetStore, dataset: str, symbol: str, 
 
 
 
-def _merge_and_write(parquet_store: ParquetStore, dataset: str, symbol: str, new_rows: pd.DataFrame, config=None) -> dict[str, float | int]:
+def _merge_and_write(parquet_store: ParquetStore, dataset: str, symbol: str, new_rows: pd.DataFrame, config=None, adjust_type: str | None = None) -> dict[str, float | int]:
     read_started_counter = time.perf_counter()
     cached = clean_daily_bars(parquet_store.read_symbol_frame(dataset, symbol))
     read_runtime_seconds = _round_seconds(time.perf_counter() - read_started_counter)
@@ -128,16 +128,21 @@ def _merge_and_write(parquet_store: ParquetStore, dataset: str, symbol: str, new
     merge_started_counter = time.perf_counter()
     merged = clean_daily_bars(pd.concat([cached, new_rows], ignore_index=True))
 
-    # Re-apply forward adjustment when adj_factor column is present.
-    # Incremental updates may bring new adj_factor values after corporate
-    # actions, making the cached adj_factor rows stale.
-    if "adj_factor" in merged.columns and dataset == "daily_bars":
+    # Re-apply forward adjustment only when adjust_type == "forward".
+    # When adjust_type is "none", preserve raw unadjusted prices and
+    # strip any stale adj_factor left by previous forward-adjusted runs.
+    if dataset == "daily_bars" and adjust_type == "forward":
         # When a corporate action changed the latest adj_factor the
         # cached historical rows still carry the old value.  Refresh
         # the full adj_factor series first, then re-apply adjustment.
         if config is not None and _needs_adj_factor_refresh(cached, new_rows):
             merged = _refresh_adj_factors_on_merged(symbol, merged, config)
         merged = _reapply_forward_adjustment(merged, symbol)
+
+    # Strip adj_factor when not in forward mode — prevents stale
+    # factor columns from triggering adjustment on future incremental runs.
+    if "adj_factor" in merged.columns and adjust_type != "forward":
+        merged = merged.drop(columns=["adj_factor"])
 
     added_rows = max(0, len(merged) - len(cached))
     cache_changed = not merged.reset_index(drop=True).equals(cached.reset_index(drop=True))
@@ -355,7 +360,7 @@ def _update_stock_daily_bars(
                 batch_symbols_empty += 1
                 next_progress_counter = _maybe_print_stock_progress(summary, progress_started_counter, next_progress_counter)
                 continue
-            merge_result = _merge_and_write(parquet_store, "daily_bars", symbol, new_rows, config=router.config)
+            merge_result = _merge_and_write(parquet_store, "daily_bars", symbol, new_rows, config=router.config, adjust_type=router.config.data.adjust_type)
             summary["stock_cache_read_runtime_seconds"] += float(merge_result["cache_read_runtime_seconds"])
             summary["stock_merge_runtime_seconds"] += float(merge_result["merge_runtime_seconds"])
             summary["stock_write_runtime_seconds"] += float(merge_result["write_runtime_seconds"])

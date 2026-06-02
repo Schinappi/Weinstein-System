@@ -26,6 +26,18 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._send_json(self.service.get_navigation_payload())
             return
 
+        if path == "/api/rankings/dates":
+            self._send_json({"dates": self.service.get_available_dates()})
+            return
+
+        if path.startswith("/api/rankings/by-date"):
+            dt = parse_qs(parsed.query).get("date", [""])[0]
+            if dt:
+                self._send_json(self.service.get_rankings_by_date(dt))
+            else:
+                self._send_json({"error": "Missing 'date' query parameter"}, status=HTTPStatus.BAD_REQUEST)
+            return
+
         if path == "/api/stage2/watchlist":
             self._send_json(self.service.get_stage2_watchlist_payload())
             return

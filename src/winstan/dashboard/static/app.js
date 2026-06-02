@@ -1,15 +1,18 @@
 const navDashboard = document.getElementById('navDashboard');
 const navWatchlist = document.getElementById('navWatchlist');
 const navHoldings = document.getElementById('navHoldings');
+const navQuasiStage2 = document.getElementById('navQuasiStage2');
 const pageDashboard = document.getElementById('pageDashboard');
 const pageWatchlist = document.getElementById('pageWatchlist');
 const pageHoldings = document.getElementById('pageHoldings');
+const pageQuasiStage2 = document.getElementById('pageQuasiStage2');
 const updateStatusTitle = document.getElementById('updateStatusTitle');
 const updateStatusMessage = document.getElementById('updateStatusMessage');
 const updateStatusLevel = document.getElementById('updateStatusLevel');
 const updateStatusMetrics = document.getElementById('updateStatusMetrics');
 const systemLogButton = document.getElementById('systemLogButton');
 const stage2Table = document.getElementById('stage2Table');
+const quasiStage2Table = document.getElementById('quasiStage2Table');
 const searchTable = document.getElementById('searchTable');
 const searchInput = document.getElementById('searchInput');
 const searchButton = document.getElementById('searchButton');
@@ -46,6 +49,8 @@ let currentChartState = null;
 let currentDetailRequestId = 0;
 let latestUpdateStatus = {};
 let currentPage = 'dashboard';
+let stage2DatePicker = document.getElementById('stage2DatePicker');
+let quasiStage2DatePicker = document.getElementById('quasiStage2DatePicker');
 
 async function boot() {
   bindEvents();
@@ -57,7 +62,7 @@ async function boot() {
 }
 
 function bindEvents() {
-  [navDashboard, navWatchlist, navHoldings].forEach((button) => {
+  [navDashboard, navWatchlist, navHoldings, navQuasiStage2].forEach((button) => {
     button.addEventListener('click', () => switchPage(button.dataset.page));
   });
   searchButton.addEventListener('click', () => runSearch(searchInput.value));
@@ -78,6 +83,12 @@ function bindEvents() {
   systemLogButton.addEventListener('click', showSystemLogModal);
   closeModal.addEventListener('click', hideModal);
   closeSystemLogModal.addEventListener('click', hideSystemLogModal);
+  stage2DatePicker.addEventListener('change', () => {
+    loadRankingsByDate('stage2', stage2DatePicker.value);
+  });
+  quasiStage2DatePicker.addEventListener('change', () => {
+    loadRankingsByDate('quasi-stage2', quasiStage2DatePicker.value);
+  });
   detailModal.addEventListener('click', (event) => {
     if (event.target.dataset.close === 'true') {
       hideModal();
@@ -96,11 +107,12 @@ function switchPage(pageKey) {
     dashboard: pageDashboard,
     watchlist: pageWatchlist,
     holdings: pageHoldings,
+    'quasi-stage2': pageQuasiStage2,
   };
   Object.entries(pageMap).forEach(([key, node]) => {
     node.classList.toggle('hidden', key !== pageKey);
   });
-  [navDashboard, navWatchlist, navHoldings].forEach((button) => {
+  [navDashboard, navWatchlist, navHoldings, navQuasiStage2].forEach((button) => {
     button.classList.toggle('active', button.dataset.page === pageKey);
   });
 }
@@ -109,7 +121,67 @@ async function loadDashboard() {
   const response = await fetch('/api/dashboard');
   const payload = await response.json();
   renderUpdateStatus(payload.update_status || {});
+  populateDatePickers(payload.snapshot_dates || []);
   renderRankingTable(stage2Table, payload.stage2 || [], 'stage2');
+  renderQuasiStage2Table(quasiStage2Table, payload.quasi_stage2 || []);
+}
+
+function populateDatePickers(dates) {
+  const fragment1 = document.createDocumentFragment();
+  const fragment2 = document.createDocumentFragment();
+  const opt1 = document.createElement('option');
+  opt1.value = '';
+  opt1.textContent = '最新数据';
+  fragment1.appendChild(opt1);
+  const opt2 = document.createElement('option');
+  opt2.value = '';
+  opt2.textContent = '最新数据';
+  fragment2.appendChild(opt2);
+  dates.forEach((d) => {
+    const o1 = document.createElement('option');
+    o1.value = d;
+    o1.textContent = d;
+    fragment1.appendChild(o1);
+    const o2 = document.createElement('option');
+    o2.value = d;
+    o2.textContent = d;
+    fragment2.appendChild(o2);
+  });
+  stage2DatePicker.innerHTML = '';
+  quasiStage2DatePicker.innerHTML = '';
+  stage2DatePicker.appendChild(fragment1);
+  quasiStage2DatePicker.appendChild(fragment2);
+  stage2DatePicker.value = '';
+  quasiStage2DatePicker.value = '';
+}
+
+async function loadRankingsByDate(section, dateStr) {
+  if (!dateStr) {
+    // Reload latest data
+    const response = await fetch('/api/dashboard');
+    const payload = await response.json();
+    if (section === 'stage2') {
+      renderRankingTable(stage2Table, payload.stage2 || [], 'stage2');
+    } else if (section === 'quasi-stage2') {
+      renderQuasiStage2Table(quasiStage2Table, payload.quasi_stage2 || []);
+    }
+    return;
+  }
+  const response = await fetch(`/api/rankings/by-date?date=${encodeURIComponent(dateStr)}`);
+  const payload = await response.json();
+  if (payload.error || !payload.stage2) {
+    if (section === 'stage2') {
+      stage2Table.innerHTML = '<tr class="empty-row"><td colspan="10">无该日历史数据。</td></tr>';
+    } else if (section === 'quasi-stage2') {
+      quasiStage2Table.innerHTML = '<tr class="empty-row"><td colspan="10">无该日历史数据。</td></tr>';
+    }
+    return;
+  }
+  if (section === 'stage2') {
+    renderRankingTable(stage2Table, payload.stage2 || [], 'stage2');
+  } else if (section === 'quasi-stage2') {
+    renderQuasiStage2Table(quasiStage2Table, payload.quasi_stage2 || []);
+  }
 }
 
 function renderUpdateStatus(status) {
@@ -362,7 +434,7 @@ function buildSystemLogSubtitle(status) {
 
 function renderRankingTable(container, items, mode) {
   if (!items.length) {
-    container.innerHTML = '<tr class="empty-row"><td colspan="10">暂无数据，请先运行筛选。</td></tr>';
+    container.innerHTML = '<tr class="empty-row"><td colspan="7">暂无数据，请先运行筛选。</td></tr>';
     return;
   }
   container.innerHTML = items.map((item) => `
@@ -373,10 +445,7 @@ function renderRankingTable(container, items, mode) {
       <td>${escapeHtml(item.stage || '')}</td>
       <td title="${escapeHtml(item.analysis || '')}">${escapeHtml(item.watch_reason || '')}</td>
       <td>${item.final_score ?? '--'}</td>
-      <td>${item.structure_score ?? '--'}</td>
-      <td>${item.timing_score ?? '--'}</td>
-      <td>${item.strength_score ?? '--'}</td>
-      <td>${item.risk_score ?? '--'}</td>
+      <td>${item.close ?? '--'}</td>
     </tr>
   `).join('');
 
@@ -384,6 +453,28 @@ function renderRankingTable(container, items, mode) {
     row.addEventListener('click', () => openStockDetail(row.dataset.symbol, mode));
   });
 }
+
+function renderQuasiStage2Table(container, items) {
+  if (!items.length) {
+    container.innerHTML = '<tr class="empty-row"><td colspan="7">暂无准Stage2 候选。</td></tr>';
+    return;
+  }
+  container.innerHTML = items.map((item) => `
+    <tr class="clickable" data-symbol="${item.symbol}">
+      <td>${item.rank ?? '--'}</td>
+      <td>${item.symbol}</td>
+      <td>${escapeHtml(item.name || '')}</td>
+      <td>${escapeHtml(item.stage || '')}</td>
+      <td>${item.final_score ?? '--'}</td>
+      <td>${item.close ?? '--'}</td>
+      <td>${escapeHtml(item.missing_gates || '')}</td>
+    </tr>
+  `).join('');
+
+  container.querySelectorAll('tr[data-symbol]').forEach((row) => {
+    row.addEventListener('click', () => openStockDetail(row.dataset.symbol, 'quasi-stage2'));
+  });
+} 
 
 async function runSearch(query) {
   const response = await fetch(`/api/search?q=${encodeURIComponent(query || '')}`);

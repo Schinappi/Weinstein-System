@@ -8,7 +8,7 @@ universe:
 data:
   primary_source: tushare
   fallback_source: tickflow
-  adjust_type: forward
+  adjust_type: none
   batch_size: 20
   tushare_calls_per_minute: 400
   tushare_retry_times: 3

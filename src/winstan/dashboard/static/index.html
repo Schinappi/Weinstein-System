@@ -18,6 +18,7 @@
         <button id="navDashboard" class="nav-btn active" data-page="dashboard" type="button">总览</button>
         <button id="navWatchlist" class="nav-btn" data-page="watchlist" type="button">Stage2 监控</button>
         <button id="navHoldings" class="nav-btn" data-page="holdings" type="button">持有看板</button>
+        <button id="navQuasiStage2" class="nav-btn" data-page="quasi-stage2" type="button">准Stage2</button>
       </nav>
     </aside>
 
@@ -51,8 +52,14 @@
           <section class="panel full-width">
             <div class="panel-header">
               <div>
-                <h2>排行榜</h2>
+                <h2>Stage2 排行榜</h2>
                 <p>最接近阶段 II 的趋势股，按综合分排序。</p>
+              </div>
+              <div class="date-picker-box">
+                <label>历史数据：</label>
+                <select id="stage2DatePicker" class="date-select">
+                  <option value="">最新数据</option>
+                </select>
               </div>
             </div>
             <div class="table-wrap">
@@ -65,10 +72,7 @@
                     <th>阶段</th>
                     <th>观察说明</th>
                     <th>综合分</th>
-                    <th>结构分</th>
-                    <th>时机分</th>
-                    <th>强度分</th>
-                    <th>风险分</th>
+                    <th>入选价格</th>
                   </tr>
                 </thead>
                 <tbody id="stage2Table"></tbody>
@@ -177,6 +181,46 @@
                 </tr>
               </thead>
               <tbody id="holdingsTable"></tbody>
+            </table>
+          </div>
+        </section>
+      </section>
+
+      <section class="page hidden" id="pageQuasiStage2" data-page="quasi-stage2">
+        <header class="page-header">
+          <div>
+            <div class="eyebrow">Quasi Stage2</div>
+            <h2>准Stage2 排行榜</h2>
+            <p>通过 3+ 项核心过滤，但距离严格 Stage II 还差 1-2 项的准候选股。</p>
+          </div>
+        </header>
+        <section class="panel full-width">
+            <div class="panel-header">
+              <div>
+                <h2>准Stage2 候选</h2>
+                <p id="quasiStage2Subtitle">展示通过市场过滤、阶段 I/II、且至少 3 项核心门的准候选股票。</p>
+              </div>
+              <div class="date-picker-box">
+                <label>历史数据：</label>
+                <select id="quasiStage2DatePicker" class="date-select">
+                  <option value="">最新数据</option>
+                </select>
+              </div>
+            </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>排名</th>
+                  <th>代码</th>
+                  <th>名称</th>
+                  <th>阶段</th>
+                  <th>综合分</th>
+                  <th>入选价格</th>
+                  <th>缺失门禁</th>
+                </tr>
+              </thead>
+              <tbody id="quasiStage2Table"></tbody>
             </table>
           </div>
         </section>

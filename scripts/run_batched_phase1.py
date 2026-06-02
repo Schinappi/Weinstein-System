@@ -186,6 +186,7 @@ def run_batched_screener():
 
     export_results(config, results, candidates, top_n, stage2_top_n, summary)
     duckdb_store.write_results("screening_results", results)
+    duckdb_store.append_snapshot(results)
 
     print(f"\n=== Summary ===")
     print(f"Total: {summary['total_symbols']}")

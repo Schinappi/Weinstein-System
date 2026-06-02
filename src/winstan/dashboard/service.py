@@ -192,6 +192,7 @@ class DashboardService:
                 "holding_count": int(stage2_tracking["holding_count"]),
             },
             "update_status": self._get_update_status(),
+            "snapshot_dates": self.get_available_dates(),
             "stage1": self._serialize_stage1(stage1),
             "stage2": self._serialize_stage2(stage2),
             "quasi_stage2": self._serialize_quasi_stage2(quasi_stage2),
@@ -369,6 +370,31 @@ class DashboardService:
             self._stage2 = stage2.reset_index(drop=True)
             self._quasi_stage2 = quasi_stage2.reset_index(drop=True)
             return self._stage1.copy(), self._stage2.copy(), self._quasi_stage2.copy()
+
+    def get_available_dates(self) -> list[str]:
+        return self.duckdb_store.list_snapshot_dates()
+
+    def get_rankings_by_date(self, dt: str) -> dict[str, object]:
+        results = self.duckdb_store.read_snapshot(dt)
+        if results.empty:
+            return {}
+        results = apply_stage2_scoring(results, self.config)
+        _, stage1 = score_and_rank(results, self.config)
+        stage2 = build_stage2_top_n(results, self.config)
+        quasi_stage2 = build_quasi_stage2_top_n(results, self.config)
+        return {
+            "snapshot_date": dt,
+            "summary": {
+                "total_symbols": int(len(results)),
+                "candidate_count": int(results["stage2_candidate"].sum()) if not results.empty else 0,
+                "stage1_count": int(len(stage1)),
+                "stage2_count": int(len(stage2)),
+                "quasi_stage2_count": int(len(quasi_stage2)),
+            },
+            "stage1": self._serialize_stage1(stage1),
+            "stage2": self._serialize_stage2(stage2),
+            "quasi_stage2": self._serialize_quasi_stage2(quasi_stage2),
+        }
 
     def get_universe(self) -> pd.DataFrame:
         with self._lock:
@@ -922,13 +948,10 @@ class DashboardService:
                     "symbol": _to_text(row.get("symbol")),
                     "name": _to_text(row.get("name")),
                     "stage": _stage_label_text(row.get("stage_label")),
+                    "close": _format_number(row.get("close")),
                     "watch_reason": _first_text(row.get("stage2_watch_reason"), row.get("stage2_reason")),
                     "missing_gates": _format_quasi_missing_gates(row),
                     "final_score": _format_number(row.get("final_score")),
-                    "structure_score": _format_number(row.get("structure_score")),
-                    "timing_score": _format_number(row.get("timing_score")),
-                    "strength_score": _format_number(row.get("strength_score")),
-                    "risk_score": _format_number(row.get("risk_score")),
                     "analysis": build_weinstein_analysis(row, self.config),
                 }
             )
@@ -946,10 +969,6 @@ class DashboardService:
                     "close": _format_number(row.get("close")),
                     "watch_reason": _first_text(row.get("stage2_watch_reason"), row.get("stage2_reason")),
                     "final_score": _format_number(row.get("final_score")),
-                    "structure_score": _format_number(row.get("structure_score")),
-                    "timing_score": _format_number(row.get("timing_score")),
-                    "strength_score": _format_number(row.get("strength_score")),
-                    "risk_score": _format_number(row.get("risk_score")),
                     "analysis": build_weinstein_analysis(row, self.config),
                 }
             )

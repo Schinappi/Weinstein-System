@@ -105,18 +105,16 @@ def build_quasi_stage2_top_n(results: pd.DataFrame, config: AppConfig) -> pd.Dat
     if quasi_pool.empty:
         return quasi_pool
 
-    quasi_pool["quasi_stage2_rank_score"] = core_pass_count.loc[quasi_pool.index]
+    # Weighted rank: final_score is the primary driver; each additional
+    # core gate contributes a small (+5) bonus to reward structural
+    # completeness without burying high-RS stocks that miss one gate.
+    quasi_pool["quasi_stage2_rank_score"] = (
+        quasi_pool["final_score"]
+        + core_pass_count.loc[quasi_pool.index].astype(float) * 5.0
+    )
     quasi_top_n = quasi_pool.sort_values(
-        [
-            "quasi_stage2_rank_score",
-            "final_score",
-            "structure_score",
-            "timing_score",
-            "strength_score",
-            "rs_rank_pct",
-            "headroom_pct",
-        ],
-        ascending=[False, False, False, False, False, True, False],
+        ["quasi_stage2_rank_score", "final_score", "structure_score", "timing_score", "strength_score"],
+        ascending=[False, False, False, False, False],
         na_position="last",
     ).head(config.ranking.stage2_top_n).reset_index(drop=True)
     quasi_top_n["quasi_stage2_rank"] = range(1, len(quasi_top_n) + 1)

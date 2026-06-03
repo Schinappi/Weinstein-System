@@ -181,6 +181,14 @@ class DashboardService:
             return True
         return (pd.Timestamp.now(tz="UTC") - finished) > pd.Timedelta(hours=36)
 
+    def refresh_ranking_cache(self) -> dict[str, object]:
+        """Clear in-memory ranking caches so the next read re-computes from DuckDB."""
+        with self._lock:
+            self._stage1 = None
+            self._stage2 = None
+            self._quasi_stage2 = None
+        return {"refreshed": True}
+
     def get_dashboard_payload(self) -> dict[str, object]:
         results = self.get_results()
         stage1, stage2, quasi_stage2 = self.get_rankings()

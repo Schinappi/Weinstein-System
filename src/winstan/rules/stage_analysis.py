@@ -208,6 +208,8 @@ def apply_stage2_scoring(results: pd.DataFrame, config: AppConfig) -> pd.DataFra
         "timing_score": 0.0,
         "strength_score": 0.0,
         "risk_score": 0.0,
+        "breakout_quality_score": 0.0,
+        "safety_score": 0.0,
         "final_score": 0.0,
         "stage2_score": 0.0,
         "stage2_reason": "普通趋势",
@@ -225,16 +227,44 @@ def apply_stage2_scoring(results: pd.DataFrame, config: AppConfig) -> pd.DataFra
     return scored
 
 
+# Risk gate: stocks with risk_score above this threshold are eliminated.
+RISK_GATE_THRESHOLD = 70
+
+
 def _build_stage2_profile(row: pd.Series, config: AppConfig) -> dict[str, object]:
     structure_score = _score_structure(row)
     timing_score = _score_timing(row, config)
     strength_score = _score_strength(row)
+    breakout_quality_score = _score_breakout_quality(row, config)
     risk_score = _score_risk(row, config)
+    safety_score = _clamp_score(100.0 - risk_score)
+
+    # Risk gate: stocks that are too risky are eliminated outright.
+    if risk_score > RISK_GATE_THRESHOLD:
+        reason = "风险过高，被过滤"
+        return {
+            "structure_score": structure_score,
+            "timing_score": timing_score,
+            "strength_score": strength_score,
+            "risk_score": risk_score,
+            "breakout_quality_score": breakout_quality_score,
+            "safety_score": safety_score,
+            "final_score": 0.0,
+            "stage2_score": 0.0,
+            "stage2_reason": reason,
+            "stage2_watch_score": 0.0,
+            "stage2_watch_reason": reason,
+        }
+
+    # Structure is the ticket — it gets you in the game.
+    # Strength (RS) and timing (entry position) drive real differentiation.
+    # Breakout quality and safety add conviction and risk control.
     final_score = _clamp_score(
-        structure_score * 0.45
-        + timing_score * 0.30
-        + strength_score * 0.20
-        - risk_score * 0.15
+        structure_score * 0.20
+        + timing_score * 0.20
+        + strength_score * 0.30
+        + breakout_quality_score * 0.15
+        + safety_score * 0.15
     )
     reason = _build_stage2_reason(row, structure_score, timing_score, strength_score, risk_score)
     return {
@@ -242,6 +272,8 @@ def _build_stage2_profile(row: pd.Series, config: AppConfig) -> dict[str, object
         "timing_score": timing_score,
         "strength_score": strength_score,
         "risk_score": risk_score,
+        "breakout_quality_score": breakout_quality_score,
+        "safety_score": safety_score,
         "final_score": final_score,
         "stage2_score": final_score,
         "stage2_reason": reason,
@@ -273,57 +305,72 @@ def _score_structure(row: pd.Series) -> float:
 
 
 def _score_timing(row: pd.Series, config: AppConfig) -> float:
-    breakout_status = str(row.get("breakout_status") or "no_breakout_level")
+    """How favourable is the current price position for entry."""
     breakout_pct = _to_float(row.get("breakout_pct"))
     price_vs_ma_pct = _to_float(row.get("price_vs_ma_pct"))
+
+    score = 0.0
+
+    # Price relative to the 30-week MA — the core Weinstein entry metric.
+    if price_vs_ma_pct is not None:
+        if 0.0 <= price_vs_ma_pct <= 8.0:
+            score += 50.0
+        elif -5.0 <= price_vs_ma_pct < 0.0:
+            score += 40.0
+        elif 8.0 < price_vs_ma_pct <= config.strategy.watch_max_price_vs_ma_pct:
+            score += 30.0
+        elif -10.0 <= price_vs_ma_pct < -5.0:
+            score += 20.0
+        else:
+            score += 10.0
+
+    # Distance from the breakout level — closer is better (but not extended).
+    if breakout_pct is not None:
+        if -2.0 <= breakout_pct <= 5.0:
+            score += 40.0
+        elif (-5.0 <= breakout_pct < -2.0) or (5.0 < breakout_pct <= config.strategy.watch_breakout_max_pct):
+            score += 25.0
+        elif breakout_pct > config.strategy.watch_breakout_max_pct:
+            score += 8.0
+        else:
+            score += 15.0
+
+    return _clamp_score(score)
+
+
+def _score_breakout_quality(row: pd.Series, config: AppConfig) -> float:
+    """Rate the quality of the breakout event itself — status + volume."""
+    breakout_status = str(row.get("breakout_status") or "no_breakout_level")
     volume_ratio = _to_float(row.get("volume_ratio"))
     breakout_ok = _to_bool(row.get("breakout_ok"))
 
     score = 0.0
+
+    # Breakout status is the primary signal.
     score += {
-        "just_broke_out": 34.0,
-        "near_breakout": 30.0,
+        "just_broke_out": 42.0,
+        "near_breakout": 38.0,
         "below_breakout": 18.0,
-        "extended_breakout": 4.0,
-        "no_breakout_level": 12.0,
-    }.get(breakout_status, 12.0)
+        "extended_breakout": 5.0,
+        "no_breakout_level": 14.0,
+    }.get(breakout_status, 14.0)
 
-    if breakout_pct is not None:
-        if -2.0 <= breakout_pct <= 5.0:
-            score += 22.0
-        elif (-5.0 <= breakout_pct < -2.0) or (5.0 < breakout_pct <= config.strategy.watch_breakout_max_pct):
-            score += 14.0
-        elif config.strategy.watch_breakout_max_pct < breakout_pct <= config.strategy.watch_breakout_max_pct + 7.0:
-            score += 6.0
-        elif breakout_pct < -5.0:
-            score += 8.0
-
-    if price_vs_ma_pct is not None:
-        if 0.0 <= price_vs_ma_pct <= 8.0:
-            score += 22.0
-        elif -5.0 <= price_vs_ma_pct < 0.0:
-            score += 18.0
-        elif 8.0 < price_vs_ma_pct <= config.strategy.watch_max_price_vs_ma_pct:
-            score += 12.0
-        elif -10.0 <= price_vs_ma_pct < -5.0:
-            score += 8.0
-        else:
-            score += 4.0
-
+    # Volume confirmation — stronger volume = higher conviction.
     if volume_ratio is not None:
-        if volume_ratio >= 1.8:
-            score += 14.0
+        if volume_ratio >= 3.0:
+            score += 32.0
+        elif volume_ratio >= 1.8:
+            score += 26.0
         elif volume_ratio >= 1.2:
-            score += 11.0
+            score += 18.0
         elif volume_ratio >= 0.9:
-            score += 7.0
+            score += 10.0
         else:
-            score += 2.0
+            score += 3.0
 
     if breakout_ok:
-        score += 8.0
-    elif breakout_status == "below_breakout":
-        score += 2.0
+        score += 12.0
+
     return _clamp_score(score)
 
 

@@ -74,6 +74,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
         path = parsed.path
         payload = self._read_json_body()
 
+        if path == "/api/dashboard/refresh":
+            self._send_json(self.service.refresh_ranking_cache())
+            return
+
         if path == "/api/stage2/refresh":
             self._send_json(self.service.refresh_stage2_tracking())
             return

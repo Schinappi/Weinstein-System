@@ -295,6 +295,25 @@ p {
   color: var(--text-muted);
 }
 
+.refresh-btn {
+  border: 1px solid rgba(37, 99, 235, 0.22);
+  background: rgba(255, 255, 255, 0.92);
+  color: #1d4ed8;
+  border-radius: 10px;
+  padding: 6px 12px;
+  cursor: pointer;
+  font-size: 13px;
+  white-space: nowrap;
+  margin-left: 8px;
+}
+.refresh-btn:hover {
+  background: rgba(239, 246, 255, 0.96);
+}
+.refresh-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
 .date-select {
   border: 1px solid var(--line);
   background: rgba(255, 255, 255, 0.96);

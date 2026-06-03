@@ -44,6 +44,8 @@ const manualWatchSymbol = document.getElementById('manualWatchSymbol');
 const addWatchButton = document.getElementById('addWatchButton');
 const batchDeleteWatchBtn = document.getElementById('batchDeleteWatchBtn');
 const selectAllWatch = document.getElementById('selectAllWatch');
+const refreshStage2Btn = document.getElementById('refreshStage2Btn');
+const refreshQuasiStage2Btn = document.getElementById('refreshQuasiStage2Btn');
 
 let currentChartState = null;
 let currentDetailRequestId = 0;
@@ -86,6 +88,8 @@ function bindEvents() {
   stage2DatePicker.addEventListener('change', () => {
     loadRankingsByDate('stage2', stage2DatePicker.value);
   });
+  refreshStage2Btn.addEventListener('click', () => refreshRankings('stage2'));
+  refreshQuasiStage2Btn.addEventListener('click', () => refreshRankings('quasi-stage2'));
   quasiStage2DatePicker.addEventListener('change', () => {
     loadRankingsByDate('quasi-stage2', quasiStage2DatePicker.value);
   });
@@ -115,6 +119,28 @@ function switchPage(pageKey) {
   [navDashboard, navWatchlist, navHoldings, navQuasiStage2].forEach((button) => {
     button.classList.toggle('active', button.dataset.page === pageKey);
   });
+}
+
+async function refreshRankings(section) {
+  const btn = section === 'stage2' ? refreshStage2Btn : refreshQuasiStage2Btn;
+  btn.disabled = true;
+  btn.textContent = '刷新中...';
+  try {
+    await fetch('/api/dashboard/refresh', { method: 'POST' });
+    const response = await fetch('/api/dashboard');
+    const payload = await response.json();
+    if (section === 'stage2') {
+      renderRankingTable(stage2Table, payload.stage2 || [], 'stage2');
+    } else {
+      renderQuasiStage2Table(quasiStage2Table, payload.quasi_stage2 || []);
+    }
+    populateDatePickers(payload.snapshot_dates || []);
+  } catch (e) {
+    console.error(e);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '刷新';
+  }
 }
 
 async function loadDashboard() {

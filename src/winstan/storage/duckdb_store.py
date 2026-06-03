@@ -44,7 +44,8 @@ class DuckDBStore:
                 f"SELECT * FROM snap WHERE FALSE"
             )
             conn.register("snap_frame", snap)
-            conn.execute(f"INSERT INTO {SNAPSHOT_TABLE} SELECT * FROM snap_frame")
+            cols = ", ".join(f'"{c}"' for c in snap.columns)
+            conn.execute(f"INSERT INTO {SNAPSHOT_TABLE} ({cols}) SELECT * FROM snap_frame")
 
     def read_snapshot(self, snapshot_date: str) -> pd.DataFrame:
         """Read screening results for a given snapshot date (ISO format)."""

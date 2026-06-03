@@ -434,7 +434,7 @@ function buildSystemLogSubtitle(status) {
 
 function renderRankingTable(container, items, mode) {
   if (!items.length) {
-    container.innerHTML = '<tr class="empty-row"><td colspan="7">暂无数据，请先运行筛选。</td></tr>';
+    container.innerHTML = '<tr class="empty-row"><td colspan="9">暂无数据，请先运行筛选。</td></tr>';
     return;
   }
   container.innerHTML = items.map((item) => `
@@ -445,6 +445,8 @@ function renderRankingTable(container, items, mode) {
       <td>${escapeHtml(item.stage || '')}</td>
       <td title="${escapeHtml(item.analysis || '')}">${escapeHtml(item.watch_reason || '')}</td>
       <td>${item.final_score ?? '--'}</td>
+      <td>${item.target_entry_price ?? '--'}</td>
+      <td>${item.stop_loss_reference ?? '--'}</td>
       <td>${item.close ?? '--'}</td>
     </tr>
   `).join('');

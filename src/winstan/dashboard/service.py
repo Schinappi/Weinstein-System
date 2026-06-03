@@ -26,7 +26,11 @@ from winstan.scoring.ranker import build_quasi_stage2_top_n, build_stage2_top_n,
 from winstan.storage.duckdb_store import DuckDBStore
 from winstan.storage.parquet_store import ParquetStore
 from winstan.storage.watchlist_store import WatchlistStore
-from winstan.signals.trade_watch import build_trade_watch_signal
+from winstan.signals.trade_watch import (
+    build_trade_watch_signal,
+    _resolve_target_entry_price,
+    _resolve_stop_loss_reference,
+)
 
 STAGE_LABELS = {
     "I": "阶段I",
@@ -960,6 +964,8 @@ class DashboardService:
     def _serialize_stage2(self, frame: pd.DataFrame) -> list[dict[str, object]]:
         rows: list[dict[str, object]] = []
         for _, row in frame.iterrows():
+            target_entry_price = _resolve_target_entry_price(row, self.config)
+            stop_loss_reference = _resolve_stop_loss_reference(row)
             rows.append(
                 {
                     "rank": _to_int(row.get("stage2_top_n_rank")),
@@ -967,6 +973,8 @@ class DashboardService:
                     "name": _to_text(row.get("name")),
                     "stage": _stage_label_text(row.get("stage_label")),
                     "close": _format_number(row.get("close")),
+                    "target_entry_price": _format_number(target_entry_price),
+                    "stop_loss_reference": _format_number(stop_loss_reference),
                     "watch_reason": _first_text(row.get("stage2_watch_reason"), row.get("stage2_reason")),
                     "final_score": _format_number(row.get("final_score")),
                     "analysis": build_weinstein_analysis(row, self.config),

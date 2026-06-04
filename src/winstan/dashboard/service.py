@@ -187,6 +187,8 @@ class DashboardService:
             self._stage1 = None
             self._stage2 = None
             self._quasi_stage2 = None
+            self._results = None
+            self._universe = None
         return {"refreshed": True}
 
     def get_dashboard_payload(self) -> dict[str, object]:
@@ -385,6 +387,11 @@ class DashboardService:
 
     def get_available_dates(self) -> list[str]:
         return self.duckdb_store.list_snapshot_dates()
+
+    def get_stage1_payload(self) -> dict[str, object]:
+        results = self.get_results()
+        _, stage1 = score_and_rank(results, self.config)
+        return {"stage1": self._serialize_stage1(stage1.reset_index(drop=True))}
 
     def get_rankings_by_date(self, dt: str) -> dict[str, object]:
         results = self.duckdb_store.read_snapshot(dt)

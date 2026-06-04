@@ -16,6 +16,7 @@
       </div>
       <nav class="sidebar-nav">
         <button id="navDashboard" class="nav-btn active" data-page="dashboard" type="button">总览</button>
+        <button id="navStage1" class="nav-btn" data-page="stage1" type="button">Stage1 排行榜</button>
         <button id="navWatchlist" class="nav-btn" data-page="watchlist" type="button">Stage2 监控</button>
         <button id="navHoldings" class="nav-btn" data-page="holdings" type="button">持有看板</button>
         <button id="navQuasiStage2" class="nav-btn" data-page="quasi-stage2" type="button">准Stage2</button>
@@ -110,6 +111,44 @@
             </div>
           </section>
         </main>
+      </section>
+
+      <section class="page hidden" id="pageStage1" data-page="stage1">
+        <header class="page-header">
+          <div>
+            <div class="eyebrow">Stage1 Leaderboard</div>
+            <h2>Stage1 排行榜</h2>
+            <p>处于阶段 I（蓄力筑底段）、基底平整、临近突破或刚突破的候选股。按观察分排序。</p>
+          </div>
+          <div class="page-actions">
+            <div class="date-picker-box">
+              <label>历史数据：</label>
+              <select id="stage1DatePicker" class="date-select">
+                <option value="">最新数据</option>
+              </select>
+              <button id="refreshStage1Btn" class="refresh-btn" type="button" title="清除缓存并刷新">刷新</button>
+            </div>
+          </div>
+        </header>
+        <section class="panel full-width">
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>排名</th>
+                  <th>代码</th>
+                  <th>名称</th>
+                  <th>阶段</th>
+                  <th>观察说明</th>
+                  <th>观察分</th>
+                  <th>综合分</th>
+                  <th>入选价格</th>
+                </tr>
+              </thead>
+              <tbody id="stage1Table"></tbody>
+            </table>
+          </div>
+        </section>
       </section>
 
       <section class="page hidden" id="pageWatchlist" data-page="watchlist">

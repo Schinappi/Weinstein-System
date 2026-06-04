@@ -1,8 +1,10 @@
 const navDashboard = document.getElementById('navDashboard');
+const navStage1 = document.getElementById('navStage1');
 const navWatchlist = document.getElementById('navWatchlist');
 const navHoldings = document.getElementById('navHoldings');
 const navQuasiStage2 = document.getElementById('navQuasiStage2');
 const pageDashboard = document.getElementById('pageDashboard');
+const pageStage1 = document.getElementById('pageStage1');
 const pageWatchlist = document.getElementById('pageWatchlist');
 const pageHoldings = document.getElementById('pageHoldings');
 const pageQuasiStage2 = document.getElementById('pageQuasiStage2');
@@ -46,6 +48,11 @@ const batchDeleteWatchBtn = document.getElementById('batchDeleteWatchBtn');
 const selectAllWatch = document.getElementById('selectAllWatch');
 const refreshStage2Btn = document.getElementById('refreshStage2Btn');
 const refreshQuasiStage2Btn = document.getElementById('refreshQuasiStage2Btn');
+const refreshStage1Btn = document.getElementById('refreshStage1Btn');
+const stage1Table = document.getElementById('stage1Table');
+const stage1DatePicker = document.getElementById('stage1DatePicker');
+
+let currentStage1Data = [];
 
 let currentChartState = null;
 let currentDetailRequestId = 0;
@@ -58,13 +65,14 @@ async function boot() {
   bindEvents();
   switchPage('dashboard');
   await loadDashboard();
+  await loadStage1();
   await loadWatchlist();
   await loadHoldings();
   await runSearch('');
 }
 
 function bindEvents() {
-  [navDashboard, navWatchlist, navHoldings, navQuasiStage2].forEach((button) => {
+  [navDashboard, navStage1, navWatchlist, navHoldings, navQuasiStage2].forEach((button) => {
     button.addEventListener('click', () => switchPage(button.dataset.page));
   });
   searchButton.addEventListener('click', () => runSearch(searchInput.value));
@@ -90,8 +98,12 @@ function bindEvents() {
   });
   refreshStage2Btn.addEventListener('click', () => refreshRankings('stage2'));
   refreshQuasiStage2Btn.addEventListener('click', () => refreshRankings('quasi-stage2'));
+  refreshStage1Btn.addEventListener('click', () => refreshStage1());
   quasiStage2DatePicker.addEventListener('change', () => {
     loadRankingsByDate('quasi-stage2', quasiStage2DatePicker.value);
+  });
+  stage1DatePicker.addEventListener('change', () => {
+    loadStage1ByDate(stage1DatePicker.value);
   });
   detailModal.addEventListener('click', (event) => {
     if (event.target.dataset.close === 'true') {
@@ -109,6 +121,7 @@ function switchPage(pageKey) {
   currentPage = pageKey;
   const pageMap = {
     dashboard: pageDashboard,
+    stage1: pageStage1,
     watchlist: pageWatchlist,
     holdings: pageHoldings,
     'quasi-stage2': pageQuasiStage2,
@@ -116,7 +129,7 @@ function switchPage(pageKey) {
   Object.entries(pageMap).forEach(([key, node]) => {
     node.classList.toggle('hidden', key !== pageKey);
   });
-  [navDashboard, navWatchlist, navHoldings, navQuasiStage2].forEach((button) => {
+  [navDashboard, navStage1, navWatchlist, navHoldings, navQuasiStage2].forEach((button) => {
     button.classList.toggle('active', button.dataset.page === pageKey);
   });
 }
@@ -155,30 +168,30 @@ async function loadDashboard() {
 function populateDatePickers(dates) {
   const fragment1 = document.createDocumentFragment();
   const fragment2 = document.createDocumentFragment();
-  const opt1 = document.createElement('option');
-  opt1.value = '';
-  opt1.textContent = '最新数据';
-  fragment1.appendChild(opt1);
-  const opt2 = document.createElement('option');
-  opt2.value = '';
-  opt2.textContent = '最新数据';
-  fragment2.appendChild(opt2);
+  const fragment3 = document.createDocumentFragment();
+  const makeOpt = (label, value) => {
+    const o = document.createElement('option');
+    o.value = value;
+    o.textContent = label;
+    return o;
+  };
+  fragment1.appendChild(makeOpt('最新数据', ''));
+  fragment2.appendChild(makeOpt('最新数据', ''));
+  fragment3.appendChild(makeOpt('最新数据', ''));
   dates.forEach((d) => {
-    const o1 = document.createElement('option');
-    o1.value = d;
-    o1.textContent = d;
-    fragment1.appendChild(o1);
-    const o2 = document.createElement('option');
-    o2.value = d;
-    o2.textContent = d;
-    fragment2.appendChild(o2);
+    fragment1.appendChild(makeOpt(d, d));
+    fragment2.appendChild(makeOpt(d, d));
+    fragment3.appendChild(makeOpt(d, d));
   });
   stage2DatePicker.innerHTML = '';
   quasiStage2DatePicker.innerHTML = '';
+  stage1DatePicker.innerHTML = '';
   stage2DatePicker.appendChild(fragment1);
   quasiStage2DatePicker.appendChild(fragment2);
+  stage1DatePicker.appendChild(fragment3);
   stage2DatePicker.value = '';
   quasiStage2DatePicker.value = '';
+  stage1DatePicker.value = '';
 }
 
 async function loadRankingsByDate(section, dateStr) {
@@ -233,6 +246,70 @@ function renderUpdateStatus(status) {
       <div class="value">${item.value}</div>
     </div>
   `).join('');
+}
+
+async function loadStage1() {
+  try {
+    const response = await fetch('/api/stage1');
+    const payload = await response.json();
+    currentStage1Data = payload.stage1 || [];
+    renderStage1Table(currentStage1Data);
+  } catch (e) {
+    console.error('loadStage1 error:', e);
+    stage1Table.innerHTML = '<tr class="empty-row"><td colspan="8">加载失败。</td></tr>';
+  }
+}
+
+async function refreshStage1() {
+  refreshStage1Btn.disabled = true;
+  refreshStage1Btn.textContent = '刷新中...';
+  try {
+    await fetch('/api/dashboard/refresh', { method: 'POST' });
+    await loadStage1();
+  } catch (e) {
+    console.error(e);
+  } finally {
+    refreshStage1Btn.disabled = false;
+    refreshStage1Btn.textContent = '刷新';
+  }
+}
+
+async function loadStage1ByDate(dateStr) {
+  if (!dateStr) {
+    await loadStage1();
+    return;
+  }
+  try {
+    const response = await fetch(`/api/rankings/by-date?date=${encodeURIComponent(dateStr)}`);
+    const payload = await response.json();
+    const items = payload.stage1 || [];
+    renderStage1Table(items);
+  } catch (e) {
+    stage1Table.innerHTML = '<tr class="empty-row"><td colspan="8">无该日历史数据。</td></tr>';
+  }
+}
+
+function renderStage1Table(items) {
+  if (!items || !items.length) {
+    stage1Table.innerHTML = '<tr class="empty-row"><td colspan="8">暂无 Stage1 候选数据，请先运行筛选。</td></tr>';
+    return;
+  }
+  stage1Table.innerHTML = items.map((item) => `
+    <tr class="clickable" data-symbol="${item.symbol}">
+      <td>${item.rank ?? '--'}</td>
+      <td>${item.symbol}</td>
+      <td>${escapeHtml(item.name || '')}</td>
+      <td>${escapeHtml(item.stage || '')}</td>
+      <td title="${escapeHtml(item.analysis || '')}">${escapeHtml(item.watch_reason || '')}</td>
+      <td>${item.watch_score ?? '--'}</td>
+      <td>${item.total_score ?? '--'}</td>
+      <td>${item.close ?? '--'}</td>
+    </tr>
+  `).join('');
+
+  stage1Table.querySelectorAll('tr[data-symbol]').forEach((row) => {
+    row.addEventListener('click', () => openStockDetail(row.dataset.symbol, 'stage1'));
+  });
 }
 
 async function loadWatchlist() {

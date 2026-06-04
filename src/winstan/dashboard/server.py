@@ -18,6 +18,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path
 
+        if path == "/api/stage1":
+            dt = parse_qs(parsed.query).get("date", [""])[0]
+            if dt:
+                payload = self.service.get_rankings_by_date(dt)
+                self._send_json({"stage1": payload.get("stage1", [])})
+            else:
+                self._send_json(self.service.get_stage1_payload())
+            return
+
         if path == "/api/dashboard":
             self._send_json(self.service.get_dashboard_payload())
             return

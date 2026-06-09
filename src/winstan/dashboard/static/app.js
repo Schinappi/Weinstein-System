@@ -1,14 +1,10 @@
 const navDashboard = document.getElementById('navDashboard');
 const navStage1 = document.getElementById('navStage1');
 const navRecommendations = document.getElementById('navRecommendations');
-const navWatchlist = document.getElementById('navWatchlist');
-const navHoldings = document.getElementById('navHoldings');
 const navQuasiStage2 = document.getElementById('navQuasiStage2');
 const pageDashboard = document.getElementById('pageDashboard');
 const pageStage1 = document.getElementById('pageStage1');
 const pageRecommendations = document.getElementById('pageRecommendations');
-const pageWatchlist = document.getElementById('pageWatchlist');
-const pageHoldings = document.getElementById('pageHoldings');
 const pageQuasiStage2 = document.getElementById('pageQuasiStage2');
 const updateStatusTitle = document.getElementById('updateStatusTitle');
 const updateStatusMessage = document.getElementById('updateStatusMessage');
@@ -39,15 +35,6 @@ const stage1Pill = document.getElementById('stage1Pill');
 const stage2Pill = document.getElementById('stage2Pill');
 const chartCanvas = document.getElementById('chartCanvas');
 const chartTooltip = document.getElementById('chartTooltip');
-const watchlistSummaryCards = document.getElementById('watchlistSummaryCards');
-const holdingsSummaryCards = document.getElementById('holdingsSummaryCards');
-const watchlistTable = document.getElementById('watchlistTable');
-const holdingsTable = document.getElementById('holdingsTable');
-const refreshTrackingButton = document.getElementById('refreshTrackingButton');
-const manualWatchSymbol = document.getElementById('manualWatchSymbol');
-const addWatchButton = document.getElementById('addWatchButton');
-const batchDeleteWatchBtn = document.getElementById('batchDeleteWatchBtn');
-const selectAllWatch = document.getElementById('selectAllWatch');
 const refreshStage2Btn = document.getElementById('refreshStage2Btn');
 const refreshQuasiStage2Btn = document.getElementById('refreshQuasiStage2Btn');
 const refreshStage1Btn = document.getElementById('refreshStage1Btn');
@@ -81,8 +68,6 @@ async function boot() {
   await loadDashboard();
   await loadStage1();
   await loadRecommendations();
-  await loadWatchlist();
-  await loadHoldings();
   await runSearch('');
 }
 
@@ -96,15 +81,6 @@ function bindEvents() {
       runSearch(searchInput.value);
     }
   });
-  refreshTrackingButton.addEventListener('click', refreshTrackingViews);
-  selectAllWatch.addEventListener('change', () => {
-    const checked = selectAllWatch.checked;
-    watchlistTable.querySelectorAll('.watch-checkbox').forEach((cb) => {
-      cb.checked = checked;
-    });
-    updateBatchDeleteButton();
-  });
-  batchDeleteWatchBtn.addEventListener('click', batchDeleteWatch);
   systemLogButton.addEventListener('click', showSystemLogModal);
   closeModal.addEventListener('click', hideModal);
   closeSystemLogModal.addEventListener('click', hideSystemLogModal);
@@ -140,14 +116,12 @@ function switchPage(pageKey) {
     dashboard: pageDashboard,
     stage1: pageStage1,
     recommendations: pageRecommendations,
-    watchlist: pageWatchlist,
-    holdings: pageHoldings,
     'quasi-stage2': pageQuasiStage2,
   };
   Object.entries(pageMap).forEach(([key, node]) => {
     node.classList.toggle('hidden', key !== pageKey);
   });
-  [navDashboard, navStage1, navRecommendations, navWatchlist, navHoldings, navQuasiStage2].forEach((button) => {
+  [navDashboard, navStage1, navRecommendations, navQuasiStage2].forEach((button) => {
     button.classList.toggle('active', button.dataset.page === pageKey);
   });
 }
@@ -469,170 +443,6 @@ function renderRecommendations(items) {
       r.addEventListener('click', () => openStockDetail(r.dataset.symbol, 'recs'));
     });
   }
-}
-
-async function loadWatchlist() {
-  const response = await fetch('/api/stage2/watchlist');
-  const payload = await response.json();
-  renderWatchlistSummary(payload.summary || {});
-  renderWatchlistTable(payload.items || []);
-}
-
-async function loadHoldings() {
-  const response = await fetch('/api/stage2/holdings');
-  const payload = await response.json();
-  renderHoldingsSummary(payload.summary || {});
-  renderHoldingsTable(payload.items || []);
-}
-
-async function refreshTrackingViews() {
-  refreshTrackingButton.disabled = true;
-  try {
-    await fetch('/api/stage2/refresh', { method: 'POST' });
-    await Promise.all([loadDashboard(), loadWatchlist(), loadHoldings()]);
-  } finally {
-    refreshTrackingButton.disabled = false;
-  }
-}
-
-async function submitManualWatch() {
-  window.alert('手动加入监控已暂停');
-}
-
-function renderWatchlistSummary(summary) {
-  const cards = [
-    { label: '监控中', value: summary.watching_count ?? '--' },
-    { label: '已触发', value: summary.triggered_count ?? '--' },
-    { label: '已失效', value: summary.expired_count ?? '--' },
-    { label: '持有中', value: summary.holding_count ?? '--' },
-  ];
-  watchlistSummaryCards.innerHTML = cards.map((item) => `
-    <div class="summary-card">
-      <div class="label">${item.label}</div>
-      <div class="value">${item.value}</div>
-    </div>
-  `).join('');
-}
-
-function renderHoldingsSummary(summary) {
-  const cards = [
-    { label: '持有中', value: summary.holding_count ?? '--' },
-    { label: '平均收益', value: formatPercentValue(summary.avg_return_pct) },
-    { label: '中位数最高涨幅', value: formatPercentValue(summary.median_mfe_pct) },
-    { label: '中位数最大跌幅', value: formatPercentValue(summary.median_mae_pct) },
-  ];
-  holdingsSummaryCards.innerHTML = cards.map((item) => `
-    <div class="summary-card">
-      <div class="label">${item.label}</div>
-      <div class="value">${item.value}</div>
-    </div>
-  `).join('');
-}
-
-function renderWatchlistTable(items) {
-  if (!items.length) {
-    watchlistTable.innerHTML = '<tr class="empty-row"><td colspan="12">当前没有处于监控中的 Stage2 股票。</td></tr>';
-    return;
-  }
-  watchlistTable.innerHTML = items.map((item) => {
-    const triggered = item.status === 'triggered';
-    const rowClass = triggered ? 'clickable triggered-row' : 'clickable';
-    const triggerInfo = triggered
-      ? `${item.trigger_date || '--'}`
-      : '--';
-    return `
-    <tr class="${rowClass}" data-symbol="${item.symbol}" data-id="${item.id}">
-      <td><input type="checkbox" class="watch-checkbox" data-id="${item.id}"></td>
-      <td>${item.symbol}</td>
-      <td>${escapeHtml(item.name || '')}</td>
-      <td>${item.watch_date || '--'}</td>
-      <td>${item.expire_date || '--'}</td>
-      <td>${item.days_waited ?? '--'}</td>
-      <td>${item.target_entry_price ?? '--'}</td>
-      <td>${item.latest_close ?? '--'}</td>
-      <td>${item.distance_to_entry_pct ?? '--'}</td>
-      <td>${triggerInfo}</td>
-      <td>${escapeHtml(item.watch_rank_label || '')}</td>
-      <td><button class=\"delete-btn\" data-delete-id=\"${item.id}\" data-delete-type=\"watchlist\" title=\"删除\">✕</button></td>
-    </tr>
-  `}).join('');
-  selectAllWatch.checked = false;
-  batchDeleteWatchBtn.classList.add('hidden');
-  bindWatchlistRowEvents();
-}
-
-function bindWatchlistRowEvents() {
-  watchlistTable.querySelectorAll('tr[data-symbol]').forEach((row) => {
-    row.addEventListener('click', (event) => {
-      if (event.target.closest('.delete-btn') || event.target.type === 'checkbox') return;
-      openStockDetail(row.dataset.symbol);
-    });
-  });
-  watchlistTable.querySelectorAll('.delete-btn').forEach((btn) => {
-    btn.addEventListener('click', async (event) => {
-      event.stopPropagation();
-      await handleDelete(btn.dataset.deleteId, btn.dataset.deleteType);
-    });
-  });
-  watchlistTable.querySelectorAll('.watch-checkbox').forEach((cb) => {
-    cb.addEventListener('click', (event) => {
-      event.stopPropagation();
-      updateBatchDeleteButton();
-    });
-  });
-}
-
-function getSelectedWatchIds() {
-  const checked = watchlistTable.querySelectorAll('.watch-checkbox:checked');
-  return Array.from(checked).map((cb) => cb.dataset.id).filter(Boolean);
-}
-
-function updateBatchDeleteButton() {
-  const selected = getSelectedWatchIds();
-  batchDeleteWatchBtn.classList.toggle('hidden', selected.length === 0);
-  if (selected.length > 0) {
-    batchDeleteWatchBtn.textContent = `批量删除 (${selected.length})`;
-  }
-}
-
-function renderHoldingsTable(items) {
-  if (!items.length) {
-    holdingsTable.innerHTML = '<tr class="empty-row"><td colspan="13">当前没有已触发并处于持有跟踪中的股票。</td></tr>';
-    return;
-  }
-  holdingsTable.innerHTML = items.map((item) => `
-    <tr class="clickable" data-symbol="${item.symbol}" data-id="${item.id}">
-      <td>${item.symbol}</td>
-      <td>${escapeHtml(item.name || '')}</td>
-      <td>${item.entry_date || '--'}</td>
-      <td>${formatEntryMode(item.entry_mode)}</td>
-      <td>${item.entry_price || '--'}</td>
-      <td>${item.latest_close || '--'}</td>
-      <td>${item.current_return_pct || '--'}</td>
-      <td>${item.mfe_pct || '--'}</td>
-      <td>${item.mae_pct || '--'}</td>
-      <td>${item.holding_days ?? '--'}</td>
-      <td>${escapeHtml(item.stage_label_latest || '')}</td>
-      <td>${escapeHtml(item.risk_flag || '')}</td>
-      <td><button class=\"delete-btn\" data-delete-id=\"${item.id}\" data-delete-type=\"holdings\" title=\"删除\">✕</button></td>
-    </tr>
-  `).join('');
-  bindHoldingsRowEvents();
-}
-
-function bindHoldingsRowEvents() {
-  holdingsTable.querySelectorAll('tr[data-symbol]').forEach((row) => {
-    row.addEventListener('click', (event) => {
-      if (event.target.closest('.delete-btn')) return;
-      openStockDetail(row.dataset.symbol);
-    });
-  });
-  holdingsTable.querySelectorAll('.delete-btn').forEach((btn) => {
-    btn.addEventListener('click', async (event) => {
-      event.stopPropagation();
-      await handleDelete(btn.dataset.deleteId, btn.dataset.deleteType);
-    });
-  });
 }
 
 function showSystemLogModal() {
@@ -1293,46 +1103,6 @@ function formatChartVolume(value) {
     return `${(value / 10000).toFixed(2)}万`;
   }
   return value.toFixed(0);
-}
-
-async function batchDeleteWatch() {
-  const ids = getSelectedWatchIds();
-  if (!ids.length) return;
-  if (!window.confirm(`确定要批量删除 ${ids.length} 条监控记录吗？`)) return;
-
-  let deleted = 0;
-  for (const id of ids) {
-    try {
-      const response = await fetch(`/api/stage2/watchlist/${encodeURIComponent(id)}`, { method: 'DELETE' });
-      if (response.ok) deleted++;
-    } catch (e) {
-      // continue
-    }
-  }
-  selectAllWatch.checked = false;
-  batchDeleteWatchBtn.classList.add('hidden');
-  await Promise.all([loadDashboard(), loadWatchlist(), loadHoldings()]);
-}
-
-async function handleDelete(id, type) {
-  if (!id || !type) return;
-  if (!window.confirm(`确定要删除这条${type === 'watchlist' ? '监控' : '持有'}记录吗？`)) return;
-
-  const endpoint = type === 'watchlist'
-    ? `/api/stage2/watchlist/${encodeURIComponent(id)}`
-    : `/api/stage2/holdings/${encodeURIComponent(id)}`;
-
-  try {
-    const response = await fetch(endpoint, { method: 'DELETE' });
-    if (!response.ok) {
-      const payload = await response.json().catch(() => ({}));
-      window.alert(`删除失败：${payload.error || response.statusText}`);
-      return;
-    }
-    await Promise.all([loadDashboard(), loadWatchlist(), loadHoldings()]);
-  } catch (error) {
-    window.alert(`删除请求失败：${error.message}`);
-  }
 }
 
 function escapeHtml(value) {

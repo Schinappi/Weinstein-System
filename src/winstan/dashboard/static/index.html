@@ -18,8 +18,6 @@
         <button id="navDashboard" class="nav-btn active" data-page="dashboard" type="button">总览</button>
         <button id="navStage1" class="nav-btn" data-page="stage1" type="button">Stage1 排行榜</button>
         <button id="navRecommendations" class="nav-btn" data-page="recommendations" type="button">智能推荐</button>
-        <button id="navWatchlist" class="nav-btn" data-page="watchlist" type="button">Stage2 监控</button>
-        <button id="navHoldings" class="nav-btn" data-page="holdings" type="button">持有看板</button>
         <button id="navQuasiStage2" class="nav-btn" data-page="quasi-stage2" type="button">准Stage2</button>
       </nav>
     </aside>
@@ -276,83 +274,6 @@
                 </tr>
               </thead>
               <tbody id="recBTable"></tbody>
-            </table>
-          </div>
-        </section>
-      </section>
-
-      <section class="page hidden" id="pageWatchlist" data-page="watchlist">
-        <header class="page-header">
-          <div>
-            <div class="eyebrow">Stage2 Monitor</div>
-            <h2>Stage2 监控</h2>
-            <p>默认监控 3 个交易日，跟踪突破买点。命中后保留在监控列表中（绿色高亮），同时加入持有看板。</p>
-          </div>
-          <div class="page-actions">
-            <button id="batchDeleteWatchBtn" class="danger-btn hidden" type="button">批量删除</button>
-            <div class="search-box compact-box">
-              <input id="manualWatchSymbol" type="text" placeholder="手动加入监控已暂停" disabled>
-              <button id="addWatchButton" type="button" disabled>已暂停</button>
-            </div>
-            <button id="refreshTrackingButton" class="secondary-btn" type="button">刷新状态</button>
-          </div>
-        </header>
-        <div class="summary-grid" id="watchlistSummaryCards"></div>
-        <section class="panel full-width">
-          <div class="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th><input type="checkbox" id="selectAllWatch" title="全选"></th>
-                  <th>代码</th>
-                  <th>名称</th>
-                  <th>监控日期</th>
-                  <th>到期日期</th>
-                  <th>等待天数</th>
-                  <th>突破买点</th>
-                  <th>最新价</th>
-                  <th>距突破买点</th>
-                  <th>触发日期</th>
-                  <th>候选等级</th>
-                  <th>操作</th>
-                </tr>
-              </thead>
-              <tbody id="watchlistTable"></tbody>
-            </table>
-          </div>
-        </section>
-      </section>
-
-      <section class="page hidden" id="pageHoldings" data-page="holdings">
-        <header class="page-header">
-          <div>
-            <div class="eyebrow">Holdings Board</div>
-            <h2>持有看板</h2>
-            <p>展示触发买点后的当前收益、最高涨幅和最大跌幅。</p>
-          </div>
-        </header>
-        <div class="summary-grid" id="holdingsSummaryCards"></div>
-        <section class="panel full-width">
-          <div class="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>代码</th>
-                  <th>名称</th>
-                  <th>买入日期</th>
-                  <th>买入方式</th>
-                  <th>买入价</th>
-                  <th>最新价</th>
-                  <th>当前收益率</th>
-                  <th>最高涨幅</th>
-                  <th>最大跌幅</th>
-                  <th>持有天数</th>
-                  <th>趋势阶段</th>
-                  <th>风险提醒</th>
-                  <th>操作</th>
-                </tr>
-              </thead>
-              <tbody id="holdingsTable"></tbody>
             </table>
           </div>
         </section>

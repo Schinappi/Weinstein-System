@@ -55,19 +55,23 @@ def _fetch_all_realtime() -> dict[str, dict]:
     """拉全A实时行情，返回 {symbol -> {price, volume, high, low, change_pct}}"""
     import requests
 
-    # 构建所有A股代码 (sh/sz 主板+创业板+科创板)
+    # 构建所有A股代码 (sh/sz/bj 主板+创业板+科创板+北交所)
     code_ranges = [
         # 上交所主板
         *(f"sh{str(i).zfill(6)}" for i in range(600000, 606000)),
         *(f"sh{str(i).zfill(6)}" for i in range(603000, 605000)),
         *(f"sh{str(i).zfill(6)}" for i in range(605000, 606000)),
-        *(f"sh{str(i).zfill(6)}" for i in range(688000, 689000)),
+        *(f"sh{str(i).zfill(6)}" for i in range(688000, 690000)),  # 688xxx + 689xxx
         # 深交所 (000-001-002-003-300-301)
         *(f"sz{str(i).zfill(6)}" for i in range(0, 1000)),
         *(f"sz{str(i).zfill(6)}" for i in range(1000, 2000)),
         *(f"sz{str(i).zfill(6)}" for i in range(2000, 3000)),
         *(f"sz{str(i).zfill(6)}" for i in range(3000, 3100)),
         *(f"sz{str(i).zfill(6)}" for i in range(300000, 302000)),  # 300xxx + 301xxx
+        # 北交所 (920xxx + 430xxx + 830xxx)
+        *(f"bj{str(i).zfill(6)}" for i in range(920000, 921000)),
+        *(f"bj{str(i).zfill(6)}" for i in range(430000, 431000)),
+        *(f"bj{str(i).zfill(6)}" for i in range(830000, 831000)),
     ]
 
     result: dict[str, dict] = {}
@@ -93,11 +97,13 @@ def _fetch_all_realtime() -> dict[str, dict]:
                     price = _safe_float(parts[F_PRICE])
                     if price <= 0:
                         continue
-                    # 转为统一 symbol 格式: 600519.SH
+                    # 转为统一 symbol 格式: 600519.SH or 920000.BJ
                     if code.startswith("6"):
                         symbol = f"{code}.SH"
                     elif code.startswith(("0", "3")):
                         symbol = f"{code}.SZ"
+                    elif code.startswith(("4", "8", "9")):
+                        symbol = f"{code}.BJ"
                     else:
                         continue
                     result[symbol] = {

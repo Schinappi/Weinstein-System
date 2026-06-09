@@ -1,10 +1,12 @@
 const navDashboard = document.getElementById('navDashboard');
 const navStage1 = document.getElementById('navStage1');
+const navRecommendations = document.getElementById('navRecommendations');
 const navWatchlist = document.getElementById('navWatchlist');
 const navHoldings = document.getElementById('navHoldings');
 const navQuasiStage2 = document.getElementById('navQuasiStage2');
 const pageDashboard = document.getElementById('pageDashboard');
 const pageStage1 = document.getElementById('pageStage1');
+const pageRecommendations = document.getElementById('pageRecommendations');
 const pageWatchlist = document.getElementById('pageWatchlist');
 const pageHoldings = document.getElementById('pageHoldings');
 const pageQuasiStage2 = document.getElementById('pageQuasiStage2');
@@ -49,6 +51,16 @@ const selectAllWatch = document.getElementById('selectAllWatch');
 const refreshStage2Btn = document.getElementById('refreshStage2Btn');
 const refreshQuasiStage2Btn = document.getElementById('refreshQuasiStage2Btn');
 const refreshStage1Btn = document.getElementById('refreshStage1Btn');
+const refreshRecsBtn = document.getElementById('refreshRecsBtn');
+const recsLoading = document.getElementById('recsLoading');
+const recSTable = document.getElementById('recSTable');
+const recATable = document.getElementById('recATable');
+const recBpTable = document.getElementById('recBpTable');
+const recBTable = document.getElementById('recBTable');
+const recSSection = document.getElementById('recSSection');
+const recASection = document.getElementById('recASection');
+const recBpSection = document.getElementById('recBpSection');
+const recBSection = document.getElementById('recBSection');
 const stage1Table = document.getElementById('stage1Table');
 const stage1DatePicker = document.getElementById('stage1DatePicker');
 
@@ -66,13 +78,14 @@ async function boot() {
   switchPage('dashboard');
   await loadDashboard();
   await loadStage1();
+  await loadRecommendations();
   await loadWatchlist();
   await loadHoldings();
   await runSearch('');
 }
 
 function bindEvents() {
-  [navDashboard, navStage1, navWatchlist, navHoldings, navQuasiStage2].forEach((button) => {
+  [navDashboard, navStage1, navRecommendations, navWatchlist, navHoldings, navQuasiStage2].forEach((button) => {
     button.addEventListener('click', () => switchPage(button.dataset.page));
   });
   searchButton.addEventListener('click', () => runSearch(searchInput.value));
@@ -99,6 +112,7 @@ function bindEvents() {
   refreshStage2Btn.addEventListener('click', () => refreshRankings('stage2'));
   refreshQuasiStage2Btn.addEventListener('click', () => refreshRankings('quasi-stage2'));
   refreshStage1Btn.addEventListener('click', () => refreshStage1());
+  refreshRecsBtn.addEventListener('click', () => loadRecommendations({ force: true }));
   quasiStage2DatePicker.addEventListener('change', () => {
     loadRankingsByDate('quasi-stage2', quasiStage2DatePicker.value);
   });
@@ -122,6 +136,7 @@ function switchPage(pageKey) {
   const pageMap = {
     dashboard: pageDashboard,
     stage1: pageStage1,
+    recommendations: pageRecommendations,
     watchlist: pageWatchlist,
     holdings: pageHoldings,
     'quasi-stage2': pageQuasiStage2,
@@ -129,7 +144,7 @@ function switchPage(pageKey) {
   Object.entries(pageMap).forEach(([key, node]) => {
     node.classList.toggle('hidden', key !== pageKey);
   });
-  [navDashboard, navStage1, navWatchlist, navHoldings, navQuasiStage2].forEach((button) => {
+  [navDashboard, navStage1, navRecommendations, navWatchlist, navHoldings, navQuasiStage2].forEach((button) => {
     button.classList.toggle('active', button.dataset.page === pageKey);
   });
 }
@@ -310,6 +325,121 @@ function renderStage1Table(items) {
   stage1Table.querySelectorAll('tr[data-symbol]').forEach((row) => {
     row.addEventListener('click', () => openStockDetail(row.dataset.symbol, 'stage1'));
   });
+}
+
+async function loadRecommendations(options = {}) {
+  if (options.force) {
+    // Refresh cache first
+    try { await fetch('/api/dashboard/refresh', { method: 'POST' }); } catch (e) {}
+  }
+  refreshRecsBtn.disabled = true;
+  recsLoading.classList.remove('hidden');
+  try {
+    const response = await fetch('/api/recommendations');
+    const payload = await response.json();
+    const items = payload.recommendations || [];
+    renderRecommendations(items);
+  } catch (e) {
+    console.error('loadRecommendations error:', e);
+  } finally {
+    refreshRecsBtn.disabled = false;
+    recsLoading.classList.add('hidden');
+  }
+}
+
+function renderRecommendations(items) {
+  const sItems = items.filter(i => i.rec_level === 'S');
+  const aItems = items.filter(i => i.rec_level === 'A');
+  const bpItems = items.filter(i => i.rec_level === 'B+');
+  const bItems = items.filter(i => i.rec_level === 'B');
+
+  recSSection.classList.toggle('hidden', !sItems.length);
+  recASection.classList.toggle('hidden', !aItems.length);
+  recBpSection.classList.toggle('hidden', !bpItems.length);
+  recBSection.classList.toggle('hidden', !bItems.length);
+
+  // S级
+  if (sItems.length) {
+    recSTable.innerHTML = sItems.map(i => {
+      const wb = i.w_bottom || {};
+      return `<tr class="clickable" data-symbol="${i.symbol}">
+        <td>${i.rank}</td>
+        <td>${i.symbol}</td>
+        <td>${escapeHtml(i.name || '')}</td>
+        <td>${i.weinstein_score || '--'}</td>
+        <td title="${escapeHtml(i.analysis || '')}">${escapeHtml(i.rec_reason || '')}</td>
+        <td>${wb.pattern_score || '--'}</td>
+        <td>${wb.neckline || '--'}</td>
+        <td>${i.close || '--'}</td>
+        <td>${i.stop_loss || '--'}</td>
+      </tr>`;
+    }).join('');
+    recSTable.querySelectorAll('tr[data-symbol]').forEach(r => {
+      r.addEventListener('click', () => openStockDetail(r.dataset.symbol, 'recs'));
+    });
+  }
+
+  // A级
+  if (aItems.length) {
+    recATable.innerHTML = aItems.map(i => {
+      return `<tr class="clickable" data-symbol="${i.symbol}">
+        <td>${i.rank}</td>
+        <td>${i.symbol}</td>
+        <td>${escapeHtml(i.name || '')}</td>
+        <td>${i.weinstein_score || '--'}</td>
+        <td title="${escapeHtml(i.analysis || '')}">${escapeHtml(i.rec_reason || '')}</td>
+        <td>${i.close || '--'}</td>
+        <td>${i.stop_loss || '--'}</td>
+      </tr>`;
+    }).join('');
+    recATable.querySelectorAll('tr[data-symbol]').forEach(r => {
+      r.addEventListener('click', () => openStockDetail(r.dataset.symbol, 'recs'));
+    });
+  }
+
+  // B+级 提前埋伏
+  if (bpItems.length) {
+    recBpTable.innerHTML = bpItems.map(i => {
+      const wb = i.w_bottom || {};
+      const neck = parseFloat(wb.neckline) || 0;
+      const close = parseFloat(i.close) || 0;
+      const distPct = neck > 0 ? ((close / neck - 1) * 100).toFixed(1) : '--';
+      return `<tr class="clickable" data-symbol="${i.symbol}">
+        <td>${i.rank}</td>
+        <td>${i.symbol}</td>
+        <td>${escapeHtml(i.name || '')}</td>
+        <td>${i.weinstein_score || '--'}</td>
+        <td title="${escapeHtml(i.analysis || '')}">${escapeHtml(i.rec_reason || '')}</td>
+        <td>${distPct}%</td>
+        <td>${wb.pattern_score || '--'}</td>
+        <td>${i.close || '--'}</td>
+        <td>${i.stop_loss || '--'}</td>
+      </tr>`;
+    }).join('');
+    recBpTable.querySelectorAll('tr[data-symbol]').forEach(r => {
+      r.addEventListener('click', () => openStockDetail(r.dataset.symbol, 'recs'));
+    });
+  }
+
+  // B级
+  if (bItems.length) {
+    recBTable.innerHTML = bItems.map(i => {
+      const hasWb = i.has_w_bottom;
+      return `<tr class="clickable" data-symbol="${i.symbol}">
+        <td>${i.rank}</td>
+        <td>${i.symbol}</td>
+        <td>${escapeHtml(i.name || '')}</td>
+        <td>${i.weinstein_score || '--'}</td>
+        <td title="${escapeHtml(i.analysis || '')}">${escapeHtml(i.rec_reason || '')}</td>
+        <td>${hasWb ? 'W底' : '--'}</td>
+        <td>${i.close || '--'}</td>
+        <td>${i.stop_loss || '--'}</td>
+      </tr>`;
+    }).join('');
+    recBTable.querySelectorAll('tr[data-symbol]').forEach(r => {
+      r.addEventListener('click', () => openStockDetail(r.dataset.symbol, 'recs'));
+    });
+  }
 }
 
 async function loadWatchlist() {

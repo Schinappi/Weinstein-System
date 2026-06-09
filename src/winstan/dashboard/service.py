@@ -62,6 +62,7 @@ class DashboardService:
         self._quasi_stage2: pd.DataFrame | None = None
         self._universe: pd.DataFrame | None = None
         self._detail_analysis_cache: dict[str, str] = {}
+        self._recommendations: list[dict[str, object]] | None = None
         self._lock = RLock()
 
     @property
@@ -189,6 +190,7 @@ class DashboardService:
             self._quasi_stage2 = None
             self._results = None
             self._universe = None
+            self._recommendations = None
         return {"refreshed": True}
 
     def get_dashboard_payload(self) -> dict[str, object]:
@@ -392,6 +394,16 @@ class DashboardService:
         results = self.get_results()
         _, stage1 = score_and_rank(results, self.config)
         return {"stage1": self._serialize_stage1(stage1.reset_index(drop=True))}
+
+    def get_recommendations_payload(self) -> dict[str, object]:
+        from winstan.patterns import compute_recommendations
+        if hasattr(self, '_recommendations') and self._recommendations is not None:
+            return {"recommendations": self._recommendations}
+        # Compute without holding the main lock (recommendations is read-only once set)
+        results = self.get_results()
+        recs = compute_recommendations(results, self.config.parquet_root)
+        self._recommendations = recs
+        return {"recommendations": recs}
 
     def get_rankings_by_date(self, dt: str) -> dict[str, object]:
         results = self.duckdb_store.read_snapshot(dt)

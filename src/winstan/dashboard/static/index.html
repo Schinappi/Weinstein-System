@@ -17,6 +17,7 @@
       <nav class="sidebar-nav">
         <button id="navDashboard" class="nav-btn active" data-page="dashboard" type="button">总览</button>
         <button id="navStage1" class="nav-btn" data-page="stage1" type="button">Stage1 排行榜</button>
+        <button id="navRecommendations" class="nav-btn" data-page="recommendations" type="button">智能推荐</button>
         <button id="navWatchlist" class="nav-btn" data-page="watchlist" type="button">Stage2 监控</button>
         <button id="navHoldings" class="nav-btn" data-page="holdings" type="button">持有看板</button>
         <button id="navQuasiStage2" class="nav-btn" data-page="quasi-stage2" type="button">准Stage2</button>
@@ -146,6 +147,129 @@
                 </tr>
               </thead>
               <tbody id="stage1Table"></tbody>
+            </table>
+          </div>
+        </section>
+      </section>
+
+      <section class="page hidden" id="pageRecommendations" data-page="recommendations">
+        <header class="page-header">
+          <div>
+            <div class="eyebrow">Smart Picks</div>
+              <h2>智能推荐</h2>
+              <p>基于 W底形态识别 + 温斯坦评分综合排序。S级=强烈推荐，A级=建议买入，B+级=提前埋伏（距突破价&lt;10%），B级=关注。</p>
+          </div>
+          <div class="page-actions">
+            <button id="refreshRecsBtn" class="refresh-btn" type="button" title="清除缓存并刷新">刷新</button>
+            <span id="recsLoading" class="loading-text hidden">分析中...</span>
+          </div>
+        </header>
+
+        <!-- S级 -->
+        <section class="panel full-width" id="recSSection">
+          <div class="panel-header">
+            <div>
+              <h2><span class="tag rec-s">S级 强烈推荐</span></h2>
+              <p>W底形态确认 + 放量突破颈线 + 温斯坦评分优秀</p>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>代码</th>
+                  <th>名称</th>
+                  <th>综合分</th>
+                  <th>推荐理由</th>
+                  <th>形态评分</th>
+                  <th>颈线价</th>
+                  <th>最新价</th>
+                  <th>止损参考</th>
+                </tr>
+              </thead>
+              <tbody id="recSTable"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <!-- A级 -->
+        <section class="panel full-width" id="recASection">
+          <div class="panel-header">
+            <div>
+              <h2><span class="tag rec-a">A级 建议买入</span></h2>
+              <p>刚突破放量 + 温斯坦评分良好</p>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>代码</th>
+                  <th>名称</th>
+                  <th>综合分</th>
+                  <th>推荐理由</th>
+                  <th>最新价</th>
+                  <th>止损参考</th>
+                </tr>
+              </thead>
+              <tbody id="recATable"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <!-- B+级 提前埋伏 -->
+        <section class="panel full-width" id="recBpSection">
+          <div class="panel-header">
+            <div>
+              <h2><span class="tag rec-bp">B+级 提前埋伏</span></h2>
+              <p>W底形成 + 放量 + 距突破价&lt;10%，随时可能启动突破。适合提前布局。</p>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>代码</th>
+                  <th>名称</th>
+                  <th>综合分</th>
+                  <th>推荐理由</th>
+                  <th>距突破</th>
+                  <th>形态评分</th>
+                  <th>最新价</th>
+                  <th>止损参考</th>
+                </tr>
+              </thead>
+              <tbody id="recBpTable"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <!-- B级 -->
+        <section class="panel full-width" id="recBSection">
+          <div class="panel-header">
+            <div>
+              <h2><span class="tag rec-b">B级 关注</span></h2>
+              <p>W底形态或临近突破，值得观察</p>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>代码</th>
+                  <th>名称</th>
+                  <th>综合分</th>
+                  <th>推荐理由</th>
+                  <th>形态</th>
+                  <th>最新价</th>
+                  <th>止损参考</th>
+                </tr>
+              </thead>
+              <tbody id="recBTable"></tbody>
             </table>
           </div>
         </section>

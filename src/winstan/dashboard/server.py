@@ -27,6 +27,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._send_json(self.service.get_stage1_payload())
             return
 
+        if path == "/api/recommendations":
+            self._send_json(self.service.get_recommendations_payload())
+            return
+
         if path == "/api/dashboard":
             self._send_json(self.service.get_dashboard_payload())
             return
@@ -165,6 +169,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
 def run_server(config_path: str | Path, host: str = "127.0.0.1", port: int = 8765) -> None:
     service = DashboardService(config_path)
+
+    # Pre-warm recommendation cache at startup
+    try:
+        print("[warm] Warming up recommendation cache...")
+        payload = service.get_recommendations_payload()
+        count = len(payload.get("recommendations", []))
+        print(f"[warm] Recommendation cache loaded: {count} items")
+    except Exception as e:
+        print(f"[warm] Recommendation preload failed (will compute on first request): {e}")
 
     class BoundHandler(DashboardHandler):
         pass

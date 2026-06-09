@@ -215,6 +215,43 @@ class TushareAdapter(BaseDataAdapter):
             "[tushare] fetch_daily_bars start "
             f"symbols={len(symbol_list)} start_date={start} end_date={end} sample={self._symbol_sample_text(symbol_list)}"
         )
+
+        # ── Batch optimization: single-day request → one pro.daily(trade_date=…) call ──
+        if start == end and start and not self._stock_daily_remote_unavailable:
+            batch_started_at = time.perf_counter()
+            batch_frame, batch_failure = self._call_api(
+                self._pro.daily,
+                trade_date=start,
+            )
+            batch_runtime = time.perf_counter() - batch_started_at
+            if batch_failure is None and batch_frame is not None and not batch_frame.empty:
+                batch_frame = batch_frame[batch_frame["ts_code"].isin(symbol_list)].copy()
+                if not batch_frame.empty:
+                    concat_runtime, adjust_runtime, normalize_runtime = 0.0, 0.0, 0.0
+                    if adjust_type == "forward":
+                        # Apply per-stock forward adjustment (adj_factor is per-stock only)
+                        adjust_started_at = time.perf_counter()
+                        batch_frame = self._apply_forward_adjustment(batch_frame)
+                        adjust_runtime = time.perf_counter() - adjust_started_at
+                    normalize_started_at = time.perf_counter()
+                    normalized = self.ensure_standard_columns(
+                        batch_frame.rename(columns={"ts_code": "symbol", "vol": "volume"}),
+                        self.source_name,
+                    )
+                    normalize_runtime = time.perf_counter() - normalize_started_at
+                    print(
+                        "[tushare] fetch_daily_bars done "
+                        f"symbols={len(symbol_list)} rows={len(normalized)} elapsed={round(batch_runtime, 2)}s "
+                        f"daily_api={round(batch_runtime, 2)}s "
+                        f"adj_api=0.0s filter_merge=0.0s "
+                        f"concat={round(concat_runtime, 2)}s adjust={round(adjust_runtime, 2)}s normalize={round(normalize_runtime, 2)}s "
+                        "mode=batch"
+                    )
+                    if normalized.empty:
+                        return pd.DataFrame(columns=normalized.columns)
+                    return normalized
+            # batch failed or empty — fall through to per-stock loop
+
         progress_every = 50 if len(symbol_list) >= 200 else 20 if len(symbol_list) >= 50 else 10
         for index, symbol in enumerate(symbol_list, start=1):
             symbol_started_at = time.perf_counter()

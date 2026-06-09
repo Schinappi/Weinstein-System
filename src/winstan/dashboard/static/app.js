@@ -72,7 +72,7 @@ async function boot() {
 }
 
 function bindEvents() {
-  [navDashboard, navStage1, navRecommendations, navWatchlist, navHoldings, navQuasiStage2].forEach((button) => {
+  [navDashboard, navStage1, navRecommendations, navQuasiStage2].forEach((button) => {
     button.addEventListener('click', () => switchPage(button.dataset.page));
   });
   searchButton.addEventListener('click', () => runSearch(searchInput.value));

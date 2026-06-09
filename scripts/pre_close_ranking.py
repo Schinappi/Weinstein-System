@@ -375,7 +375,30 @@ def main() -> None:
     realtime = _fetch_all_realtime()
     print(f"[preclose] Got {len(realtime)} real-time quotes")
 
-    # 2. 读取现有 screening_results
+    # 2. 存一份 intraday 快照到 parquet（Dashboard 直接可读）
+    print("[preclose] Saving intraday snapshot to parquet...")
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    intra_rows = []
+    for sym, rt in realtime.items():
+        intra_rows.append({
+            "symbol": sym,
+            "trade_date": today_str,
+            "open": rt.get("open", 0),
+            "high": rt.get("high", 0),
+            "low": rt.get("low", 0),
+            "close": rt["price"],
+            "volume": rt.get("volume", 0),
+            "amount": rt.get("amount", 0),
+            "source": "tencent",
+        })
+    intraday_df = pd.DataFrame(intra_rows)
+    config = load_config(CONFIG_PATH)
+    from winstan.storage.parquet_store import ParquetStore
+    pstore = ParquetStore(config.parquet_root)
+    pstore.write_intraday_snapshot(today_str, intraday_df)
+    print(f"[preclose] Saved intraday snapshot: {len(intraday_df)} stocks")
+
+    # 3. 读取现有 screening_results
     print("[preclose] Reading screening results...")
     with store.connect() as conn:
         results = conn.execute("SELECT * FROM screening_results").fetchdf()

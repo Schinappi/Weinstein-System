@@ -29,6 +29,27 @@ class ParquetStore:
         path = self._symbol_path(dataset, symbol)
         pl.from_pandas(frame).write_parquet(path)
 
+    def write_intraday_snapshot(self, date_str: str, frame: pd.DataFrame) -> None:
+        """Write a snapshot of intraday real-time data for a given date.
+        
+        The frame must have at least columns: symbol, trade_date, open, high, low, close, volume.
+        Stored as a single parquet file under data/intraday/YYYY-MM-DD.parquet
+        so it can be merged with historical daily_bars without overwriting them.
+        """
+        if frame.empty:
+            return
+        dataset_dir = self.root / "intraday"
+        dataset_dir.mkdir(parents=True, exist_ok=True)
+        path = dataset_dir / f"{date_str}.parquet"
+        pl.from_pandas(frame).write_parquet(path)
+
+    def read_intraday_snapshot(self, date_str: str) -> pd.DataFrame:
+        """Read intraday snapshot for a date, returns empty DataFrame if not found."""
+        path = self.root / "intraday" / f"{date_str}.parquet"
+        if not path.exists():
+            return pd.DataFrame()
+        return pl.read_parquet(path).to_pandas()
+
     def read_symbol_frame(self, dataset: str, symbol: str) -> pd.DataFrame:
         path = self._symbol_path(dataset, symbol)
         if not path.exists():

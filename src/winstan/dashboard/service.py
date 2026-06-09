@@ -481,10 +481,27 @@ class DashboardService:
         return _to_text(matched.iloc[0].get("name"))
 
     def _ensure_daily_bars(self, symbol: str) -> pd.DataFrame:
+        # 1. 读历史日K
         cached = clean_daily_bars(self.parquet_store.read_symbol_frame("daily_bars", symbol))
+        
+        # 2. 如果有今日 intraday 快照，合并进去
+        today_str = pd.Timestamp.now(tz="Asia/Shanghai").strftime("%Y-%m-%d")
+        intraday = self.parquet_store.read_intraday_snapshot(today_str)
+        if not intraday.empty:
+            today_rows = intraday[intraday["symbol"] == symbol].copy()
+            if not today_rows.empty:
+                today_rows["trade_date"] = pd.to_datetime(today_rows["trade_date"])
+                # 如果历史已有今天的数据，先剔除
+                if not cached.empty:
+                    cached = cached[cached["trade_date"].dt.strftime("%Y-%m-%d") != today_str]
+                merged = clean_daily_bars(pd.concat([cached, today_rows], ignore_index=True))
+                if not merged.empty:
+                    return merged
+        
         if not cached.empty:
             return cached
 
+        # 3. 缓存没有则从数据源拉取
         try:
             fetched = self.router.fetch_daily_bars(
                 [symbol],

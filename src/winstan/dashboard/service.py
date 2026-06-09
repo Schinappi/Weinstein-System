@@ -405,6 +405,55 @@ class DashboardService:
         self._recommendations = recs
         return {"recommendations": recs}
 
+    def run_preclose(self) -> dict[str, object]:
+        """手动触发尾盘实时排行榜重算，返回 (success, message, elapsed_seconds)"""
+        import subprocess
+        import sys
+        import time
+
+        t0 = time.time()
+        script = Path(__file__).resolve().parent.parent.parent.parent / "scripts" / "pre_close_ranking.py"
+        try:
+            proc = subprocess.run(
+                [sys.executable, str(script)],
+                capture_output=True, text=True, timeout=120,
+                cwd=script.parent.parent,
+            )
+        except subprocess.TimeoutExpired:
+            return {"success": False, "message": "超时（>120秒）", "elapsed_seconds": 120}
+        except Exception as e:
+            return {"success": False, "message": f"执行失败: {e}", "elapsed_seconds": time.time() - t0}
+
+        elapsed = time.time() - t0
+        stdout = proc.stdout or ""
+        stderr = proc.stderr or ""
+        exit_ok = proc.returncode == 0
+
+        # 解析输出
+        details = {}
+        for line in stdout.split("\n"):
+            line = line.strip()
+            if line.startswith("[preclose] Saved intraday snapshot:"):
+                details["intraday_count"] = line.split(":")[-1].strip().split()[0]
+            if line.startswith("Stage I:"):
+                parts = line.split("|")
+                for p in parts:
+                    kv = p.split(":")
+                    if len(kv) == 2:
+                        details[kv[0].strip()] = kv[1].strip()
+
+        # 刷新内存缓存
+        self.refresh_ranking_cache()
+        self._recommendations = None
+
+        return {
+            "success": exit_ok,
+            "message": "实时排行榜更新完成" if exit_ok else f"脚本异常退出(code={proc.returncode})",
+            "elapsed_seconds": round(elapsed, 1),
+            "details": details,
+            "stderr": stderr[:500] if stderr else "",
+        }
+
     def get_rankings_by_date(self, dt: str) -> dict[str, object]:
         results = self.duckdb_store.read_snapshot(dt)
         if results.empty:

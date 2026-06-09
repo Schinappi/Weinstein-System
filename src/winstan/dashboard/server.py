@@ -99,6 +99,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._send_json({"error": "手动加入监控已暂停"}, status=HTTPStatus.FORBIDDEN)
             return
 
+        if path == "/api/preclose/run":
+            result = self.service.run_preclose()
+            self._send_json(result)
+            return
+
         self._send_json({"error": "Unsupported endpoint"}, status=HTTPStatus.NOT_FOUND)
 
     def do_DELETE(self) -> None:

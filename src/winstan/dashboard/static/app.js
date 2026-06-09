@@ -63,6 +63,8 @@ const recBpSection = document.getElementById('recBpSection');
 const recBSection = document.getElementById('recBSection');
 const stage1Table = document.getElementById('stage1Table');
 const stage1DatePicker = document.getElementById('stage1DatePicker');
+const precloseRunBtn = document.getElementById('precloseRunBtn');
+const precloseLoading = document.getElementById('precloseLoading');
 
 let currentStage1Data = [];
 
@@ -113,6 +115,7 @@ function bindEvents() {
   refreshQuasiStage2Btn.addEventListener('click', () => refreshRankings('quasi-stage2'));
   refreshStage1Btn.addEventListener('click', () => refreshStage1());
   refreshRecsBtn.addEventListener('click', () => loadRecommendations({ force: true }));
+  precloseRunBtn.addEventListener('click', runPreclose);
   quasiStage2DatePicker.addEventListener('change', () => {
     loadRankingsByDate('quasi-stage2', quasiStage2DatePicker.value);
   });
@@ -178,6 +181,32 @@ async function loadDashboard() {
   populateDatePickers(payload.snapshot_dates || []);
   renderRankingTable(stage2Table, payload.stage2 || [], 'stage2');
   renderQuasiStage2Table(quasiStage2Table, payload.quasi_stage2 || []);
+}
+
+async function runPreclose() {
+  precloseRunBtn.disabled = true;
+  precloseRunBtn.textContent = '⏳ 更新中...';
+  precloseLoading.classList.remove('hidden');
+  try {
+    const resp = await fetch('/api/preclose/run', { method: 'POST' });
+    const result = await resp.json();
+    if (result.success) {
+      // 重新加载整个总览页
+      await loadDashboard();
+      precloseLoading.textContent = `✅ 更新完成（${result.elapsed_seconds}秒）`;
+    } else {
+      precloseLoading.textContent = `❌ ${result.message}`;
+    }
+  } catch (e) {
+    precloseLoading.textContent = `❌ 网络错误: ${e.message}`;
+  } finally {
+    precloseRunBtn.disabled = false;
+    precloseRunBtn.innerHTML = '<span class="btn-icon">🔄</span> 实时更新排行榜';
+    setTimeout(() => {
+      precloseLoading.classList.add('hidden');
+      precloseLoading.textContent = '拉取腾讯行情并重算中...';
+    }, 5000);
+  }
 }
 
 function populateDatePickers(dates) {

@@ -408,21 +408,21 @@ class DashboardService:
         return {"recommendations": recs}
 
     def run_preclose(self) -> dict[str, object]:
-        """手动触发实时排行榜重算 + 完整 Phase1 筛选，返回 (success, message, elapsed_seconds)"""
+        """手动触发：拉腾讯实时行情 → 注入今日日K → 跑完整 Phase1 筛选 → 刷新排行缓存"""
         import subprocess
         import sys
         import time
 
         t0 = time.time()
-        script = Path(__file__).resolve().parent.parent.parent.parent / "scripts" / "pre_close_ranking.py"
+        script = Path(__file__).resolve().parent.parent.parent.parent / "scripts" / "preclose_and_phase1.py"
         try:
             proc = subprocess.run(
                 [sys.executable, str(script)],
-                capture_output=True, text=True, timeout=120,
+                capture_output=True, text=True, timeout=300,
                 cwd=script.parent.parent,
             )
         except subprocess.TimeoutExpired:
-            return {"success": False, "message": "预收盘超时（>120秒）", "elapsed_seconds": 120}
+            return {"success": False, "message": "预收盘+Phase1超时（>300秒）", "elapsed_seconds": 300}
         except Exception as e:
             return {"success": False, "message": f"预收盘执行失败: {e}", "elapsed_seconds": time.time() - t0}
 
@@ -440,28 +440,38 @@ class DashboardService:
                 "stderr": stderr[:500] if stderr else "",
             }
 
-        # 解析预收盘输出
+        # 解析 JSON 摘要行 `[preclose-summary] {...}`
         details = {}
         for line in stdout.split("\n"):
             line = line.strip()
-            if line.startswith("[preclose] Saved intraday snapshot:"):
-                details["intraday_count"] = line.split(":")[-1].strip().split()[0]
-            if line.startswith("Stage I:"):
-                parts = line.split("|")
-                for p in parts:
-                    kv = p.split(":")
-                    if len(kv) == 2:
-                        details[kv[0].strip()] = kv[1].strip()
+            if line.startswith("[preclose-summary] "):
+                try:
+                    details = json.loads(line[len("[preclose-summary] "):])
+                except Exception:
+                    pass
+                break
 
         # 刷新内存缓存
         self.refresh_ranking_cache()
         self._recommendations = None
 
+        candidate_count = details.get("candidate_count", 0)
+        stage2_count = details.get("stage2_count", 0)
+        stage2_top = details.get("stage2_top_count", 0)
+        total_symbols = details.get("total_symbols", 0)
+        details_elapsed = details.get("elapsed_seconds", round(elapsed, 1))
+
         return {
-            "success": exit_ok,
-            "message": "实时排行榜更新完成" if exit_ok else f"脚本异常退出(code={proc.returncode})",
+            "success": True,
+            "message": f"预收盘完成: {total_symbols}只股票, {candidate_count}候选, Stage II={stage2_count}(前{stage2_top})",
             "elapsed_seconds": round(elapsed, 1),
-            "details": details,
+            "details": {
+                "total_symbols": total_symbols,
+                "candidate_count": candidate_count,
+                "stage2_count": stage2_count,
+                "stage2_top_count": stage2_top,
+                "script_elapsed": details_elapsed,
+            },
         }
 
     def get_rankings_by_date(self, dt: str) -> dict[str, object]:

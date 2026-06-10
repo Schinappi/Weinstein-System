@@ -365,7 +365,9 @@ class DashboardService:
 
             results = self._read_results_from_duckdb()
             if results.empty:
-                results = WeinsteinScreener(self.config).run()["results"]
+                # 禁止自动触发 Phase1 (内存密集, 易 OOM)
+                # Phase1 应由外部脚本手动触发
+                pass
 
             if "trade_date" in results.columns:
                 results["trade_date"] = pd.to_datetime(results["trade_date"], errors="coerce")

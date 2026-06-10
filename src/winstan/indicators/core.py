@@ -25,6 +25,7 @@ def compute_weekly_indicators(
         market = pd.DataFrame(columns=["trade_date", "market_close"])
     weekly["trade_date"] = pd.to_datetime(weekly["trade_date"])
     weekly = weekly.merge(market, on="trade_date", how="left")
+    weekly["market_close"] = weekly["market_close"].ffill()
 
     grouped = weekly.groupby("symbol", sort=False)
     ma_window = config.strategy.ma_window_weeks

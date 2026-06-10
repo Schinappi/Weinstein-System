@@ -25,7 +25,7 @@ class DuckDBStore:
         escaped_glob = parquet_glob.replace("'", "''\"")
         with self.connect() as conn:
             conn.execute(
-                f"CREATE OR REPLACE VIEW {view_name} AS SELECT * FROM read_parquet('{escaped_glob}');"
+                f"CREATE OR REPLACE VIEW {view_name} AS SELECT * FROM read_parquet('{escaped_glob}', union_by_name=true);"
             )
 
     def write_results(self, table_name: str, frame: pd.DataFrame) -> None:

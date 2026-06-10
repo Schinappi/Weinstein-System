@@ -46,21 +46,56 @@ class WeinsteinScreener:
         self._ensure_stock_cache(symbols)
         self._ensure_index_cache(self.config.market.benchmark_symbol)
 
-        daily_bars = clean_daily_bars(self.parquet_store.read_many("daily_bars", symbols))
-        market_daily = clean_daily_bars(
-            self.parquet_store.read_many("index_bars", [self.config.market.benchmark_symbol])
-        )
-
-        weekly_bars = build_weekly_bars(daily_bars)
+        # Build market weekly once (small)
+        with self.duckdb_store.connect() as conn:
+            market_daily = clean_daily_bars(
+                conn.execute("SELECT * FROM index_bars").fetchdf()
+            )
         market_weekly = build_weekly_bars(market_daily)
         market_weekly = compute_weekly_indicators(market_weekly, market_weekly, self.config)
         market_state = evaluate_market_trend(market_weekly, self.config)
+        del market_daily
 
-        weekly_bars = compute_weekly_indicators(weekly_bars, market_weekly, self.config)
-        rs_ranks = compute_rs_ranks(weekly_bars)
-        weekly_bars = weekly_bars.merge(rs_ranks, on="symbol", how="left")
+        # Process stocks in batches to avoid OOM.
+        # RS ranks need ALL stocks, so collect rs_composite per batch and rank at the end.
+        batch_size = 500
+        all_weekly: list[pd.DataFrame] = []
+        all_rs_composite: list[pd.DataFrame] = []
+        for batch_idx in range(0, len(symbols), batch_size):
+            batch_symbols = symbols[batch_idx:batch_idx + batch_size]
+            with self.duckdb_store.connect() as conn:
+                placeholders = ",".join(f"'{s}'" for s in batch_symbols)
+                batch_daily = clean_daily_bars(
+                    conn.execute(f"SELECT * FROM daily_bars WHERE symbol IN ({placeholders})").fetchdf()
+                )
+            batch_weekly = build_weekly_bars(batch_daily)
+            batch_weekly = compute_weekly_indicators(batch_weekly, market_weekly, self.config)
+
+            # Collect rs_composite for ALL-STOCK ranking later
+            latest = batch_weekly.sort_values(["symbol", "trade_date"]).groupby("symbol", as_index=False).tail(1).copy()
+            rs_comp = latest["rs_13w_return"].fillna(0.0) * 0.50 \
+                      + latest["rs_26w_return"].fillna(0.0) * 0.30 \
+                      + latest["rs_52w_return"].fillna(0.0) * 0.20
+            all_rs_composite.append(pd.DataFrame({"symbol": latest["symbol"], "rs_composite": rs_comp}))
+
+            all_weekly.append(batch_weekly)
+            del batch_daily, batch_weekly, latest
+
+            print(f"[phase1] batch {batch_idx // batch_size + 1}/{(len(symbols) + batch_size - 1) // batch_size} done ({len(batch_symbols)} symbols)")
+
+        # Combine weekly, compute RS ranks across ALL stocks, merge back
+        weekly_bars = pd.concat(all_weekly, ignore_index=True) if all_weekly else pd.DataFrame()
+        del all_weekly
+
+        rs_ranks = pd.concat(all_rs_composite, ignore_index=True) if all_rs_composite else pd.DataFrame()
+        del all_rs_composite
+        if not rs_ranks.empty:
+            rs_ranks["rs_rank_pct"] = rs_ranks["rs_composite"].rank(method="dense", pct=True, ascending=False) * 100.0
+            weekly_bars = weekly_bars.merge(rs_ranks[["symbol", "rs_rank_pct", "rs_composite"]], on="symbol", how="left")
+        del rs_ranks
 
         results = self._evaluate_symbols(weekly_bars, market_state)
+        del weekly_bars
         if not results.empty:
             results = results.merge(universe[["symbol", "name"]], on="symbol", how="left")
             results = apply_stage2_scoring(results, self.config)

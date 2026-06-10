@@ -28,7 +28,7 @@ market:
   use_market_filter: true
 
 strategy:
-  ma_window_weeks: 30
+  ma_window_weeks: 29
   short_ma_window_weeks: 10
   ma_slope_lookback_weeks: 4
   volume_avg_weeks: 10

@@ -165,8 +165,10 @@ async function runPreclose() {
     const resp = await fetch('/api/preclose/run', { method: 'POST' });
     const result = await resp.json();
     if (result.success) {
-      // 重新加载整个总览页
+      // 重新加载所有排行榜
       await loadDashboard();
+      await loadStage1();
+      await loadRecommendations();
       precloseLoading.textContent = `✅ 更新完成（${result.elapsed_seconds}秒）`;
     } else {
       precloseLoading.textContent = `❌ ${result.message}`;

@@ -421,7 +421,14 @@ def main() -> None:
     stage2 = build_stage2_top_n(updated, config)
     quasi = build_quasi_stage2_top_n(updated, config)
 
-    # 5. 重新跑智能推荐
+    # 5. 写回 DuckDB（让 Dashboard 能读到最新数据）
+    print("[preclose] Writing updated screening_results back to DuckDB...")
+    with store.connect() as conn:
+        conn.execute("DROP TABLE IF EXISTS screening_results")
+        conn.execute("CREATE TABLE screening_results AS SELECT * FROM updated")
+    print(f"[preclose] Written {len(updated)} rows to screening_results")
+
+    # 6. 重新跑智能推荐
     print("[preclose] Computing recommendations...")
     recs = compute_recommendations(updated, config.parquet_root)
 

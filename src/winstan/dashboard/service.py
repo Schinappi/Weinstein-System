@@ -406,7 +406,7 @@ class DashboardService:
         return {"recommendations": recs}
 
     def run_preclose(self) -> dict[str, object]:
-        """手动触发尾盘实时排行榜重算，返回 (success, message, elapsed_seconds)"""
+        """手动触发实时排行榜重算 + 完整 Phase1 筛选，返回 (success, message, elapsed_seconds)"""
         import subprocess
         import sys
         import time
@@ -420,16 +420,25 @@ class DashboardService:
                 cwd=script.parent.parent,
             )
         except subprocess.TimeoutExpired:
-            return {"success": False, "message": "超时（>120秒）", "elapsed_seconds": 120}
+            return {"success": False, "message": "预收盘超时（>120秒）", "elapsed_seconds": 120}
         except Exception as e:
-            return {"success": False, "message": f"执行失败: {e}", "elapsed_seconds": time.time() - t0}
+            return {"success": False, "message": f"预收盘执行失败: {e}", "elapsed_seconds": time.time() - t0}
 
         elapsed = time.time() - t0
         stdout = proc.stdout or ""
         stderr = proc.stderr or ""
         exit_ok = proc.returncode == 0
+        if not exit_ok:
+            self.refresh_ranking_cache()
+            self._recommendations = None
+            return {
+                "success": False,
+                "message": f"预收盘脚本异常退出(code={proc.returncode})",
+                "elapsed_seconds": round(elapsed, 1),
+                "stderr": stderr[:500] if stderr else "",
+            }
 
-        # 解析输出
+        # 解析预收盘输出
         details = {}
         for line in stdout.split("\n"):
             line = line.strip()
@@ -451,7 +460,6 @@ class DashboardService:
             "message": "实时排行榜更新完成" if exit_ok else f"脚本异常退出(code={proc.returncode})",
             "elapsed_seconds": round(elapsed, 1),
             "details": details,
-            "stderr": stderr[:500] if stderr else "",
         }
 
     def get_rankings_by_date(self, dt: str) -> dict[str, object]:

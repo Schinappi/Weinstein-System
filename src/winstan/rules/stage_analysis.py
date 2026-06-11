@@ -66,6 +66,16 @@ def evaluate_stage(latest: pd.Series, recent: pd.DataFrame, config: AppConfig) -
     trend_score += 15.0 if highs_rising else 0.0
     trend_score += 15.0 if lows_rising else 0.0
 
+    # Extension pct: (close - ma_30w) / ma_30w as percentage
+    extension_pct = (
+        float((latest["close"] - latest["ma_30w"]) / latest["ma_30w"]) * 100.0
+        if pd.notna(latest.get("ma_30w")) and float(latest["ma_30w"]) > 0
+        else None
+    )
+
+    # Stage II age: count consecutive weeks with close > ma_30w (proxy for Stage II duration)
+    stage2_age_weeks = _count_consecutive_above_ma(recent, config)
+
     return {
         "stage_label": stage,
         "stage2_candidate": candidate,
@@ -73,6 +83,8 @@ def evaluate_stage(latest: pd.Series, recent: pd.DataFrame, config: AppConfig) -
         "base_flatness_ok": base_flatness_ok,
         "stage2_score": stage2_score,
         "stage2_reason": stage2_reason,
+        "extension_pct": extension_pct,
+        "stage2_age_weeks": stage2_age_weeks,
     }
 
 
@@ -89,6 +101,21 @@ def _is_flat_base(latest: pd.Series, config: AppConfig) -> bool:
         and float(std_pct) <= config.strategy.watch_base_max_close_std_pct
         and float(ma_spread_pct) <= config.strategy.watch_ma_spread_max_pct
     )
+
+
+def _count_consecutive_above_ma(recent: pd.DataFrame, config: AppConfig) -> int:
+    """Count consecutive weeks where close > ma_30w (proxy for Stage II age)."""
+    if recent.empty or "ma_30w" not in recent.columns or "close" not in recent.columns:
+        return 0
+    above = recent["close"] > recent["ma_30w"]
+    # Walk backwards from the latest week, counting consecutive True
+    count = 0
+    for val in above[::-1]:
+        if val:
+            count += 1
+        else:
+            break
+    return count
 
 
 def _stage2_score(
@@ -238,6 +265,8 @@ def _build_stage2_profile(row: pd.Series, config: AppConfig) -> dict[str, object
     breakout_quality_score = _score_breakout_quality(row, config)
     risk_score = _score_risk(row, config)
     safety_score = _clamp_score(100.0 - risk_score)
+    extension_score = _score_extension(row)
+    stage2_age_bonus = _score_stage2_age(row)
 
     # Risk gate: stocks that are too risky are eliminated outright.
     if risk_score > RISK_GATE_THRESHOLD:
@@ -249,6 +278,8 @@ def _build_stage2_profile(row: pd.Series, config: AppConfig) -> dict[str, object
             "risk_score": risk_score,
             "breakout_quality_score": breakout_quality_score,
             "safety_score": safety_score,
+            "extension_score": extension_score,
+            "stage2_age_bonus": stage2_age_bonus,
             "final_score": 0.0,
             "stage2_score": 0.0,
             "stage2_reason": reason,
@@ -256,15 +287,17 @@ def _build_stage2_profile(row: pd.Series, config: AppConfig) -> dict[str, object
             "stage2_watch_reason": reason,
         }
 
-    # Structure is the ticket — it gets you in the game.
-    # Strength (RS) and timing (entry position) drive real differentiation.
-    # Breakout quality and safety add conviction and risk control.
+    # Final weighted score: buy-point oriented.
+    # Timing (entry position) and strength (RS) are the primary drivers,
+    # with extension (distance from MA) preventing chase-on-extended setups.
     final_score = _clamp_score(
-        structure_score * 0.20
-        + timing_score * 0.20
-        + strength_score * 0.30
-        + breakout_quality_score * 0.15
-        + safety_score * 0.15
+        structure_score * 0.20          # 趋势结构完整性
+        + timing_score * 0.30           # 买点时机 (权重最高, 最接近突破位)
+        + strength_score * 0.20         # RS强度
+        + breakout_quality_score * 0.15 # 突破质量
+        + safety_score * 0.05           # 基础安全
+        + extension_score * 0.10        # 扩展度惩罚 (离30周线越近越好)
+        + stage2_age_bonus              # 新鲜度奖励 (刚转Stage II加分)
     )
     reason = _build_stage2_reason(row, structure_score, timing_score, strength_score, risk_score)
     return {
@@ -274,6 +307,8 @@ def _build_stage2_profile(row: pd.Series, config: AppConfig) -> dict[str, object
         "risk_score": risk_score,
         "breakout_quality_score": breakout_quality_score,
         "safety_score": safety_score,
+        "extension_score": extension_score,
+        "stage2_age_bonus": stage2_age_bonus,
         "final_score": final_score,
         "stage2_score": final_score,
         "stage2_reason": reason,
@@ -326,9 +361,9 @@ def _score_timing(row: pd.Series, config: AppConfig) -> float:
 
     # Distance from the breakout level — closer is better (but not extended).
     if breakout_pct is not None:
-        if -2.0 <= breakout_pct <= 5.0:
+        if -2.0 <= breakout_pct <= 2.0:
             score += 40.0
-        elif (-5.0 <= breakout_pct < -2.0) or (5.0 < breakout_pct <= config.strategy.watch_breakout_max_pct):
+        elif (-5.0 <= breakout_pct < -2.0) or (2.0 < breakout_pct <= config.strategy.watch_breakout_max_pct):
             score += 25.0
         elif breakout_pct > config.strategy.watch_breakout_max_pct:
             score += 8.0
@@ -388,6 +423,41 @@ def _score_strength(row: pd.Series) -> float:
     return _clamp_score(score)
 
 
+def _score_extension(row: pd.Series) -> float:
+    """Score how close the stock is to its 30-week MA (lower = better)."""
+    extension_pct = _to_float(row.get("extension_pct"))
+    if extension_pct is None:
+        return 0.0
+    if extension_pct <= 5.0:
+        return 100.0
+    if extension_pct <= 10.0:
+        return 90.0
+    if extension_pct <= 15.0:
+        return 70.0
+    if extension_pct <= 20.0:
+        return 40.0
+    return 10.0
+
+
+def _score_stage2_age(row: pd.Series) -> float:
+    """Bonus for stocks that recently entered Stage II (freshness matters)."""
+    age = row.get("stage2_age_weeks")
+    if age is None or pd.isna(age):
+        stage_label = str(row.get("stage_label") or "")
+        if stage_label != "II":
+            return 0.0
+        age = 0
+    else:
+        age = int(age)
+    if age <= 8:
+        return 20.0
+    if age <= 16:
+        return 15.0
+    if age <= 24:
+        return 10.0
+    return 0.0
+
+
 def _score_risk(row: pd.Series, config: AppConfig) -> float:
     breakout_status = str(row.get("breakout_status") or "no_breakout_level")
     stage_label = str(row.get("stage_label") or "UNKNOWN")
@@ -419,6 +489,8 @@ def _score_risk(row: pd.Series, config: AppConfig) -> float:
             score += 20.0
         elif price_vs_ma_pct > 10.0:
             score += 10.0
+        elif price_vs_ma_pct > 8.0:
+            score += 6.0
         elif price_vs_ma_pct < -8.0:
             score += 14.0
 
@@ -462,6 +534,16 @@ def _build_stage2_reason(
         bits.append("大盘过滤未通过")
     if not _to_bool(row.get("resistance_ok")):
         bits.append("上方空间偏小")
+
+    # Extension info
+    extension_pct = _to_float(row.get("extension_pct"))
+    if extension_pct is not None:
+        if extension_pct > 15.0:
+            bits.append("远离30周线")
+        elif extension_pct > 10.0:
+            bits.append("偏扩展")
+        elif extension_pct <= 5.0:
+            bits.append("紧贴均线")
     return " / ".join(bits)
 
 

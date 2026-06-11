@@ -145,16 +145,24 @@ def inject_realtime_into_daily_bars(
     realtime: dict[str, dict],
     today: date,
 ) -> None:
-    """保存实时行情为 daily_bars/__today__.parquet，让 DuckDB view 自动包含今日日K"""
+    """保存实时行情为 daily_bars/__today__.parquet + intraday/YYYY-MM-DD.parquet"""
     today_df = realtime_to_daily_bars(realtime, today)
     if today_df.empty:
         print("[inject] No realtime data to inject")
         return
 
     parquet_root = Path(config.parquet_root)
+    # 1. Inject into daily_bars (for Phase1 DuckDB view)
     today_path = parquet_root / "daily_bars" / "__today__.parquet"
     today_df.to_parquet(today_path, index=False)
     print(f"[inject] Saved {len(today_df)} bars → {today_path}")
+
+    # 2. Save intraday snapshot (for Dashboard K-line view via _ensure_daily_bars)
+    from winstan.storage.parquet_store import ParquetStore
+    store = ParquetStore(config.parquet_root)
+    today_str = today.strftime("%Y-%m-%d")
+    store.write_intraday_snapshot(today_str, today_df)
+    print(f"[inject] Saved intraday snapshot → {today_str}")
 
 
 def main() -> None:

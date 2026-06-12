@@ -34,7 +34,7 @@ strategy:
   volume_avg_weeks: 10
   daily_volume_avg_days: 50
   rs_rank_threshold_pct: 30
-  resistance_min_headroom_pct: 12
+  resistance_min_headroom_pct: 5
   resistance_lookback_weeks: 52
   breakout_lookback_weeks: 10
   breakout_min_pct: 1.5

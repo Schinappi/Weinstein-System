@@ -35,7 +35,9 @@ class DuckDBStore:
             conn.execute(f"CREATE TABLE {table_name} AS SELECT * FROM results_frame")
 
     def append_snapshot(self, frame: pd.DataFrame, snapshot_date: date | None = None) -> None:
-        """Append a daily snapshot of screening results with a snapshot_date column."""
+        """Append a daily snapshot of screening results with a snapshot_date column.
+        Automatically adds missing columns to the target table to handle schema evolution.
+        """
         snap = frame.copy()
         snap["_snapshot_date"] = (snapshot_date or date.today()).isoformat()
         with self.connect() as conn:
@@ -43,6 +45,24 @@ class DuckDBStore:
                 f"CREATE TABLE IF NOT EXISTS {SNAPSHOT_TABLE} AS "
                 f"SELECT * FROM snap WHERE FALSE"
             )
+            # Auto-add any columns that exist in the DataFrame but not in the table
+            table_cols = set(
+                row[0] for row in conn.execute(
+                    f"SELECT column_name FROM information_schema.columns "
+                    f"WHERE table_name='{SNAPSHOT_TABLE}'"
+                ).fetchall()
+            )
+            for col in snap.columns:
+                if col not in table_cols:
+                    dtype = "VARCHAR"
+                    if snap[col].dtype in ("int64", "Int64", "int32"):
+                        dtype = "BIGINT"
+                    elif snap[col].dtype in ("float64", "Float64", "float32"):
+                        dtype = "DOUBLE"
+                    elif snap[col].dtype == "bool":
+                        dtype = "BOOLEAN"
+                    conn.execute(f'ALTER TABLE {SNAPSHOT_TABLE} ADD COLUMN "{col}" {dtype}')
+                    print(f"[duckdb] Added column to {SNAPSHOT_TABLE}: {col} ({dtype})")
             conn.register("snap_frame", snap)
             cols = ", ".join(f'"{c}"' for c in snap.columns)
             conn.execute(f"INSERT INTO {SNAPSHOT_TABLE} ({cols}) SELECT * FROM snap_frame")

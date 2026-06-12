@@ -359,16 +359,19 @@ def _watch_rank_profile(row: pd.Series) -> dict[str, object]:
 
 
 def _is_core_candidate(row: pd.Series) -> bool:
-    return all(
-        [
-            _to_bool(row.get("market_ok")),
-            _to_bool(row.get("stage2_candidate")),
-            _to_bool(row.get("volume_ok")),
-            _to_bool(row.get("rs_ok")),
-            _to_bool(row.get("resistance_ok")),
-            _to_bool(row.get("breakout_ok")),
-        ]
-    )
+    breakout_status = str(row.get("breakout_status") or "no_breakout_level")
+    # 突破期/临近突破的股票天然靠近阻力位，不卡 resistance_ok
+    needs_resistance = breakout_status in {"extended_breakout", "no_breakout_level"}
+    gates = [
+        _to_bool(row.get("market_ok")),
+        _to_bool(row.get("stage2_candidate")),
+        _to_bool(row.get("volume_ok")),
+        _to_bool(row.get("rs_ok")),
+        _to_bool(row.get("breakout_ok")),
+    ]
+    if needs_resistance:
+        gates.append(_to_bool(row.get("resistance_ok")))
+    return all(gates)
 
 
 def _describe_stage(row: pd.Series) -> str:

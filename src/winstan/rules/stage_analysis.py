@@ -472,8 +472,10 @@ def _score_risk(row: pd.Series, config: AppConfig) -> float:
         score += 14.0
     if not _to_bool(row.get("volume_ok")):
         score += 10.0
+    # 突破期/临近突破的股票天然靠近阻力位，头寸惩罚已由 headroom_pct 单独处理
     if not _to_bool(row.get("resistance_ok")):
-        score += 14.0
+        if breakout_status not in {"near_breakout", "just_broke_out", "below_breakout"}:
+            score += 14.0
 
     if breakout_status == "extended_breakout":
         score += 26.0

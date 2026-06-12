@@ -92,10 +92,15 @@ def _resolve_target_entry_price(row: pd.Series, config: AppConfig) -> float | No
 
 
 def _resolve_stop_loss_reference(row: pd.Series) -> float | None:
-    for key in ("breakout_level", "ma_10w", "ma_30w"):
+    # 止损应参考均线支撑位，而非突破位（突破位是目标价）
+    for key in ("ma_10w", "ma_30w"):
         value = _to_float(row.get(key))
         if value is not None:
             return round(value, 4)
+    # 没有均线时的兜底：收盘价下方约7%
+    close = _to_float(row.get("close"))
+    if close is not None:
+        return round(close * 0.93, 4)
     return None
 
 

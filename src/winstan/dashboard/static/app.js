@@ -638,6 +638,7 @@ async function openStockDetail(symbol) {
   stage2Pill.textContent = 'Stage2: --';
   hideTooltip();
   showModal();
+  document.getElementById('fundamentalSection').classList.add('hidden');
   detailModal.querySelector('.modal-card').scrollTop = 0;
   detailModal.querySelector('.chart-panel').scrollTop = 0;
   detailModal.querySelector('.analysis-panel').scrollTop = 0;
@@ -710,7 +711,13 @@ function renderMetrics(metrics) {
 function renderFundamentalMetrics(fundamental) {
   const section = document.getElementById('fundamentalSection');
   const grid = document.getElementById('fundamentalGrid');
-  if (!fundamental || fundamental.holder_score === null && fundamental.nb_score === null && fundamental.moneyflow_confirm === null) {
+  // Show if at least one dimension has data
+  const hasData = fundamental && (
+    (fundamental.holder_score !== null && fundamental.holder_score !== undefined && !Number.isNaN(fundamental.holder_score))
+    || (fundamental.nb_score !== null && fundamental.nb_score !== undefined && !Number.isNaN(fundamental.nb_score))
+    || (fundamental.moneyflow_confirm !== null && fundamental.moneyflow_confirm !== undefined && !Number.isNaN(fundamental.moneyflow_confirm))
+  );
+  if (!hasData) {
     section.classList.add('hidden');
     return;
   }
@@ -732,7 +739,7 @@ function renderFundamentalMetrics(fundamental) {
   const mfAmount = fundamental.net_mf_amount;
 
   let holderDetail = '';
-  if (holderPct !== null && !Number.isNaN(holderPct)) {
+  if (holderPct !== null && holderPct !== undefined && !Number.isNaN(holderPct)) {
     const arrow = holderPct < 0 ? '📉' : '📈';
     holderDetail = `${arrow} 环比 ${fNum(holderPct)}%`;
   } else {
@@ -740,7 +747,7 @@ function renderFundamentalMetrics(fundamental) {
   }
 
   let nbDetail = '';
-  if (nbRatio !== null && !Number.isNaN(nbRatio)) {
+  if (nbRatio !== null && nbRatio !== undefined && !Number.isNaN(nbRatio)) {
     const parts = [`持仓占比 ${fNum(nbRatio)}%`];
     if (nbConsec && nbConsec > 0) parts.push(`连续增持 ${fInt(nbConsec)} 期`);
     nbDetail = parts.join(' · ');
@@ -749,7 +756,7 @@ function renderFundamentalMetrics(fundamental) {
   }
 
   let mfDetail = '';
-  if (mfAmount !== null && !Number.isNaN(mfAmount)) {
+  if (mfAmount !== null && mfAmount !== undefined && !Number.isNaN(mfAmount)) {
     const arrow = mfAmount > 0 ? '🟢' : '🔴';
     const absAmt = Math.abs(mfAmount);
     if (absAmt >= 100000000) {

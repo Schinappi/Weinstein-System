@@ -338,17 +338,94 @@ class DashboardService:
             "stage2_rank": self._lookup_rank(stage2, normalized, "stage2_top_n_rank"),
             "metrics": self._build_metrics(row, latest_trade_date=latest_trade_date),
             "chart": self._build_chart_payload(daily, row),
-            "fundamental": {
-                "holder_score": _to_float(row.get("holder_score")),
+            "fundamental": self._get_fundamental_data(row, normalized),
+        }
+
+    def _get_fundamental_data(self, row: pd.Series, symbol: str) -> dict[str, object]:
+        """Return fundamental data from row cache, or fetch live from Tushare if missing."""
+        holder_score = _to_float(row.get("holder_score"))
+        nb_score = _to_float(row.get("nb_score"))
+        mf_confirm = _to_float(row.get("moneyflow_confirm"))
+
+        # If any fundamental data exists in the cached row, use it
+        if holder_score is not None and nb_score is not None and mf_confirm is not None:
+            return {
+                "holder_score": holder_score,
                 "holder_change_pct": _to_float(row.get("holder_change_pct")),
                 "holder_num": _to_float(row.get("holder_num")),
-                "nb_score": _to_float(row.get("nb_score")),
+                "nb_score": nb_score,
                 "nb_ratio": _to_float(row.get("nb_ratio")),
                 "nb_consecutive_increases": _to_int(row.get("nb_consecutive_increases")),
-                "moneyflow_confirm": _to_float(row.get("moneyflow_confirm")),
+                "moneyflow_confirm": mf_confirm,
                 "net_mf_amount": _to_float(row.get("net_mf_amount")),
-            },
+            }
+
+        # Otherwise fetch on-demand (for searched stocks not in screening results)
+        return self._fetch_live_fundamental(symbol)
+
+    def _fetch_live_fundamental(self, symbol: str) -> dict[str, object]:
+        """Fetch fundamental data live from Tushare for a single symbol."""
+        from winstan.adapters.tushare_client import build_tushare_pro
+        from winstan.scoring.fundamental import (
+            compute_holder_score,
+            compute_moneyflow_confirm,
+            compute_northbound_score,
+            fetch_holder_data,
+            fetch_moneyflow_data,
+            fetch_northbound_data,
+        )
+
+        result: dict[str, object] = {
+            "holder_score": None,
+            "holder_change_pct": None,
+            "holder_num": None,
+            "nb_score": None,
+            "nb_ratio": None,
+            "nb_consecutive_increases": 0,
+            "moneyflow_confirm": None,
+            "net_mf_amount": None,
         }
+
+        try:
+            _, pro = build_tushare_pro()
+        except Exception:
+            return result
+
+        # 1. Holder data
+        try:
+            hd = fetch_holder_data(pro, [symbol])
+            if symbol in hd:
+                chg = hd[symbol].get("holder_change_pct")
+                result["holder_num"] = hd[symbol].get("holder_num")
+                result["holder_change_pct"] = chg
+                result["holder_score"] = compute_holder_score(chg)
+        except Exception:
+            pass
+
+        # 2. Northbound data
+        try:
+            nd = fetch_northbound_data(pro, [symbol])
+            if symbol in nd:
+                ratio = nd[symbol].get("nb_ratio")
+                consec = nd[symbol].get("nb_consecutive_increases", 0)
+                result["nb_ratio"] = ratio
+                result["nb_consecutive_increases"] = consec
+                result["nb_score"] = compute_northbound_score(ratio, consec)
+        except Exception:
+            pass
+
+        # 3. Moneyflow data
+        try:
+            md = fetch_moneyflow_data(pro, [symbol])
+            if symbol in md:
+                amt = md[symbol].get("net_mf_amount")
+                consec = md[symbol].get("mf_consecutive_positive", 0)
+                result["net_mf_amount"] = amt
+                result["moneyflow_confirm"] = compute_moneyflow_confirm(amt, consec)
+        except Exception:
+            pass
+
+        return result
 
     def get_stock_analysis(self, symbol: str) -> dict[str, object]:
         normalized = symbol.strip().upper()

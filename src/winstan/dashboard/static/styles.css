@@ -607,6 +607,67 @@ tr.clickable:hover {
   margin-bottom: 18px;
 }
 
+/* ── Fundamental Scores ── */
+.fundamental-section {
+  margin-bottom: 18px;
+}
+
+.fundamental-section h4 {
+  margin: 0 0 12px;
+  font-size: 14px;
+  color: var(--text);
+}
+
+#fundamentalGrid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px;
+}
+
+.fundamental-card {
+  background: rgba(255, 255, 255, 0.78);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 14px;
+}
+
+.fundamental-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.fundamental-card-label {
+  font-size: 13px;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.fundamental-score {
+  font-size: 22px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.fundamental-score.score-positive {
+  color: var(--green);
+}
+
+.fundamental-score.score-negative {
+  color: var(--red);
+}
+
+.fundamental-score.score-neutral {
+  color: var(--muted);
+}
+
+.fundamental-card-detail {
+  font-size: 13px;
+  color: #475569;
+  line-height: 1.5;
+}
+
 .metric-card {
   border-radius: 16px;
   padding: 14px;

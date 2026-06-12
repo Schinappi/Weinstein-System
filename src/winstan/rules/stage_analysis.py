@@ -268,6 +268,11 @@ def _build_stage2_profile(row: pd.Series, config: AppConfig) -> dict[str, object
     extension_score = _score_extension(row)
     stage2_age_bonus = _score_stage2_age(row)
 
+    # ── 补充基本面评分（股东人数/北向资金/资金流） ──
+    holder_score = _to_float(row.get("holder_score")) or 0.0
+    nb_score = _to_float(row.get("nb_score")) or 0.0
+    moneyflow_confirm = _to_float(row.get("moneyflow_confirm")) or 0.0
+
     # Risk gate: stocks that are too risky are eliminated outright.
     if risk_score > RISK_GATE_THRESHOLD:
         reason = "风险过高，被过滤"
@@ -280,6 +285,9 @@ def _build_stage2_profile(row: pd.Series, config: AppConfig) -> dict[str, object
             "safety_score": safety_score,
             "extension_score": extension_score,
             "stage2_age_bonus": stage2_age_bonus,
+            "holder_score": holder_score,
+            "nb_score": nb_score,
+            "moneyflow_confirm": moneyflow_confirm,
             "final_score": 0.0,
             "stage2_score": 0.0,
             "stage2_reason": reason,
@@ -298,6 +306,9 @@ def _build_stage2_profile(row: pd.Series, config: AppConfig) -> dict[str, object
         + safety_score * 0.05           # 基础安全
         + extension_score * 0.10        # 扩展度惩罚 (离30周线越近越好)
         + stage2_age_bonus              # 新鲜度奖励 (刚转Stage II加分)
+        + holder_score * 0.05           # 股东人数（筹码集中度加分）
+        + nb_score * 0.05               # 北向资金（机构资金确认）
+        + moneyflow_confirm * 0.05      # 资金流确认（大单净流入加分）
     )
     reason = _build_stage2_reason(row, structure_score, timing_score, strength_score, risk_score)
     return {
@@ -309,6 +320,9 @@ def _build_stage2_profile(row: pd.Series, config: AppConfig) -> dict[str, object
         "safety_score": safety_score,
         "extension_score": extension_score,
         "stage2_age_bonus": stage2_age_bonus,
+        "holder_score": holder_score,
+        "nb_score": nb_score,
+        "moneyflow_confirm": moneyflow_confirm,
         "final_score": final_score,
         "stage2_score": final_score,
         "stage2_reason": reason,

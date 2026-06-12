@@ -656,6 +656,7 @@ async function openStockDetail(symbol) {
     stage1Pill.textContent = payload.stage1_rank ? `Stage1: 第 ${payload.stage1_rank} 名` : 'Stage1: 未上榜';
     stage2Pill.textContent = payload.stage2_rank ? `Stage2: 第 ${payload.stage2_rank} 名` : 'Stage2: 未上榜';
     renderMetrics(payload.metrics || []);
+    renderFundamentalMetrics(payload.fundamental || null);
     drawCandles(chartCanvas, payload.chart || {});
     if (payload.analysis) {
       renderAnalysisMarkdown(payload.analysis);
@@ -704,6 +705,86 @@ function renderMetrics(metrics) {
       <div class="value">${escapeHtml(item.value || '--')}</div>
     </div>
   `).join('');
+}
+
+function renderFundamentalMetrics(fundamental) {
+  const section = document.getElementById('fundamentalSection');
+  const grid = document.getElementById('fundamentalGrid');
+  if (!fundamental || fundamental.holder_score === null && fundamental.nb_score === null && fundamental.moneyflow_confirm === null) {
+    section.classList.add('hidden');
+    return;
+  }
+  section.classList.remove('hidden');
+
+  const fNum = (v, d = '--') => (v !== null && v !== undefined && !Number.isNaN(v) ? Number(v).toFixed(2) : d);
+  const fInt = (v) => (v !== null && v !== undefined && !Number.isNaN(v) ? Number(v).toFixed(0) : '--');
+  const scoreClass = (v) => {
+    if (v === null || v === undefined || Number.isNaN(v)) return '';
+    return v > 0 ? 'score-positive' : v < 0 ? 'score-negative' : 'score-neutral';
+  };
+
+  const holderScore = fundamental.holder_score;
+  const holderPct = fundamental.holder_change_pct;
+  const nbScore = fundamental.nb_score;
+  const nbRatio = fundamental.nb_ratio;
+  const nbConsec = fundamental.nb_consecutive_increases;
+  const mfConfirm = fundamental.moneyflow_confirm;
+  const mfAmount = fundamental.net_mf_amount;
+
+  let holderDetail = '';
+  if (holderPct !== null && !Number.isNaN(holderPct)) {
+    const arrow = holderPct < 0 ? '📉' : '📈';
+    holderDetail = `${arrow} 环比 ${fNum(holderPct)}%`;
+  } else {
+    holderDetail = '暂无数据';
+  }
+
+  let nbDetail = '';
+  if (nbRatio !== null && !Number.isNaN(nbRatio)) {
+    const parts = [`持仓占比 ${fNum(nbRatio)}%`];
+    if (nbConsec && nbConsec > 0) parts.push(`连续增持 ${fInt(nbConsec)} 期`);
+    nbDetail = parts.join(' · ');
+  } else {
+    nbDetail = '暂无数据';
+  }
+
+  let mfDetail = '';
+  if (mfAmount !== null && !Number.isNaN(mfAmount)) {
+    const arrow = mfAmount > 0 ? '🟢' : '🔴';
+    const absAmt = Math.abs(mfAmount);
+    if (absAmt >= 100000000) {
+      mfDetail = `${arrow} 净流向 ${(absAmt / 100000000).toFixed(2)} 亿`;
+    } else if (absAmt >= 10000) {
+      mfDetail = `${arrow} 净流向 ${(absAmt / 10000).toFixed(2)} 万`;
+    } else {
+      mfDetail = `${arrow} 净流向 ${absAmt.toFixed(0)}`;
+    }
+  } else {
+    mfDetail = '暂无数据';
+  }
+
+  grid.innerHTML = `
+    <div class="fundamental-card">
+      <div class="fundamental-card-head">
+        <span class="fundamental-card-label">👥 股东人数</span>
+        <span class="fundamental-score ${scoreClass(holderScore)}">${fInt(holderScore)}</span>
+      </div>
+      <div class="fundamental-card-detail">${holderDetail}</div>
+    </div>
+    <div class="fundamental-card">
+      <div class="fundamental-card-head">
+        <span class="fundamental-card-label">🏦 北向资金</span>
+        <span class="fundamental-score ${scoreClass(nbScore)}">${fInt(nbScore)}</span>
+      </div>
+      <div class="fundamental-card-detail">${nbDetail}</div>
+    </div>
+    <div class="fundamental-card">
+      <div class="fundamental-card-head">
+        <span class="fundamental-card-label">💰 资金流向</span>
+        <span class="fundamental-score ${scoreClass(mfConfirm)}">${fInt(mfConfirm)}</span>
+      </div>
+      <div class="fundamental-card-detail">${mfDetail}</div>
+    </div>`;
 }
 
 function showModal() {

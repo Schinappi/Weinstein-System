@@ -338,6 +338,16 @@ class DashboardService:
             "stage2_rank": self._lookup_rank(stage2, normalized, "stage2_top_n_rank"),
             "metrics": self._build_metrics(row, latest_trade_date=latest_trade_date),
             "chart": self._build_chart_payload(daily, row),
+            "fundamental": {
+                "holder_score": _to_float(row.get("holder_score")),
+                "holder_change_pct": _to_float(row.get("holder_change_pct")),
+                "holder_num": _to_float(row.get("holder_num")),
+                "nb_score": _to_float(row.get("nb_score")),
+                "nb_ratio": _to_float(row.get("nb_ratio")),
+                "nb_consecutive_increases": _to_int(row.get("nb_consecutive_increases")),
+                "moneyflow_confirm": _to_float(row.get("moneyflow_confirm")),
+                "net_mf_amount": _to_float(row.get("net_mf_amount")),
+            },
         }
 
     def get_stock_analysis(self, symbol: str) -> dict[str, object]:

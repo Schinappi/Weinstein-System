@@ -17,6 +17,7 @@ from winstan.rules.relative_strength_rule import evaluate_relative_strength
 from winstan.rules.resistance_rule import evaluate_resistance
 from winstan.rules.stage_analysis import apply_stage2_scoring, evaluate_stage
 from winstan.rules.volume_confirmation import evaluate_volume
+from winstan.scoring.fundamental import fetch_supplemental_data
 from winstan.scoring.ranker import build_stage2_top_n, score_and_rank
 from winstan.storage.duckdb_store import DuckDBStore
 from winstan.storage.parquet_store import ParquetStore
@@ -98,6 +99,8 @@ class WeinsteinScreener:
         del weekly_bars
         if not results.empty:
             results = results.merge(universe[["symbol", "name"]], on="symbol", how="left")
+            # 获取补充数据（股东人数/北向资金/资金流）并合并到结果
+            results = fetch_supplemental_data(results)
             results = apply_stage2_scoring(results, self.config)
 
         candidates, top_n = score_and_rank(results, self.config)

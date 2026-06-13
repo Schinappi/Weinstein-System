@@ -65,49 +65,40 @@ def batch_fetch_holder(pro: object) -> pd.DataFrame:
     return pd.DataFrame(columns=["ts_code", "end_date", "holder_num"])
 
 
-def _fetch_northbound_candidates(pro: object, scored: pd.DataFrame) -> pd.DataFrame:
-    """Fetch northbound data per-stock for candidate symbols only.
+def batch_fetch_northbound(pro: object) -> pd.DataFrame:
+    """Fetch northbound A-share holdings for ALL stocks in one batch.
 
-    ``hk_hold`` does NOT support batch queries for A-shares (returns
-    only HK stocks when queried without ``ts_code``).  We fetch per
-    candidate symbol instead — at most ~30 API calls, not 5000+.
+    ``hk_hold`` with ``exchange='SH'`` or ``exchange='SZ'`` returns ONLY
+    A-share northbound data (no HK stocks).  Two API calls cover all A-shares.
+
+    Returns combined DataFrame with ~4100 rows for the latest month.
     """
-    candidates = scored[scored["stage2_candidate"] == True]["symbol"].dropna().unique().tolist()
-    if not candidates:
-        return pd.DataFrame(columns=["symbol", "nb_ratio", "nb_consecutive_increases", "nb_score"])
-
-    result_rows = []
-    for sym in candidates:
+    frames = []
+    for exchange, label in [("SH", "SH"), ("SZ", "SZ")]:
         try:
-            df = pro.hk_hold(ts_code=sym, limit=5)
-            if df is None or df.empty:
-                continue
-            df = df.copy()
-            df["trade_date"] = pd.to_datetime(df["trade_date"], errors="coerce")
-            df = df.sort_values("trade_date", ascending=False).reset_index(drop=True)
-            ratios = [_to_float(r) for r in df["ratio"] if _to_float(r) is not None]
-            if not ratios:
-                continue
-            nb_ratio = ratios[0]
-            consec = 0
-            for i in range(len(ratios) - 1):
-                if ratios[i] > ratios[i + 1]:
-                    consec += 1
-                else:
-                    break
-            result_rows.append({
-                "symbol": sym,
-                "nb_ratio": nb_ratio,
-                "nb_consecutive_increases": consec,
-                "nb_score": compute_northbound_score(nb_ratio, consec),
-            })
+            df = pro.hk_hold(exchange=exchange)
+            if df is not None and not df.empty:
+                result = df[["ts_code", "trade_date", "exchange", "vol", "ratio"]].copy()
+                frames.append(result)
+                print(f"[fundamental/batch] northbound {label}: {len(result)} rows")
         except Exception:
-            continue
-
-    print(f"  → northbound: {len(result_rows)}/{len(candidates)} candidates have data")
-    return pd.DataFrame(result_rows) if result_rows else pd.DataFrame(
-        columns=["symbol", "nb_ratio", "nb_consecutive_increases", "nb_score"]
-    )
+            # Fallback: try older dates
+            for td in ["20260331", "20260227", "20260130"]:
+                try:
+                    df = pro.hk_hold(trade_date=td, exchange=exchange)
+                    if df is not None and not df.empty:
+                        result = df[["ts_code", "trade_date", "exchange", "vol", "ratio"]].copy()
+                        frames.append(result)
+                        print(f"[fundamental/batch] northbound {label}: {len(result)} rows @ {td}")
+                        break
+                except Exception:
+                    continue
+    if frames:
+        combined = pd.concat(frames, ignore_index=True)
+        print(f"[fundamental/batch] northbound total: {len(combined)} rows")
+        return combined
+    print("[fundamental/batch] northbound: no data found")
+    return pd.DataFrame(columns=["ts_code", "trade_date", "exchange", "vol", "ratio"])
 
 
 def batch_fetch_moneyflow(pro: object) -> pd.DataFrame:
@@ -340,23 +331,26 @@ def fetch_supplemental_data(results: pd.DataFrame) -> pd.DataFrame:
         _fill_fundamental_defaults(scored)
         return scored
 
-    # ── 1. Batch fetch holder + moneyflow; per-stock northbound ──
+    # ── 1. Batch fetch all three dimensions ──
     print("[fundamental] Batch fetching holder data...")
     holder_df = batch_fetch_holder(pro)
     if not holder_df.empty:
         store.write_fundamental_table("holder", holder_df)
+
+    print("[fundamental] Batch fetching northbound data...")
+    nb_df = batch_fetch_northbound(pro)
+    if not nb_df.empty:
+        store.append_fundamental_table("northbound", nb_df)
 
     print("[fundamental] Batch fetching moneyflow data...")
     mf_df = batch_fetch_moneyflow(pro)
     if not mf_df.empty:
         store.write_fundamental_table("moneyflow", mf_df)
 
-    # ── 2. Compute scores ──
+    # ── 2. Compute scores from DuckDB cache ──
     holder_scores = _compute_holder_scores(store)
+    nb_scores = _compute_northbound_scores(store)
     mf_scores = _compute_moneyflow_scores(store)
-
-    # Northbound: per-stock for candidate symbols (hk_hold doesn't support batch)
-    nb_scores = _fetch_northbound_candidates(pro, scored)
 
     # ── 3. Merge into results ──
     # Holder
@@ -453,28 +447,23 @@ def get_fundamental_for_symbol(symbol: str, config_path: str = "config/strategy.
                 else:
                     result["holder_score"] = compute_holder_score(None)
 
-    # Northbound — hk_hold doesn't support batch, fetch per-stock on demand
-    try:
-        from winstan.adapters.tushare_client import build_tushare_pro
-        _, nb_pro = build_tushare_pro()
-        nb_df = nb_pro.hk_hold(ts_code=symbol, limit=5)
-        if nb_df is not None and not nb_df.empty:
-            nb_df = nb_df.copy()
-            nb_df["trade_date"] = pd.to_datetime(nb_df["trade_date"], errors="coerce")
-            nb_df = nb_df.sort_values("trade_date", ascending=False).reset_index(drop=True)
-            ratios = [_to_float(r) for r in nb_df["ratio"] if _to_float(r) is not None]
-            if ratios:
-                result["nb_ratio"] = ratios[0]
+    # Northbound — read from DuckDB batch cache
+    nb_df = store.get_latest_northbound_data()
+    if not nb_df.empty:
+        sym_data = nb_df[nb_df["ts_code"] == symbol]
+        if not sym_data.empty:
+            curr = sym_data[sym_data["rn"] == 1]
+            prev = sym_data[sym_data["rn"] == 2]
+            if not curr.empty:
+                ratio = _to_float(curr.iloc[0].get("ratio"))
+                result["nb_ratio"] = ratio
                 consec = 0
-                for i in range(len(ratios) - 1):
-                    if ratios[i] > ratios[i + 1]:
-                        consec += 1
-                    else:
-                        break
+                if not prev.empty:
+                    prev_ratio = _to_float(prev.iloc[0].get("ratio"))
+                    if prev_ratio and ratio and ratio > prev_ratio:
+                        consec = 1
                 result["nb_consecutive_increases"] = consec
-                result["nb_score"] = compute_northbound_score(ratios[0], consec)
-    except Exception:
-        pass
+                result["nb_score"] = compute_northbound_score(ratio, consec)
 
     # Moneyflow
     mf_df = store.get_latest_moneyflow_data(lookback_days=5)

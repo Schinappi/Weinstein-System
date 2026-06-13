@@ -139,6 +139,28 @@ class DuckDBStore:
             cols = ", ".join(f'"{c}"' for c in frame.columns)
             conn.execute(f"INSERT INTO {table_name} ({cols}) SELECT * FROM fund_frame")
 
+    def append_fundamental_table(self, table_key: str, frame: pd.DataFrame) -> None:
+        """Append data, replacing rows with duplicate (ts_code, date) keys.
+
+        Used for northbound data so we accumulate multiple months of
+        holdings (needed to compute consecutive increases).
+        """
+        table_name = self.FUNDAMENTAL_TABLES.get(table_key)
+        if not table_name:
+            return
+        with self.connect() as conn:
+            self._ensure_fundamental_tables(conn)
+            # Delete existing rows for the same (ts_code, trade_date) combo
+            date_col = "trade_date"
+            if table_key == "holder":
+                date_col = "end_date"
+            dates = frame[date_col].dropna().unique().tolist()
+            for d in dates:
+                conn.execute(f"DELETE FROM {table_name} WHERE \"{date_col}\" = ?", [d])
+            conn.register("fund_frame", frame)
+            cols = ", ".join(f'"{c}"' for c in frame.columns)
+            conn.execute(f"INSERT INTO {table_name} ({cols}) SELECT * FROM fund_frame")
+
     def read_fundamental_table(self, table_key: str) -> pd.DataFrame:
         """Read all data from a fundamental table."""
         table_name = self.FUNDAMENTAL_TABLES.get(table_key)

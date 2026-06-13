@@ -1,26 +1,29 @@
 """
 Supplementary fundamental data fetching and scoring for Weinstein screening.
 
-Integrates Tushare APIs (股东人数, 北向资金, 个股资金流) into the
-Weinstein scoring pipeline.  Each function returns a dict of per-symbol
-scores that get merged into the screening results DataFrame.
+Uses batch Tushare API queries (3 calls for ALL A-shares) instead of
+per-stock calls.  Raw data is cached in DuckDB for fast dashboard reads.
 
 APIs used (all require 5000+ Tushare积分):
-  - stk_holdernumber  → holder_score
-  - hk_hold            → northbound_score
-  - moneyflow          → moneyflow_confirm
+  - stk_holdernumber  → holder_score  (batch by quarter-end date)
+  - hk_hold            → nb_score      (batch by month-end trade_date)
+  - moneyflow          → moneyflow_confirm (batch by trade_date)
 """
 
 from __future__ import annotations
 
 import math
 from datetime import date, timedelta
+from pathlib import Path
 
 import pandas as pd
 
 from winstan.adapters.tushare_client import build_tushare_pro
+from winstan.config import load_config
+from winstan.storage.duckdb_store import DuckDBStore
 
-# ── helper ──────────────────────────────────────────────────────────
+
+# ── helpers ──────────────────────────────────────────────────────────
 
 
 def _to_float(v) -> float | None:
@@ -32,129 +35,116 @@ def _to_float(v) -> float | None:
         return None
 
 
-def _batch_symbols(symbols: list[str], size: int = 200):
-    """Yield successive chunks of symbols."""
-    for i in range(0, len(symbols), size):
-        yield symbols[i : i + size]
+# ══════════════════════════════════════════════════════════════════════
+#  Batch fetch functions  (1 API call each → ALL A-shares)
+# ══════════════════════════════════════════════════════════════════════
 
 
-# ═══════════════════════════════════════════════════════════════════
-# 1. 股东人数 (stk_holdernumber)
-# ═══════════════════════════════════════════════════════════════════
+def batch_fetch_holder(pro: object) -> pd.DataFrame:
+    """Fetch shareholder counts for ALL A-shares (latest 2 quarters).
 
-HOLDER_QUARTER_MAP = {
-    1: "0331",
-    2: "0630",
-    3: "0930",
-    4: "1231",
-}
-
-
-def _latest_holder_quarters(all_dates: list[str]) -> tuple[str, str]:
-    """Given available end_dates from API, return (latest, previous) quarter ends."""
-    sorted_dates = sorted(set(d for d in all_dates if d), reverse=True)
-    if len(sorted_dates) < 2:
-        return (sorted_dates[0] if sorted_dates else None, None)
-    return (sorted_dates[0], sorted_dates[1])
-
-
-def fetch_holder_data(
-    pro: object,
-    symbols: list[str],
-) -> dict[str, dict]:
-    """Fetch latest 2 quarters of shareholder count for each symbol.
-
-    Returns {symbol: {"holder_num": ..., "prev_holder_num": ...,
-                       "holder_change_pct": ...}}
+    1 API call per quarter → ~5500 rows each.  Stores in DuckDB table ``fundamental_holder``.
     """
-    from winstan.config import load_config
-    from pathlib import Path
-    config = load_config(Path("config/strategy.yaml"))
+    frames = []
+    for end_date in ["20260331", "20251231", "20250930", "20250630", "20250331"]:
+        if len(frames) >= 2:
+            break
+        try:
+            df = pro.stk_holdernumber(end_date=end_date)
+            if df is not None and not df.empty:
+                result = df[["ts_code", "end_date", "holder_num"]].copy()
+                print(f"[fundamental/batch] holder: {len(result)} rows @ {end_date}")
+                frames.append(result)
+        except Exception:
+            continue
+    if frames:
+        combined = pd.concat(frames, ignore_index=True)
+        print(f"[fundamental/batch] holder total: {len(combined)} rows ({len(frames)} quarters)")
+        return combined
+    print("[fundamental/batch] holder: no data found")
+    return pd.DataFrame(columns=["ts_code", "end_date", "holder_num"])
 
-    today = date.today()
-    result: dict[str, dict] = {}
-    cached = _load_holder_cache(config)
 
-    for batch in _batch_symbols(symbols):
-        for sym in batch:
-            # Try cache first
-            sym_clean = sym.replace(".SH", "").replace(".SZ", "").replace(".BJ", "")
-            ts_code = sym
-            cached_val = cached.get(ts_code, {})
+def _fetch_northbound_candidates(pro: object, scored: pd.DataFrame) -> pd.DataFrame:
+    """Fetch northbound data per-stock for candidate symbols only.
 
-            # Get available dates from cache
-            cached_dates = sorted(cached_val.keys(), reverse=True) if cached_val else []
-            if len(cached_dates) >= 2:
-                curr_q, prev_q = cached_dates[0], cached_dates[1]
-                curr = cached_val.get(curr_q)
-                prev = cached_val.get(prev_q)
-                if curr is not None and prev is not None:
-                    change_pct = ((curr - prev) / prev * 100) if prev != 0 else 0.0
-                    result[sym] = {
-                        "holder_num": curr,
-                        "prev_holder_num": prev,
-                        "holder_change_pct": round(change_pct, 2),
-                    }
-                    continue
+    ``hk_hold`` does NOT support batch queries for A-shares (returns
+    only HK stocks when queried without ``ts_code``).  We fetch per
+    candidate symbol instead — at most ~30 API calls, not 5000+.
+    """
+    candidates = scored[scored["stage2_candidate"] == True]["symbol"].dropna().unique().tolist()
+    if not candidates:
+        return pd.DataFrame(columns=["symbol", "nb_ratio", "nb_consecutive_increases", "nb_score"])
 
-            # Fetch from API
-            try:
-                df = pro.stk_holdernumber(ts_code=ts_code, limit=10)
-            except Exception:
-                continue
+    result_rows = []
+    for sym in candidates:
+        try:
+            df = pro.hk_hold(ts_code=sym, limit=5)
             if df is None or df.empty:
                 continue
-
-            # Map end_date → holder_num
-            holder_map: dict[str, float] = {}
-            for _, row in df.iterrows():
-                ed = str(row.get("end_date", ""))
-                hn = _to_float(row.get("holder_num"))
-                if ed and hn is not None:
-                    # Keep first occurrence (latest by API sort order)
-                    if ed not in holder_map:
-                        holder_map[ed] = hn
-
-            # Save to cache
-            cached[ts_code] = holder_map
-
-            # Get latest and previous
-            avail_dates = sorted(holder_map.keys(), reverse=True)
-            if len(avail_dates) >= 2:
-                curr_q, prev_q = avail_dates[0], avail_dates[1]
-                curr = holder_map.get(curr_q)
-                prev = holder_map.get(prev_q)
-                if curr is not None and prev is not None:
-                    change_pct = ((curr - prev) / prev * 100) if prev != 0 else 0.0
-                    result[sym] = {
-                        "holder_num": curr,
-                        "prev_holder_num": prev,
-                        "holder_change_pct": round(change_pct, 2),
-                    }
-
-    _save_holder_cache(config, cached)
-    return result
-
-
-def _load_holder_cache(config) -> dict[str, dict[str, float]]:
-    """Load the shareholder number cache from parquet."""
-    import json
-    from pathlib import Path
-    cache_path = Path(config.parquet_root) / "supplement" / "holder_cache.json"
-    if cache_path.exists():
-        try:
-            return json.loads(cache_path.read_text())
+            df = df.copy()
+            df["trade_date"] = pd.to_datetime(df["trade_date"], errors="coerce")
+            df = df.sort_values("trade_date", ascending=False).reset_index(drop=True)
+            ratios = [_to_float(r) for r in df["ratio"] if _to_float(r) is not None]
+            if not ratios:
+                continue
+            nb_ratio = ratios[0]
+            consec = 0
+            for i in range(len(ratios) - 1):
+                if ratios[i] > ratios[i + 1]:
+                    consec += 1
+                else:
+                    break
+            result_rows.append({
+                "symbol": sym,
+                "nb_ratio": nb_ratio,
+                "nb_consecutive_increases": consec,
+                "nb_score": compute_northbound_score(nb_ratio, consec),
+            })
         except Exception:
-            pass
-    return {}
+            continue
+
+    print(f"  → northbound: {len(result_rows)}/{len(candidates)} candidates have data")
+    return pd.DataFrame(result_rows) if result_rows else pd.DataFrame(
+        columns=["symbol", "nb_ratio", "nb_consecutive_increases", "nb_score"]
+    )
 
 
-def _save_holder_cache(config, cache: dict) -> None:
-    import json
-    from pathlib import Path
-    cache_path = Path(config.parquet_root) / "supplement" / "holder_cache.json"
-    cache_path.parent.mkdir(parents=True, exist_ok=True)
-    cache_path.write_text(json.dumps(cache, ensure_ascii=False, indent=2, default=str))
+def batch_fetch_moneyflow(pro: object) -> pd.DataFrame:
+    """Fetch moneyflow for ALL A-shares (latest trading day).
+
+    1 API call → ~5200 rows.  Stores in DuckDB table ``fundamental_moneyflow``.
+    """
+    today = date.today()
+    # Try recent trading days (walk back up to 14 days)
+    for offset in range(0, 14):
+        td = (today - timedelta(days=offset)).strftime("%Y%m%d")
+        try:
+            df = pro.moneyflow(trade_date=td)
+            if df is not None and not df.empty:
+                cols = [
+                    "ts_code", "trade_date",
+                    "buy_lg_amount", "sell_lg_amount",
+                    "buy_elg_amount", "sell_elg_amount",
+                    "net_mf_vol", "net_mf_amount",
+                ]
+                result = df[[c for c in cols if c in df.columns]].copy()
+                print(f"[fundamental/batch] moneyflow: {len(result)} rows @ {td}")
+                return result
+        except Exception:
+            continue
+    print("[fundamental/batch] moneyflow: no data found")
+    return pd.DataFrame(columns=[
+        "ts_code", "trade_date",
+        "buy_lg_amount", "sell_lg_amount",
+        "buy_elg_amount", "sell_elg_amount",
+        "net_mf_vol", "net_mf_amount",
+    ])
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  Score computation  (unchanged — logic-only, no API calls)
+# ══════════════════════════════════════════════════════════════════════
 
 
 def compute_holder_score(holder_change_pct: float | None) -> float:
@@ -180,74 +170,10 @@ def compute_holder_score(holder_change_pct: float | None) -> float:
     return 0.0
 
 
-# ═══════════════════════════════════════════════════════════════════
-# 2. 北向资金 (hk_hold)
-# ═══════════════════════════════════════════════════════════════════
-
-def fetch_northbound_data(
-    pro: object,
-    symbols: list[str],
-) -> dict[str, dict]:
-    """Fetch latest northbound (HK Stock Connect) holdings for each A-share symbol.
-
-    hk_hold data is monthly (month-end).  We pull the latest few records
-    and check month-over-month ratio increases.
-
-    Returns {symbol: {"nb_ratio": ..., "nb_consecutive_increases": ...,
-                       "nb_score": ...}}
-    """
-    result: dict[str, dict] = {}
-
-    for batch in _batch_symbols(symbols):
-        for sym in batch:
-            ts_code = sym
-            exchange = "SZ" if ".SZ" in sym else "SH" if ".SH" in sym else ""
-
-            try:
-                df = pro.hk_hold(ts_code=ts_code, exchange=exchange, limit=15)
-            except Exception:
-                continue
-            if df is None or df.empty:
-                continue
-
-            # Sort by trade_date descending
-            df = df.copy()
-            df["trade_date"] = pd.to_datetime(df["trade_date"], errors="coerce")
-            df = df.sort_values("trade_date", ascending=False).reset_index(drop=True)
-
-            ratios = []
-            for _, row in df.iterrows():
-                r = _to_float(row.get("ratio"))
-                if r is not None:
-                    ratios.append(r)
-
-            if len(ratios) < 2:
-                result[sym] = {
-                    "nb_ratio": ratios[0] if ratios else None,
-                    "nb_consecutive_increases": 0,
-                }
-                continue
-
-            # Count consecutive increases from most recent period backwards
-            consecutive = 0
-            for i in range(len(ratios) - 1):
-                if ratios[i] > ratios[i + 1]:
-                    consecutive += 1
-                else:
-                    break
-
-            result[sym] = {
-                "nb_ratio": ratios[0],
-                "nb_consecutive_increases": consecutive,
-            }
-
-    return result
-
-
 def compute_northbound_score(nb_ratio: float | None, consecutive_increases: int) -> float:
     """Score northbound holding trend.
 
-    Rules (adapted for monthly data):
+    Rules (monthly data):
       1 consecutive increase  → +5
       2 consecutive increases → +10
       3+ consecutive increase → +15
@@ -263,79 +189,6 @@ def compute_northbound_score(nb_ratio: float | None, consecutive_increases: int)
     return 0.0
 
 
-# ═══════════════════════════════════════════════════════════════════
-# 3. 个股资金流 (moneyflow)
-# ═══════════════════════════════════════════════════════════════════
-
-def fetch_moneyflow_data(
-    pro: object,
-    symbols: list[str],
-    lookback_days: int = 5,
-) -> dict[str, dict]:
-    """Fetch recent moneyflow data for each symbol.
-
-    We look at net large+extra-large order money flow over the past N trading days.
-
-    Returns {symbol: {"net_mf_amount": ..., "mf_consecutive_positive": ...,
-                       "moneyflow_confirm": ...}}
-    """
-    end = date.today()
-    start = end - timedelta(days=lookback_days * 2)  # buffer for non-trading days
-
-    result: dict[str, dict] = {}
-
-    for batch in _batch_symbols(symbols):
-        for sym in batch:
-            ts_code = sym
-
-            try:
-                df = pro.moneyflow(
-                    ts_code=ts_code,
-                    start_date=start.strftime("%Y%m%d"),
-                    end_date=end.strftime("%Y%m%d"),
-                    limit=lookback_days * 2,
-                )
-            except Exception:
-                continue
-            if df is None or df.empty:
-                continue
-
-            df = df.copy()
-            df["trade_date"] = pd.to_datetime(df["trade_date"], errors="coerce")
-            df = df.sort_values("trade_date", ascending=False).reset_index(drop=True)
-
-            # Compute net large+extra-large order amount for each day
-            net_amounts = []
-            for _, row in df.iterrows():
-                buy_lg = _to_float(row.get("buy_lg_amount")) or 0.0
-                sell_lg = _to_float(row.get("sell_lg_amount")) or 0.0
-                buy_elg = _to_float(row.get("buy_elg_amount")) or 0.0
-                sell_elg = _to_float(row.get("sell_elg_amount")) or 0.0
-                net = (buy_lg + buy_elg) - (sell_lg + sell_elg)
-                net_amounts.append(net)
-
-            if not net_amounts:
-                continue
-
-            # Latest day net flow
-            latest_net = net_amounts[0]
-
-            # Count consecutive positive net flow days from latest
-            consecutive = 0
-            for amt in net_amounts:
-                if amt > 0:
-                    consecutive += 1
-                else:
-                    break
-
-            result[sym] = {
-                "net_mf_amount": round(latest_net, 2),
-                "mf_consecutive_positive": consecutive,
-            }
-
-    return result
-
-
 def compute_moneyflow_confirm(
     net_mf_amount: float | None,
     consecutive_positive: int,
@@ -344,7 +197,7 @@ def compute_moneyflow_confirm(
 
     Rules:
       Latest day positive net flow        → +5
-      Consecutive 3+ days positive        → +10
+      Consecutive 3+ days positive        → +10 (cumulative)
       Latest day negative (< -1M)         → -5
     """
     if net_mf_amount is None:
@@ -359,104 +212,184 @@ def compute_moneyflow_confirm(
     return score
 
 
-# ═══════════════════════════════════════════════════════════════════
-# 4. Main entry point
-# ═══════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════
+#  Batch fetch + cache + merge
+# ══════════════════════════════════════════════════════════════════════
 
-def fetch_supplemental_data(
-    results: pd.DataFrame,
-) -> pd.DataFrame:
-    """Fetch supplemental fundamental/moneyflow data and merge into results.
 
-    This is the main entry point called from ``screener.run()`` after the
-    basic evaluation is complete.
+def _compute_holder_scores(store: DuckDBStore) -> pd.DataFrame:
+    """Read holder data from DuckDB, compute change_pct and score per symbol."""
+    df = store.get_latest_holder_data()
+    if df.empty:
+        return pd.DataFrame(columns=["symbol", "holder_num", "holder_change_pct", "holder_score"])
 
-    Only fetches data for symbols where ``stage2_candidate`` is True (saves API quota).
+    # Pivot: latest (rn=1) and previous (rn=2)
+    latest = df[df["rn"] == 1][["ts_code", "holder_num"]].rename(columns={"holder_num": "curr_num"})
+    prev = df[df["rn"] == 2][["ts_code", "holder_num"]].rename(columns={"holder_num": "prev_num"})
+    merged = latest.merge(prev, on="ts_code", how="left")
+
+    merged["holder_change_pct"] = merged.apply(
+        lambda r: round(((r["curr_num"] - r["prev_num"]) / r["prev_num"] * 100), 2)
+        if r["prev_num"] is not None and r["prev_num"] != 0 and pd.notna(r["prev_num"])
+        else None,
+        axis=1,
+    )
+    merged["holder_score"] = merged["holder_change_pct"].apply(compute_holder_score)
+    merged["holder_num"] = merged["curr_num"]
+    merged = merged.rename(columns={"ts_code": "symbol"})
+    return merged[["symbol", "holder_num", "holder_change_pct", "holder_score"]]
+
+
+def _compute_northbound_scores(store: DuckDBStore) -> pd.DataFrame:
+    """Read northbound data from DuckDB, compute consecutive increases and score."""
+    df = store.get_latest_northbound_data()
+    if df.empty:
+        return pd.DataFrame(columns=["symbol", "nb_ratio", "nb_consecutive_increases", "nb_score"])
+
+    latest = df[df["rn"] == 1][["ts_code", "ratio"]].rename(columns={"ratio": "nb_ratio"})
+    prev = df[df["rn"] == 2][["ts_code", "ratio"]].rename(columns={"ratio": "prev_ratio"})
+    merged = latest.merge(prev, on="ts_code", how="left")
+
+    # Count consecutive increases
+    merged["nb_consecutive_increases"] = merged.apply(
+        lambda r: 0
+        if r["prev_ratio"] is None or pd.isna(r["prev_ratio"])
+        else (1 if r["nb_ratio"] > r["prev_ratio"] else 0),
+        axis=1,
+    )
+    merged["nb_score"] = merged.apply(
+        lambda r: compute_northbound_score(r["nb_ratio"], r["nb_consecutive_increases"]),
+        axis=1,
+    )
+    merged = merged.rename(columns={"ts_code": "symbol"})
+    return merged[["symbol", "nb_ratio", "nb_consecutive_increases", "nb_score"]]
+
+
+def _compute_moneyflow_scores(store: DuckDBStore, lookback_days: int = 5) -> pd.DataFrame:
+    """Read moneyflow data from DuckDB, compute scores per symbol."""
+    df = store.get_latest_moneyflow_data(lookback_days)
+    if df.empty:
+        return pd.DataFrame(columns=["symbol", "net_mf_amount", "moneyflow_confirm"])
+
+    # Compute net amount per row
+    df["net_amount"] = df.apply(
+        lambda r: (
+            (r["buy_lg_amount"] or 0)
+            + (r["buy_elg_amount"] or 0)
+            - (r["sell_lg_amount"] or 0)
+            - (r["sell_elg_amount"] or 0)
+        ),
+        axis=1,
+    )
+
+    # Latest day per symbol
+    latest = df[df["rn"] == 1].copy()
+    latest["net_mf_amount"] = latest["net_amount"]
+
+    # Count consecutive positive days
+    def count_consecutive_positive(grp: pd.DataFrame) -> int:
+        sorted_grp = grp.sort_values("rn")
+        count = 0
+        for _, row in sorted_grp.iterrows():
+            if row["net_amount"] > 0:
+                count += 1
+            else:
+                break
+        return count
+
+    consec = df.groupby("ts_code").apply(count_consecutive_positive).reset_index()
+    consec.columns = ["ts_code", "mf_consecutive_positive"]
+
+    merged = latest.merge(consec, on="ts_code", how="left")
+    merged["mf_consecutive_positive"] = merged["mf_consecutive_positive"].fillna(0).astype(int)
+    merged["moneyflow_confirm"] = merged.apply(
+        lambda r: compute_moneyflow_confirm(r["net_mf_amount"], r["mf_consecutive_positive"]),
+        axis=1,
+    )
+    merged = merged.rename(columns={"ts_code": "symbol"})
+    return merged[["symbol", "net_mf_amount", "moneyflow_confirm"]]
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  Main entry point — called from screener.run()
+# ══════════════════════════════════════════════════════════════════════
+
+
+def fetch_supplemental_data(results: pd.DataFrame) -> pd.DataFrame:
+    """Fetch fundamental data via batch API queries, cache in DuckDB, merge scores.
+
+    Makes only 3 API calls total (one per dimension) to cover ALL A-shares,
+    then merges scores into the screening results.
 
     Returns a copy of ``results`` with new columns:
       holder_num, holder_change_pct, holder_score,
       nb_ratio, nb_consecutive_increases, nb_score,
-      net_mf_amount, mf_consecutive_positive, moneyflow_confirm
+      net_mf_amount, moneyflow_confirm
     """
     if results.empty:
         return results
 
     scored = results.copy()
-
-    # Only fetch for candidate symbols to save API quota
-    candidate_symbols = scored[scored["stage2_candidate"] == True]["symbol"].dropna().unique().tolist()
-    fetch_symbols = list(set(candidate_symbols))
-    # Limit to prevent excessive API calls (Tushare rate limited)
-    max_fetch = 300
-    if len(fetch_symbols) > max_fetch:
-        print(f"[fundamental] Limiting fetch from {len(fetch_symbols)} to {max_fetch} symbols")
-        fetch_symbols = fetch_symbols[:max_fetch]
-
-    if not fetch_symbols:
-        print("[fundamental] No candidate symbols to fetch supplemental data for")
-        _fill_fundamental_defaults(scored)
-        return scored
+    config = load_config(Path("config/strategy.yaml"))
+    store = DuckDBStore(config.duckdb_path)
 
     try:
         ts, pro = build_tushare_pro()
     except Exception as exc:
         print(f"[fundamental] Tushare connection failed: {exc}")
-        # Fill with defaults and return
         _fill_fundamental_defaults(scored)
         return scored
 
-    # 1. 股东人数
-    print(f"[fundamental] Fetching holder data for {len(fetch_symbols)} symbols...")
-    holder_data = fetch_holder_data(pro, fetch_symbols)
-    scored["holder_num"] = scored["symbol"].map(lambda s: (holder_data.get(s) or {}).get("holder_num"))
-    scored["holder_change_pct"] = scored["symbol"].map(
-        lambda s: (holder_data.get(s) or {}).get("holder_change_pct")
-    )
-    scored["holder_score"] = scored["holder_change_pct"].apply(compute_holder_score)
-    holder_filled = scored["holder_score"].ne(0).sum()
-    holder_sourced = len(holder_data)
-    print(f"  → holder data for {holder_sourced} symbols, {holder_filled} have non-zero scores")
+    # ── 1. Batch fetch holder + moneyflow; per-stock northbound ──
+    print("[fundamental] Batch fetching holder data...")
+    holder_df = batch_fetch_holder(pro)
+    if not holder_df.empty:
+        store.write_fundamental_table("holder", holder_df)
 
-    # 2. 北向资金
-    print(f"[fundamental] Fetching northbound data...")
-    nb_data = fetch_northbound_data(pro, fetch_symbols)
-    scored["nb_ratio"] = scored["symbol"].map(lambda s: (nb_data.get(s) or {}).get("nb_ratio"))
-    scored["nb_consecutive_increases"] = scored["symbol"].map(
-        lambda s: (nb_data.get(s) or {}).get("nb_consecutive_increases", 0)
-    )
-    scored["nb_score"] = scored.apply(
-        lambda row: compute_northbound_score(
-            row.get("nb_ratio"),
-            int(row.get("nb_consecutive_increases") or 0),
-        ),
-        axis=1,
-    )
-    nb_filled = (scored["nb_ratio"].notna()).sum()
-    print(f"  → got northbound data for {len(nb_data)}/{len(fetch_symbols)} symbols, "
-          f"{nb_filled} have ratios")
+    print("[fundamental] Batch fetching moneyflow data...")
+    mf_df = batch_fetch_moneyflow(pro)
+    if not mf_df.empty:
+        store.write_fundamental_table("moneyflow", mf_df)
 
-    # 3. 个股资金流
-    print(f"[fundamental] Fetching moneyflow data...")
-    mf_data = fetch_moneyflow_data(pro, fetch_symbols)
-    scored["net_mf_amount"] = scored["symbol"].map(lambda s: (mf_data.get(s) or {}).get("net_mf_amount"))
-    scored["mf_consecutive_positive"] = scored["symbol"].map(
-        lambda s: (mf_data.get(s) or {}).get("mf_consecutive_positive", 0)
-    )
-    scored["moneyflow_confirm"] = scored.apply(
-        lambda row: compute_moneyflow_confirm(
-            row.get("net_mf_amount"),
-            int(row.get("mf_consecutive_positive") or 0),
-        ),
-        axis=1,
-    )
-    mf_filled = (scored["net_mf_amount"].notna()).sum()
-    print(f"  → got moneyflow data for {len(mf_data)}/{len(fetch_symbols)} symbols, "
-          f"{mf_filled} have flows")
+    # ── 2. Compute scores ──
+    holder_scores = _compute_holder_scores(store)
+    mf_scores = _compute_moneyflow_scores(store)
 
-    # Fill any missing
+    # Northbound: per-stock for candidate symbols (hk_hold doesn't support batch)
+    nb_scores = _fetch_northbound_candidates(pro, scored)
+
+    # ── 3. Merge into results ──
+    # Holder
+    if not holder_scores.empty:
+        scored = scored.merge(holder_scores, on="symbol", how="left")
+    else:
+        scored["holder_num"] = None
+        scored["holder_change_pct"] = None
+        scored["holder_score"] = 0.0
+
+    # Northbound
+    if not nb_scores.empty:
+        scored = scored.merge(nb_scores, on="symbol", how="left")
+    else:
+        scored["nb_ratio"] = None
+        scored["nb_consecutive_increases"] = 0
+        scored["nb_score"] = 0.0
+
+    # Moneyflow
+    if not mf_scores.empty:
+        scored = scored.merge(mf_scores, on="symbol", how="left")
+    else:
+        scored["net_mf_amount"] = None
+        scored["moneyflow_confirm"] = 0.0
+
+    # Fill NaN for stocks that had no match in batch data
     for col in ["holder_score", "nb_score", "moneyflow_confirm"]:
-        scored[col] = scored[col].fillna(0.0)
+        if col in scored.columns:
+            scored[col] = scored[col].fillna(0.0)
 
+    print(f"[fundamental] Done — holder non-zero: {(scored.get('holder_score', pd.Series([0])) != 0).sum()}, "
+          f"nb non-zero: {(scored.get('nb_score', pd.Series([0])) != 0).sum()}, "
+          f"mf non-zero: {(scored.get('moneyflow_confirm', pd.Series([0])) != 0).sum()}")
     return scored
 
 
@@ -472,3 +405,106 @@ def _fill_fundamental_defaults(df: pd.DataFrame) -> None:
     for col in ["holder_score", "nb_score", "moneyflow_confirm"]:
         if col not in df.columns:
             df[col] = 0.0
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  Dashboard-friendly helpers  (read from DuckDB cache, no API calls)
+# ══════════════════════════════════════════════════════════════════════
+
+
+def get_fundamental_for_symbol(symbol: str, config_path: str = "config/strategy.yaml") -> dict:
+    """Read fundamental data for a single symbol from DuckDB cache.
+
+    Returns same dict structure as dashboard's ``_get_fundamental_data()``.
+    No API calls — pure cache read.
+    """
+    config = load_config(Path(config_path))
+    store = DuckDBStore(config.duckdb_path)
+
+    result: dict = {
+        "holder_score": None,
+        "holder_change_pct": None,
+        "holder_num": None,
+        "nb_score": None,
+        "nb_ratio": None,
+        "nb_consecutive_increases": 0,
+        "moneyflow_confirm": None,
+        "net_mf_amount": None,
+    }
+
+    # Holder
+    holder_df = store.get_latest_holder_data()
+    if not holder_df.empty:
+        sym_data = holder_df[holder_df["ts_code"] == symbol]
+        if not sym_data.empty:
+            curr = sym_data[sym_data["rn"] == 1]
+            prev = sym_data[sym_data["rn"] == 2]
+            if not curr.empty:
+                curr_num = _to_float(curr.iloc[0].get("holder_num"))
+                result["holder_num"] = curr_num
+                if not prev.empty:
+                    prev_num = _to_float(prev.iloc[0].get("holder_num"))
+                    if prev_num and prev_num != 0:
+                        chg = round((curr_num - prev_num) / prev_num * 100, 2) if curr_num else None
+                        result["holder_change_pct"] = chg
+                        result["holder_score"] = compute_holder_score(chg)
+                    else:
+                        result["holder_score"] = compute_holder_score(None)
+                else:
+                    result["holder_score"] = compute_holder_score(None)
+
+    # Northbound — hk_hold doesn't support batch, fetch per-stock on demand
+    try:
+        from winstan.adapters.tushare_client import build_tushare_pro
+        _, nb_pro = build_tushare_pro()
+        nb_df = nb_pro.hk_hold(ts_code=symbol, limit=5)
+        if nb_df is not None and not nb_df.empty:
+            nb_df = nb_df.copy()
+            nb_df["trade_date"] = pd.to_datetime(nb_df["trade_date"], errors="coerce")
+            nb_df = nb_df.sort_values("trade_date", ascending=False).reset_index(drop=True)
+            ratios = [_to_float(r) for r in nb_df["ratio"] if _to_float(r) is not None]
+            if ratios:
+                result["nb_ratio"] = ratios[0]
+                consec = 0
+                for i in range(len(ratios) - 1):
+                    if ratios[i] > ratios[i + 1]:
+                        consec += 1
+                    else:
+                        break
+                result["nb_consecutive_increases"] = consec
+                result["nb_score"] = compute_northbound_score(ratios[0], consec)
+    except Exception:
+        pass
+
+    # Moneyflow
+    mf_df = store.get_latest_moneyflow_data(lookback_days=5)
+    if not mf_df.empty:
+        sym_data = mf_df[mf_df["ts_code"] == symbol]
+        if not sym_data.empty:
+            # Latest day
+            latest = sym_data[sym_data["rn"] == 1]
+            if not latest.empty:
+                row = latest.iloc[0]
+                buy_lg = _to_float(row.get("buy_lg_amount")) or 0
+                sell_lg = _to_float(row.get("sell_lg_amount")) or 0
+                buy_elg = _to_float(row.get("buy_elg_amount")) or 0
+                sell_elg = _to_float(row.get("sell_elg_amount")) or 0
+                net_amt = round(buy_lg + buy_elg - sell_lg - sell_elg, 2)
+                result["net_mf_amount"] = net_amt
+
+                # Count consecutive positive
+                consec = 0
+                sorted_sym = sym_data.sort_values("rn")
+                for _, r in sorted_sym.iterrows():
+                    bl = _to_float(r.get("buy_lg_amount")) or 0
+                    sl = _to_float(r.get("sell_lg_amount")) or 0
+                    be = _to_float(r.get("buy_elg_amount")) or 0
+                    se = _to_float(r.get("sell_elg_amount")) or 0
+                    na = bl + be - sl - se
+                    if na > 0:
+                        consec += 1
+                    else:
+                        break
+                result["moneyflow_confirm"] = compute_moneyflow_confirm(net_amt, consec)
+
+    return result

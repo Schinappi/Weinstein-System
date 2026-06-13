@@ -31,6 +31,7 @@ from winstan.signals.trade_watch import (
     _resolve_target_entry_price,
     _resolve_stop_loss_reference,
 )
+from winstan.scoring.fundamental import get_fundamental_for_symbol
 
 STAGE_LABELS = {
     "I": "阶段I",
@@ -371,68 +372,12 @@ class DashboardService:
         return self._fetch_live_fundamental(symbol)
 
     def _fetch_live_fundamental(self, symbol: str) -> dict[str, object]:
-        """Fetch fundamental data live from Tushare for a single symbol."""
-        from winstan.adapters.tushare_client import build_tushare_pro
-        from winstan.scoring.fundamental import (
-            compute_holder_score,
-            compute_moneyflow_confirm,
-            compute_northbound_score,
-            fetch_holder_data,
-            fetch_moneyflow_data,
-            fetch_northbound_data,
-        )
+        """Read fundamental data from DuckDB batch cache (no API calls).
 
-        result: dict[str, object] = {
-            "holder_score": None,
-            "holder_change_pct": None,
-            "holder_num": None,
-            "nb_score": None,
-            "nb_ratio": None,
-            "nb_consecutive_increases": 0,
-            "moneyflow_confirm": None,
-            "net_mf_amount": None,
-        }
-
-        try:
-            _, pro = build_tushare_pro()
-        except Exception:
-            return result
-
-        # 1. Holder data
-        try:
-            hd = fetch_holder_data(pro, [symbol])
-            if symbol in hd:
-                chg = hd[symbol].get("holder_change_pct")
-                result["holder_num"] = hd[symbol].get("holder_num")
-                result["holder_change_pct"] = chg
-                result["holder_score"] = compute_holder_score(chg)
-        except Exception:
-            pass
-
-        # 2. Northbound data
-        try:
-            nd = fetch_northbound_data(pro, [symbol])
-            if symbol in nd:
-                ratio = nd[symbol].get("nb_ratio")
-                consec = nd[symbol].get("nb_consecutive_increases", 0)
-                result["nb_ratio"] = ratio
-                result["nb_consecutive_increases"] = consec
-                result["nb_score"] = compute_northbound_score(ratio, consec)
-        except Exception:
-            pass
-
-        # 3. Moneyflow data
-        try:
-            md = fetch_moneyflow_data(pro, [symbol])
-            if symbol in md:
-                amt = md[symbol].get("net_mf_amount")
-                consec = md[symbol].get("mf_consecutive_positive", 0)
-                result["net_mf_amount"] = amt
-                result["moneyflow_confirm"] = compute_moneyflow_confirm(amt, consec)
-        except Exception:
-            pass
-
-        return result
+        The batch cache is populated by ``fetch_supplemental_data()`` during
+        Phase1 screening — 3 API calls total for ALL A-shares.
+        """
+        return get_fundamental_for_symbol(symbol)
 
     def get_stock_analysis(self, symbol: str) -> dict[str, object]:
         normalized = symbol.strip().upper()

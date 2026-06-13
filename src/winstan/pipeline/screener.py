@@ -99,6 +99,13 @@ class WeinsteinScreener:
         del weekly_bars
         if not results.empty:
             results = results.merge(universe[["symbol", "name"]], on="symbol", how="left")
+
+            # ── Industry RS (memory-light: uses results, not full weekly bars) ──
+            from winstan.rules.industry_rs import compute_industry_data
+            industry_data = compute_industry_data(results, market_weekly)
+            if not industry_data.empty:
+                results = results.merge(industry_data, on="symbol", how="left")
+
             # 获取补充数据（股东人数/北向资金/资金流）并合并到结果
             results = fetch_supplemental_data(results)
             results = apply_stage2_scoring(results, self.config)
@@ -203,6 +210,8 @@ class WeinsteinScreener:
                 "base_close_std_pct": float(latest["base_close_std_pct"]) if pd.notna(latest["base_close_std_pct"]) else None,
                 "stage2_score": float(stage_info["stage2_score"]),
                 "stage2_reason": stage_info["stage2_reason"],
+                # RS components needed for industry-level computation
+                "rs_26w_return": float(latest["rs_26w_return"]) if "rs_26w_return" in latest and pd.notna(latest["rs_26w_return"]) else None,
             }
             record["reject_reason"] = self._build_reject_reason(record)
             records.append(record)

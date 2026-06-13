@@ -242,6 +242,8 @@ def apply_stage2_scoring(results: pd.DataFrame, config: AppConfig) -> pd.DataFra
         "stage2_reason": "普通趋势",
         "stage2_watch_score": 0.0,
         "stage2_watch_reason": "普通趋势",
+        "industry_rs_rank_pct": 50.0,
+        "industry_breadth": 0.0,
     }
     if scored.empty:
         for column, default in score_columns.items():
@@ -426,10 +428,31 @@ def _score_breakout_quality(row: pd.Series, config: AppConfig) -> float:
 def _score_strength(row: pd.Series) -> float:
     rs_rank_pct = _to_float(row.get("rs_rank_pct"))
     rs_composite = _to_float(row.get("rs_composite"))
+    industry_rs_rank_pct = _to_float(row.get("industry_rs_rank_pct"))
+    industry_breadth = _to_float(row.get("industry_breadth"))
 
+    #── 个股相对强度（60%）──
     rank_score = 0.0 if rs_rank_pct is None else _clamp_score(100.0 - max(rs_rank_pct - 1.0, 0.0) * 1.4)
     composite_score = 0.0 if rs_composite is None else _clamp_score(50.0 + rs_composite * 250.0)
-    score = rank_score * 0.80 + composite_score * 0.20
+    stock_score = rank_score * 0.80 + composite_score * 0.20
+
+    #── 行业相对强度（25%）：industry_rs_rank_pct 越低越好（0=最强）──
+    industry_rs_score = 0.0
+    if industry_rs_rank_pct is not None:
+        # Convert percentile: lower rank = higher score
+        industry_rs_score = _clamp_score(100.0 - max(industry_rs_rank_pct - 1.0, 0.0) * 1.1)
+        # Bonus for top-quartile industries
+        if industry_rs_rank_pct <= 10.0:
+            industry_rs_score += 6.0
+        elif industry_rs_rank_pct <= 25.0:
+            industry_rs_score += 3.0
+
+    #── 行业广度（15%）：行业内RS为正的股票占比 ──
+    breadth_score = 0.0
+    if industry_breadth is not None:
+        breadth_score = _clamp_score(industry_breadth * 0.85 + 15.0)
+
+    score = stock_score * 0.60 + industry_rs_score * 0.25 + breadth_score * 0.15
     if rs_rank_pct is not None and rs_rank_pct <= 10.0:
         score += 6.0
     elif rs_rank_pct is not None and rs_rank_pct <= 20.0:

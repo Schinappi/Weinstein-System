@@ -22,7 +22,22 @@ from winstan.config import AppConfig, load_config
 
 
 def _load_industry_map(config: AppConfig) -> dict[str, str]:
-    """stock ts_code/symbol → Shenwan L1 industry name."""
+    """stock ts_code/symbol → Shenwan L1 industry name.
+
+    Uses cached stock_basic + a manual mapping from stock_basic industry
+    names (110) to Shenwan L1 names (28).
+    """
+    import json
+    mapping_path = Path(config.project_root) / "data" / "mapping" / "stock_industry_to_sw_l1.json"
+    if not mapping_path.exists():
+        # Fallback: try relative to CWD
+        mapping_path = Path("data/mapping/stock_industry_to_sw_l1.json")
+    if mapping_path.exists():
+        basic_to_l1 = json.loads(mapping_path.read_text())
+    else:
+        print("[industry] WARNING: mapping file not found, using identity mapping")
+        basic_to_l1 = {}
+
     cache_path = Path(config.parquet_root) / "supplement" / "industry_map.parquet"
     if cache_path.exists():
         df = pd.read_parquet(cache_path)
@@ -38,11 +53,11 @@ def _load_industry_map(config: AppConfig) -> dict[str, str]:
     for _, r in df.iterrows():
         ind = str(r.get("industry") or "").strip()
         if ind:
-            result[str(r["ts_code"]).strip()] = ind
+            l1 = basic_to_l1.get(ind, ind)  # map to Shenwan L1 if available
+            result[str(r["ts_code"]).strip()] = l1
             sym = str(r.get("symbol") or "").strip()
             if sym:
-                result[sym] = ind
-    # Clean up: remove entries where stock_basic has no industry
+                result[sym] = l1
     result = {k: v for k, v in result.items() if v}
     return result
 

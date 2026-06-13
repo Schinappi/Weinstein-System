@@ -342,22 +342,29 @@ class DashboardService:
         }
 
     def _get_fundamental_data(self, row: pd.Series, symbol: str) -> dict[str, object]:
-        """Return fundamental data from row cache, or fetch live from Tushare if missing."""
-        holder_score = _to_float(row.get("holder_score"))
-        nb_score = _to_float(row.get("nb_score"))
-        mf_confirm = _to_float(row.get("moneyflow_confirm"))
+        """Return fundamental data from row cache, or fetch live from Tushare if missing.
 
-        # If any fundamental data exists in the cached row, use it
-        if holder_score is not None and nb_score is not None and mf_confirm is not None:
+        Checks detail fields (holder_change_pct, nb_ratio, net_mf_amount) to
+        distinguish \"real 0 score after API call\" from \"no API was ever called
+        for this stock\" (e.g. non-candidate stocks where default 0.0 was filled).
+        """
+        holder_chg = _to_float(row.get("holder_change_pct"))
+        nb_ratio = _to_float(row.get("nb_ratio"))
+        mf_amt = _to_float(row.get("net_mf_amount"))
+
+        # If any detail field has real data, use the cached row
+        if (holder_chg is not None
+                or nb_ratio is not None
+                or mf_amt is not None):
             return {
-                "holder_score": holder_score,
-                "holder_change_pct": _to_float(row.get("holder_change_pct")),
+                "holder_score": _to_float(row.get("holder_score")),
+                "holder_change_pct": holder_chg,
                 "holder_num": _to_float(row.get("holder_num")),
-                "nb_score": nb_score,
-                "nb_ratio": _to_float(row.get("nb_ratio")),
+                "nb_score": _to_float(row.get("nb_score")),
+                "nb_ratio": nb_ratio,
                 "nb_consecutive_increases": _to_int(row.get("nb_consecutive_increases")),
-                "moneyflow_confirm": mf_confirm,
-                "net_mf_amount": _to_float(row.get("net_mf_amount")),
+                "moneyflow_confirm": _to_float(row.get("moneyflow_confirm")),
+                "net_mf_amount": mf_amt,
             }
 
         # Otherwise fetch on-demand (for searched stocks not in screening results)

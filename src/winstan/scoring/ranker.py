@@ -127,7 +127,6 @@ def _build_stage2_candidate_mask(weighted: pd.DataFrame) -> pd.Series:
         & weighted["stage2_candidate"].fillna(False).astype(bool)
         & weighted["volume_ok"].fillna(False).astype(bool)
         & weighted["rs_ok"].fillna(False).astype(bool)
-        & weighted["breakout_ok"].fillna(False).astype(bool)
     )
 
 

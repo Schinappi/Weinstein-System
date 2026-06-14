@@ -35,7 +35,7 @@ def evaluate_breakout(
 
     if ref_price is None:
         return {
-            "breakout_ok": not config.strategy.enable_breakout_filter,
+            "breakout_ok": True,  # always True when filter disabled
             "breakout_strength": 0.0,
             "breakout_level": None,
             "breakout_pct": None,
@@ -60,7 +60,7 @@ def evaluate_breakout(
     else:
         breakout_status = "extended_breakout"
 
-    breakout_ok = breakout_pct >= min_pct
+    breakout_ok = breakout_pct >= min_pct if config.strategy.enable_breakout_filter else True
 
     reason = (
         f"基底突破({base_breakout_price:.2f})" if use_base else "动态压力突破"

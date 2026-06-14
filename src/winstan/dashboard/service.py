@@ -363,7 +363,9 @@ class DashboardService:
                 "holder_num": _to_float(row.get("holder_num")),
                 "nb_score": _to_float(row.get("nb_score")),
                 "nb_ratio": nb_ratio,
-                "nb_consecutive_increases": _to_int(row.get("nb_consecutive_increases")),
+                "nb_vol_chg_5d": _to_float(row.get("nb_vol_chg_5d")),
+                "nb_vol_chg_10d": _to_float(row.get("nb_vol_chg_10d")),
+                "nb_vol_chg_20d": _to_float(row.get("nb_vol_chg_20d")),
                 "moneyflow_confirm": _to_float(row.get("moneyflow_confirm")),
                 "net_mf_amount": mf_amt,
             }
@@ -703,6 +705,8 @@ class DashboardService:
             {"label": "RS排名", "value": _format_percent_rank(row.get("rs_rank_pct"))},
             {"label": "上方空间", "value": _format_percent(row.get("headroom_pct"))},
             {"label": "距突破位", "value": _format_percent(row.get("breakout_pct"))},
+            {"label": "行业RS", "value": _format_industry_rs(row.get("industry_rs_rank_pct"))},
+            {"label": "行业广度", "value": _format_percent(row.get("industry_breadth"))},
             {"label": "拒绝原因", "value": _first_text(row.get("reject_reason"), "无")},
         ]
 
@@ -1146,20 +1150,21 @@ class DashboardService:
             return None
         return int(rank)
 
-    @staticmethod
-    def _build_reject_reason(record: dict[str, object]) -> str:
+    def _build_reject_reason(self, record: dict[str, object]) -> str:
+        cfg = self.config.strategy
         reasons: list[str] = []
         for key, label in [
-            ("market_ok", "market"),
-            ("stage2_candidate", "stage"),
-            ("volume_ok", "volume"),
-            ("rs_ok", "relative_strength"),
-            ("resistance_ok", "resistance"),
-            ("breakout_ok", "breakout"),
+            ("market_ok", "大盘(价>30周线+均线上倾+10周>30周)"),
+            ("stage2_candidate", "阶段II(站上30周线+均线上倾+高低点抬升+基底平整)"),
+            ("volume_ok", "量能(周量比≥1.0)"),
+            ("rs_ok", f"RS排名(前{cfg.rs_rank_threshold_pct}%)"),
+            ("resistance_ok", f"上方空间(≥{cfg.resistance_min_headroom_pct}%)"),
         ]:
             if not record.get(key, False):
                 reasons.append(label)
-        return ",".join(reasons) if reasons else ""
+        if cfg.enable_breakout_filter and not record.get("breakout_ok", False):
+            reasons.append(f"突破确认(涨幅≥{cfg.breakout_min_pct}%)")
+        return "；".join(reasons) if reasons else ""
 
 
 def _to_float(value: object) -> float | None:
@@ -1216,7 +1221,16 @@ def _format_percent(value: object) -> str:
 
 def _format_percent_rank(value: object) -> str:
     numeric = _to_float(value)
-    return "--" if numeric is None else f"前{numeric:.2f}%"
+    return "--" if numeric is None else f"前 {numeric:.0f}%"
+
+
+def _format_industry_rs(value: object) -> str:
+    """industry_rs_rank_pct: 行业强度百分位, 100=最强, 0=最弱."""
+    numeric = _to_float(value)
+    if numeric is None:
+        return "--"
+    label = "强" if numeric >= 70 else "中" if numeric >= 30 else "弱"
+    return f"前 {numeric:.0f}% ({label})"
 
 
 def _format_date(value: object) -> str:

@@ -30,6 +30,7 @@ const modalTitle = document.getElementById('modalTitle');
 const modalSymbol = document.getElementById('modalSymbol');
 const analysisMarkdown = document.getElementById('analysisMarkdown');
 const analysisLoading = document.getElementById('analysisLoading');
+const startAnalysisBtn = document.getElementById('startAnalysisBtn');
 const metricGrid = document.getElementById('metricGrid');
 const stage1Pill = document.getElementById('stage1Pill');
 const stage2Pill = document.getElementById('stage2Pill');
@@ -50,6 +51,7 @@ const recBpSection = document.getElementById('recBpSection');
 const recBSection = document.getElementById('recBSection');
 const stage1Table = document.getElementById('stage1Table');
 const stage1DatePicker = document.getElementById('stage1DatePicker');
+const refreshDashboardBtn = document.getElementById('refreshDashboardBtn');
 const precloseRunBtn = document.getElementById('precloseRunBtn');
 const precloseLoading = document.getElementById('precloseLoading');
 
@@ -57,6 +59,8 @@ let currentStage1Data = [];
 
 let currentChartState = null;
 let currentDetailRequestId = 0;
+let currentAnalysisSymbol = null;
+let currentAnalysisRequestId = 0;
 let latestUpdateStatus = {};
 let currentPage = 'dashboard';
 let stage2DatePicker = document.getElementById('stage2DatePicker');
@@ -91,6 +95,8 @@ function bindEvents() {
   refreshQuasiStage2Btn.addEventListener('click', () => refreshRankings('quasi-stage2'));
   refreshStage1Btn.addEventListener('click', () => refreshStage1());
   refreshRecsBtn.addEventListener('click', () => loadRecommendations({ force: true }));
+  refreshDashboardBtn.addEventListener('click', () => refreshDashboard());
+  startAnalysisBtn.addEventListener('click', () => startStockAnalysis());
   precloseRunBtn.addEventListener('click', runPreclose);
   quasiStage2DatePicker.addEventListener('change', () => {
     loadRankingsByDate('quasi-stage2', quasiStage2DatePicker.value);
@@ -124,6 +130,20 @@ function switchPage(pageKey) {
   [navDashboard, navStage1, navRecommendations, navQuasiStage2].forEach((button) => {
     button.classList.toggle('active', button.dataset.page === pageKey);
   });
+}
+
+async function refreshDashboard() {
+  refreshDashboardBtn.disabled = true;
+  refreshDashboardBtn.textContent = '刷新中...';
+  try {
+    await fetch('/api/dashboard/refresh', { method: 'POST' });
+    await loadDashboard();
+  } catch (e) {
+    console.error(e);
+  } finally {
+    refreshDashboardBtn.disabled = false;
+    refreshDashboardBtn.textContent = '刷新';
+  }
 }
 
 async function refreshRankings(section) {
@@ -629,10 +649,13 @@ function formatBoolean(value) {
 
 async function openStockDetail(symbol) {
   const requestId = ++currentDetailRequestId;
+  currentAnalysisSymbol = symbol;
+  currentAnalysisRequestId = requestId;
   modalTitle.textContent = '加载中...';
   modalSymbol.textContent = symbol;
-  setAnalysisLoading(true);
-  renderAnalysisMarkdown('> LLM 正在生成分析，请稍候...');
+  setAnalysisLoading(false);
+  startAnalysisBtn.classList.add('hidden');
+  analysisMarkdown.innerHTML = '<p class="analysis-placeholder">点击「开始AI分析」获取 DeepSeek 温斯坦分析报告</p>';
   metricGrid.innerHTML = '';
   stage1Pill.textContent = 'Stage1: --';
   stage2Pill.textContent = 'Stage2: --';
@@ -662,8 +685,10 @@ async function openStockDetail(symbol) {
     if (payload.analysis) {
       renderAnalysisMarkdown(payload.analysis);
       setAnalysisLoading(false);
+      startAnalysisBtn.classList.add('hidden');
     } else {
-      loadStockAnalysis(payload.symbol, requestId);
+      startAnalysisBtn.classList.remove('hidden');
+      setAnalysisLoading(false);
     }
   } catch (error) {
     if (requestId !== currentDetailRequestId) {
@@ -674,6 +699,16 @@ async function openStockDetail(symbol) {
     renderAnalysisMarkdown(`> ${error.message || '加载失败'}`);
     drawCandles(chartCanvas, {});
   }
+}
+
+function startStockAnalysis() {
+  const symbol = currentAnalysisSymbol;
+  const requestId = currentAnalysisRequestId;
+  if (!symbol) return;
+  startAnalysisBtn.classList.add('hidden');
+  setAnalysisLoading(true);
+  analysisMarkdown.innerHTML = '<p class="analysis-placeholder">LLM 正在生成分析，请稍候...</p>';
+  loadStockAnalysis(symbol, requestId);
 }
 
 async function loadStockAnalysis(symbol, requestId) {
@@ -734,7 +769,9 @@ function renderFundamentalMetrics(fundamental) {
   const holderPct = fundamental.holder_change_pct;
   const nbScore = fundamental.nb_score;
   const nbRatio = fundamental.nb_ratio;
-  const nbConsec = fundamental.nb_consecutive_increases;
+  const nb5d = fundamental.nb_vol_chg_5d;
+  const nb10d = fundamental.nb_vol_chg_10d;
+  const nb20d = fundamental.nb_vol_chg_20d;
   const mfConfirm = fundamental.moneyflow_confirm;
   const mfAmount = fundamental.net_mf_amount;
 
@@ -749,7 +786,8 @@ function renderFundamentalMetrics(fundamental) {
   let nbDetail = '';
   if (nbRatio !== null && nbRatio !== undefined && !Number.isNaN(nbRatio)) {
     const parts = [`持仓占比 ${fNum(nbRatio)}%`];
-    if (nbConsec && nbConsec > 0) parts.push(`连续增持 ${fInt(nbConsec)} 期`);
+    const valid20d = nb20d !== null && nb20d !== undefined && !Number.isNaN(nb20d);
+    if (valid20d) parts.push(`季度持仓变动 ${nb20d > 0 ? '+' : ''}${fNum(nb20d)}%`);
     nbDetail = parts.join(' · ');
   } else {
     nbDetail = '暂无数据';

@@ -31,6 +31,7 @@
             <p>基于温斯坦阶段分析法的 A 股 Stage2 筛选系统。</p>
           </div>
           <div class="page-actions">
+            <button id="refreshDashboardBtn" class="refresh-btn" type="button" title="清除内存缓存，从数据库重新读取">刷新</button>
             <button id="precloseRunBtn" class="primary-btn" type="button">
               <span class="btn-icon">🔄</span> 实时更新排行榜
             </button>
@@ -339,12 +340,15 @@
           <div class="analysis-box">
             <div class="analysis-head">
               <h4>温斯坦分析</h4>
+              <button id="startAnalysisBtn" class="secondary-btn hidden" type="button">🤖 开始AI分析</button>
               <div id="analysisLoading" class="analysis-loading hidden">
                 <span class="loading-spinner"></span>
                 <span>LLM 正在生成分析...</span>
               </div>
             </div>
-            <div id="analysisMarkdown" class="analysis-markdown"></div>
+            <div id="analysisMarkdown" class="analysis-markdown">
+              <p class="analysis-placeholder">点击「开始AI分析」获取 DeepSeek 温斯坦分析报告</p>
+            </div>
           </div>
         </section>
         <aside class="analysis-panel">

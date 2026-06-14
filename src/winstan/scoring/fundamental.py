@@ -66,33 +66,50 @@ def batch_fetch_holder(pro: object) -> pd.DataFrame:
 
 
 def batch_fetch_northbound(pro: object) -> pd.DataFrame:
-    """Fetch northbound A-share holdings for ALL stocks in one batch.
+    """Fetch northbound A-share holdings (latest 2 quarter-end dates).
 
-    ``hk_hold`` with ``exchange='SH'`` or ``exchange='SZ'`` returns ONLY
-    A-share northbound data (no HK stocks).  Two API calls cover all A-shares.
+    Tushare ``hk_hold`` only provides A-share northbound data at
+    quarter-end dates (20260331, 20251231, etc).  Fetches 2 most
+    recent quarters so we can compute quarter-over-quarter vol change.
 
-    Returns combined DataFrame with ~4100 rows for the latest month.
+    Returns combined DataFrame with ~8000 rows (2 dates x ~4000 stocks).
     """
+    # Try recent quarter-end dates
+    candidate_dates = ["20260331", "20251231", "20250930", "20250630"]
+    found_dates = []
+
+    for td in candidate_dates:
+        if len(found_dates) >= 2:
+            break
+        for exchange in ["SH"]:
+            try:
+                df = pro.hk_hold(trade_date=td, exchange=exchange)
+                if df is not None and not df.empty:
+                    found_dates.append(td)
+                    break
+            except Exception:
+                continue
+
+    if len(found_dates) < 2:
+        print(f"[fundamental/batch] northbound: only found {len(found_dates)} dates, need 2")
+        return pd.DataFrame(columns=["ts_code", "trade_date", "exchange", "vol", "ratio"])
+
+    print(f"[fundamental/batch] northbound dates: {found_dates}")
+
     frames = []
-    for exchange, label in [("SH", "SH"), ("SZ", "SZ")]:
-        try:
-            df = pro.hk_hold(exchange=exchange)
-            if df is not None and not df.empty:
-                result = df[["ts_code", "trade_date", "exchange", "vol", "ratio"]].copy()
-                frames.append(result)
-                print(f"[fundamental/batch] northbound {label}: {len(result)} rows")
-        except Exception:
-            # Fallback: try older dates
-            for td in ["20260331", "20260227", "20260130"]:
-                try:
-                    df = pro.hk_hold(trade_date=td, exchange=exchange)
-                    if df is not None and not df.empty:
-                        result = df[["ts_code", "trade_date", "exchange", "vol", "ratio"]].copy()
-                        frames.append(result)
-                        print(f"[fundamental/batch] northbound {label}: {len(result)} rows @ {td}")
-                        break
-                except Exception:
-                    continue
+    for td in found_dates:
+        for exchange in ["SH", "SZ"]:
+            try:
+                df = pro.hk_hold(trade_date=td, exchange=exchange)
+                if df is not None and not df.empty:
+                    result = df[["ts_code", "trade_date", "exchange", "vol", "ratio"]].copy()
+                    frames.append(result)
+                    print(f"[fundamental/batch] northbound {exchange}@{td}: {len(result)} rows")
+                else:
+                    print(f"[fundamental/batch] northbound {exchange}@{td}: empty")
+            except Exception as e:
+                print(f"[fundamental/batch] northbound {exchange}@{td}: error={e}")
+
     if frames:
         combined = pd.concat(frames, ignore_index=True)
         print(f"[fundamental/batch] northbound total: {len(combined)} rows")
@@ -161,23 +178,49 @@ def compute_holder_score(holder_change_pct: float | None) -> float:
     return 0.0
 
 
-def compute_northbound_score(nb_ratio: float | None, consecutive_increases: int) -> float:
-    """Score northbound holding trend.
+def compute_northbound_score(
+    nb_ratio: float | None,
+    vol_chg_5d: float | None,
+    vol_chg_10d: float | None,
+    vol_chg_20d: float | None,
+) -> float:
+    """Score northbound institutional accumulation momentum.
 
-    Rules (monthly data):
-      1 consecutive increase  → +5
-      2 consecutive increases → +10
-      3+ consecutive increase → +15
+    Rules (quarterly holding volume change):
+      20d change > 20%  -> +20  (机构大幅加仓)
+      20d change > 10%  -> +14  (机构持续加仓)
+      20d change > 5%   -> +8   (机构小幅加仓)
+      20d change > 0%   -> +4   (机构持平/微增)
+      10d acceleration   -> +3   (近期加速买入)
+      5d acceleration    -> +2   (短期加速买入)
+      20d change < -10%  -> -10  (机构明显减仓)
     """
     if nb_ratio is None or nb_ratio <= 0:
         return 0.0
-    if consecutive_increases >= 3:
-        return 15.0
-    if consecutive_increases >= 2:
-        return 10.0
-    if consecutive_increases >= 1:
-        return 5.0
-    return 0.0
+
+    score = 0.0
+
+    if vol_chg_20d is not None:
+        if vol_chg_20d > 20:
+            score += 20.0
+        elif vol_chg_20d > 10:
+            score += 14.0
+        elif vol_chg_20d > 5:
+            score += 8.0
+        elif vol_chg_20d > 0:
+            score += 4.0
+        elif vol_chg_20d < -10:
+            score -= 10.0
+
+    if vol_chg_10d is not None and vol_chg_20d is not None:
+        if vol_chg_10d > 0 and vol_chg_10d * 2 > vol_chg_20d + 5:
+            score += 3.0
+
+    if vol_chg_5d is not None and vol_chg_10d is not None:
+        if vol_chg_5d > 0 and vol_chg_5d * 2 > vol_chg_10d + 2:
+            score += 2.0
+
+    return score
 
 
 def compute_moneyflow_confirm(
@@ -232,29 +275,66 @@ def _compute_holder_scores(store: DuckDBStore) -> pd.DataFrame:
 
 
 def _compute_northbound_scores(store: DuckDBStore) -> pd.DataFrame:
-    """Read northbound data from DuckDB, compute consecutive increases and score."""
-    df = store.get_latest_northbound_data()
+    """Read northbound data from DuckDB, compute vol changes and scores.
+
+    Uses 2 most recent quarter-end dates to compute vol change
+    (hk_hold only provides quarterly A-share data).
+    """
+    df = store.read_fundamental_table("northbound")
     if df.empty:
-        return pd.DataFrame(columns=["symbol", "nb_ratio", "nb_consecutive_increases", "nb_score"])
+        return pd.DataFrame(columns=["symbol", "nb_ratio",
+                                      "nb_vol_chg_5d", "nb_vol_chg_10d", "nb_vol_chg_20d",
+                                      "nb_score"])
 
-    latest = df[df["rn"] == 1][["ts_code", "ratio"]].rename(columns={"ratio": "nb_ratio"})
-    prev = df[df["rn"] == 2][["ts_code", "ratio"]].rename(columns={"ratio": "prev_ratio"})
-    merged = latest.merge(prev, on="ts_code", how="left")
+    # Sum vol across SH+SZ for each stock+date
+    df["vol"] = pd.to_numeric(df["vol"], errors="coerce")
+    df_agg = df.groupby(["ts_code", "trade_date"], as_index=False)["vol"].sum()
 
-    # Count consecutive increases
-    merged["nb_consecutive_increases"] = merged.apply(
-        lambda r: 0
-        if r["prev_ratio"] is None or pd.isna(r["prev_ratio"])
-        else (1 if r["nb_ratio"] > r["prev_ratio"] else 0),
-        axis=1,
-    )
-    merged["nb_score"] = merged.apply(
-        lambda r: compute_northbound_score(r["nb_ratio"], r["nb_consecutive_increases"]),
-        axis=1,
-    )
-    merged = merged.rename(columns={"ts_code": "symbol"})
-    return merged[["symbol", "nb_ratio", "nb_consecutive_increases", "nb_score"]]
+    # Get latest ratio per stock (from most recent date)
+    latest_per_stock = df.groupby("ts_code", as_index=False).apply(
+        lambda g: g.loc[g["trade_date"].idxmax()],
+        include_groups=False,
+    ).reset_index()
+    if "ratio" not in latest_per_stock.columns:
+        latest_per_stock["ratio"] = None
+    ratio_map = dict(zip(latest_per_stock["ts_code"], latest_per_stock["ratio"]))
 
+    # Pivot: latest quarter vs previous quarter
+    dates = sorted(df_agg["trade_date"].unique())
+    if len(dates) < 2:
+        return pd.DataFrame(columns=["symbol", "nb_ratio",
+                                      "nb_vol_chg_5d", "nb_vol_chg_10d", "nb_vol_chg_20d",
+                                      "nb_score"])
+
+    latest_date = max(dates)
+    prev_date = dates[-2]
+
+    latest_vol = df_agg[df_agg["trade_date"] == latest_date][["ts_code", "vol"]].rename(columns={"vol": "vol_latest"})
+    prev_vol = df_agg[df_agg["trade_date"] == prev_date][["ts_code", "vol"]].rename(columns={"vol": "vol_prev"})
+
+    results = latest_vol.merge(prev_vol, on="ts_code", how="outer")
+
+    # Calculate quarterly vol change %; map to 5d/10d/20d (same value for all)
+    def _qoq_pct(row):
+        if row["vol_prev"] and row["vol_prev"] > 0 and row["vol_latest"] and row["vol_latest"] > 0:
+            return round((row["vol_latest"] - row["vol_prev"]) / row["vol_prev"] * 100, 1)
+        return None
+
+    results["nb_vol_chg_5d"] = results.apply(_qoq_pct, axis=1)
+    results["nb_vol_chg_10d"] = results.apply(_qoq_pct, axis=1)
+    results["nb_vol_chg_20d"] = results.apply(_qoq_pct, axis=1)
+
+    results = results.rename(columns={"ts_code": "symbol"})
+    results["nb_ratio"] = results["symbol"].map(ratio_map)
+    results["nb_score"] = results.apply(
+        lambda r: compute_northbound_score(
+            r.get("nb_ratio"), r.get("nb_vol_chg_5d"),
+            r.get("nb_vol_chg_10d"), r.get("nb_vol_chg_20d"),
+        ), axis=1)
+
+    return results[["symbol", "nb_ratio",
+                     "nb_vol_chg_5d", "nb_vol_chg_10d", "nb_vol_chg_20d",
+                     "nb_score"]]
 
 def _compute_moneyflow_scores(store: DuckDBStore, lookback_days: int = 5) -> pd.DataFrame:
     """Read moneyflow data from DuckDB, compute scores per symbol."""
@@ -314,7 +394,7 @@ def fetch_supplemental_data(results: pd.DataFrame) -> pd.DataFrame:
 
     Returns a copy of ``results`` with new columns:
       holder_num, holder_change_pct, holder_score,
-      nb_ratio, nb_consecutive_increases, nb_score,
+      nb_ratio, nb_vol_chg_5d, nb_vol_chg_10d, nb_vol_chg_20d, nb_score,
       net_mf_amount, moneyflow_confirm
     """
     if results.empty:
@@ -340,7 +420,7 @@ def fetch_supplemental_data(results: pd.DataFrame) -> pd.DataFrame:
     print("[fundamental] Batch fetching northbound data...")
     nb_df = batch_fetch_northbound(pro)
     if not nb_df.empty:
-        store.append_fundamental_table("northbound", nb_df)
+        store.write_fundamental_table("northbound", nb_df)
 
     print("[fundamental] Batch fetching moneyflow data...")
     mf_df = batch_fetch_moneyflow(pro)
@@ -366,7 +446,9 @@ def fetch_supplemental_data(results: pd.DataFrame) -> pd.DataFrame:
         scored = scored.merge(nb_scores, on="symbol", how="left")
     else:
         scored["nb_ratio"] = None
-        scored["nb_consecutive_increases"] = 0
+        scored["nb_vol_chg_5d"] = None
+        scored["nb_vol_chg_10d"] = None
+        scored["nb_vol_chg_20d"] = None
         scored["nb_score"] = 0.0
 
     # Moneyflow
@@ -377,7 +459,7 @@ def fetch_supplemental_data(results: pd.DataFrame) -> pd.DataFrame:
         scored["moneyflow_confirm"] = 0.0
 
     # Fill NaN for stocks that had no match in batch data
-    for col in ["holder_score", "nb_score", "moneyflow_confirm"]:
+    for col in ["holder_score", "nb_score", "moneyflow_confirm", "nb_vol_chg_5d", "nb_vol_chg_10d", "nb_vol_chg_20d"]:
         if col in scored.columns:
             scored[col] = scored[col].fillna(0.0)
 
@@ -396,7 +478,7 @@ def _fill_fundamental_defaults(df: pd.DataFrame) -> None:
     ]:
         if col not in df.columns:
             df[col] = None
-    for col in ["holder_score", "nb_score", "moneyflow_confirm"]:
+    for col in ["holder_score", "nb_score", "moneyflow_confirm", "nb_vol_chg_5d", "nb_vol_chg_10d", "nb_vol_chg_20d"]:
         if col not in df.columns:
             df[col] = 0.0
 
@@ -421,7 +503,9 @@ def get_fundamental_for_symbol(symbol: str, config_path: str = "config/strategy.
         "holder_num": None,
         "nb_score": None,
         "nb_ratio": None,
-        "nb_consecutive_increases": 0,
+        "nb_vol_chg_5d": None,
+        "nb_vol_chg_10d": None,
+        "nb_vol_chg_20d": None,
         "moneyflow_confirm": None,
         "net_mf_amount": None,
     }
@@ -463,7 +547,7 @@ def get_fundamental_for_symbol(symbol: str, config_path: str = "config/strategy.
                     if prev_ratio and ratio and ratio > prev_ratio:
                         consec = 1
                 result["nb_consecutive_increases"] = consec
-                result["nb_score"] = compute_northbound_score(ratio, consec)
+                result["nb_score"] = compute_northbound_score(ratio, None, None, None)
 
     # Moneyflow
     mf_df = store.get_latest_moneyflow_data(lookback_days=5)

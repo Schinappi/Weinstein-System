@@ -218,20 +218,21 @@ class WeinsteinScreener:
 
         return pd.DataFrame(records)
 
-    @staticmethod
-    def _build_reject_reason(record: dict[str, object]) -> str:
+    def _build_reject_reason(self, record: dict[str, object]) -> str:
+        cfg = self.config.strategy
         reasons: list[str] = []
         for key, label in [
-            ("market_ok", "market"),
-            ("stage2_candidate", "stage"),
-            ("volume_ok", "volume"),
-            ("rs_ok", "relative_strength"),
-            ("resistance_ok", "resistance"),
-            ("breakout_ok", "breakout"),
+            ("market_ok", "大盘(价>30周线+均线上倾+10周>30周)"),
+            ("stage2_candidate", "阶段II(站上30周线+均线上倾+高低点抬升+基底平整)"),
+            ("volume_ok", "量能(周量比≥1.0)"),
+            ("rs_ok", f"RS排名(前{cfg.rs_rank_threshold_pct}%)"),
+            ("resistance_ok", f"上方空间(≥{cfg.resistance_min_headroom_pct}%)"),
         ]:
             if not record.get(key, False):
                 reasons.append(label)
-        return ",".join(reasons) if reasons else ""
+        if cfg.enable_breakout_filter and not record.get("breakout_ok", False):
+            reasons.append(f"突破确认(涨幅≥{cfg.breakout_min_pct}%)")
+        return "；".join(reasons) if reasons else ""
 
     def _build_summary(
         self,

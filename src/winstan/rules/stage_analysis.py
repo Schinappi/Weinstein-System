@@ -436,15 +436,15 @@ def _score_strength(row: pd.Series) -> float:
     composite_score = 0.0 if rs_composite is None else _clamp_score(50.0 + rs_composite * 250.0)
     stock_score = rank_score * 0.80 + composite_score * 0.20
 
-    #── 行业相对强度（25%）：industry_rs_rank_pct 越低越好（0=最强）──
+    #── 行业相对强度（25%）：industry_rs_rank_pct 越高越好（100=最强行业）──
     industry_rs_score = 0.0
     if industry_rs_rank_pct is not None:
-        # Convert percentile: lower rank = higher score
-        industry_rs_score = _clamp_score(100.0 - max(industry_rs_rank_pct - 1.0, 0.0) * 1.1)
+        # Percentile directly as score: 100 = top industry
+        industry_rs_score = _clamp_score(industry_rs_rank_pct * 0.95 + 5.0)
         # Bonus for top-quartile industries
-        if industry_rs_rank_pct <= 10.0:
+        if industry_rs_rank_pct >= 90.0:
             industry_rs_score += 6.0
-        elif industry_rs_rank_pct <= 25.0:
+        elif industry_rs_rank_pct >= 75.0:
             industry_rs_score += 3.0
 
     #── 行业广度（15%）：行业内RS为正的股票占比 ──

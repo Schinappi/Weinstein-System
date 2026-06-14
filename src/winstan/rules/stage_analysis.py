@@ -29,6 +29,13 @@ def evaluate_stage(latest: pd.Series, recent: pd.DataFrame, config: AppConfig) -
             "base_flatness_ok": False,
             "stage2_score": 0.0,
             "stage2_reason": "无数据",
+            "extension_pct": None,
+            "stage2_age_weeks": 0,
+            "base_breakout_price": None,
+            "base_low": None,
+            "base_id": None,
+            "base_breakout_fixed": False,
+            "base_weeks": 0,
         }
 
     stage_window = recent.tail(config.strategy.min_stage2_weeks)
@@ -76,6 +83,9 @@ def evaluate_stage(latest: pd.Series, recent: pd.DataFrame, config: AppConfig) -
     # Stage II age: count consecutive weeks with close > ma_30w (proxy for Stage II duration)
     stage2_age_weeks = _count_consecutive_above_ma(recent, config)
 
+    # 基底检测：识别最近的平坦基底区间，计算固定突破位
+    base_info = _detect_bases(recent, config)
+
     return {
         "stage_label": stage,
         "stage2_candidate": candidate,
@@ -85,6 +95,11 @@ def evaluate_stage(latest: pd.Series, recent: pd.DataFrame, config: AppConfig) -
         "stage2_reason": stage2_reason,
         "extension_pct": extension_pct,
         "stage2_age_weeks": stage2_age_weeks,
+        "base_breakout_price": base_info["base_breakout_price"],
+        "base_low": base_info["base_low"],
+        "base_id": base_info["base_id"],
+        "base_breakout_fixed": base_info["base_breakout_fixed"],
+        "base_weeks": base_info["base_weeks"],
     }
 
 
@@ -118,6 +133,85 @@ def _count_consecutive_above_ma(recent: pd.DataFrame, config: AppConfig) -> int:
     return count
 
 
+MIN_BASE_WEEKS = 3
+
+
+def _detect_bases(recent: pd.DataFrame, config: AppConfig) -> dict[str, object]:
+    """Identify flat base consolidation zones in weekly history.
+
+    Walks the weekly DataFrame chronologically, finds consecutive weeks
+    where _is_flat_base() is True, groups them into bases, and returns
+    the most recent base's high/low/breakout status.
+
+    Once price closes above base_high, the breakout price is locked
+    and never updated — matching Weinstein's "fixed buy point" concept.
+    """
+    result: dict[str, object] = {
+        "base_breakout_price": None,
+        "base_low": None,
+        "base_id": None,
+        "base_breakout_fixed": False,
+        "base_weeks": 0,
+    }
+    if recent.empty or "high" not in recent.columns or "low" not in recent.columns:
+        return result
+
+    # Build flatness mask
+    flat_mask: list[bool] = []
+    for i in range(len(recent)):
+        row = recent.iloc[i]
+        flat_mask.append(_is_flat_base(row, config))
+
+    # Segment into consecutive flat regions (bases)
+    bases: list[dict[str, object]] = []
+    in_base = False
+    base_start = 0
+    for i, is_flat in enumerate(flat_mask):
+        if is_flat and not in_base:
+            in_base = True
+            base_start = i
+        elif not is_flat and in_base:
+            in_base = False
+            length = i - base_start
+            if length >= MIN_BASE_WEEKS:
+                base_high = float(recent["high"].iloc[base_start:i].max())
+                base_low = float(recent["low"].iloc[base_start:i].min())
+                bases.append({
+                    "start_idx": base_start,
+                    "end_idx": i - 1,
+                    "high": base_high,
+                    "low": base_low,
+                    "weeks": length,
+                })
+    # Trailing base (still ongoing at latest row)
+    if in_base:
+        length = len(flat_mask) - base_start
+        if length >= MIN_BASE_WEEKS:
+            base_high = float(recent["high"].iloc[base_start:].max())
+            base_low = float(recent["low"].iloc[base_start:].min())
+            bases.append({
+                "start_idx": base_start,
+                "end_idx": len(recent) - 1,
+                "high": base_high,
+                "low": base_low,
+                "weeks": length,
+            })
+
+    if not bases:
+        return result
+
+    last_base = bases[-1]
+    current_close = float(recent["close"].iloc[-1])
+    broken_out = current_close > float(last_base["high"])
+
+    result["base_breakout_price"] = float(last_base["high"])
+    result["base_low"] = float(last_base["low"])
+    result["base_id"] = len(bases)
+    result["base_breakout_fixed"] = broken_out
+    result["base_weeks"] = int(last_base["weeks"])
+    return result
+
+
 def _stage2_score(
     latest: pd.Series,
     price_above: bool,
@@ -129,15 +223,15 @@ def _stage2_score(
 ) -> tuple[float, str]:
     price_vs_ma_pct = latest.get("price_vs_ma_pct")
     ma_spread_pct = latest.get("ma_spread_pct")
-    breakout_level = latest.get("breakout_level")
+    base_breakout_price = latest.get("base_breakout_price")
     weekly_volume_ma_10 = latest.get("weekly_volume_ma_10")
     volume = latest.get("volume")
     rs_rank_pct = latest.get("rs_rank_pct")
     rs_composite = latest.get("rs_composite")
 
-    breakout_pct = None
-    if pd.notna(breakout_level) and float(breakout_level) != 0:
-        breakout_pct = (float(latest["close"]) / float(breakout_level) - 1.0) * 100.0
+    base_extension_pct = None
+    if pd.notna(base_breakout_price) and float(base_breakout_price) > 0:
+        base_extension_pct = (float(latest["close"]) / float(base_breakout_price) - 1.0) * 100.0
 
     score = 0.0
     reason: list[str] = []
@@ -208,12 +302,18 @@ def _stage2_score(
         elif spread <= 5:
             score += 2.5
 
-    if breakout_pct is not None:
-        if -3 <= breakout_pct <= 8:
+    if base_extension_pct is not None:
+        if -3 <= base_extension_pct <= 3:
+            score += 15.0
+            reason.append("基底最佳买点")
+        elif 3 < base_extension_pct <= 8:
             score += 10.0
-            reason.append("接近突破位")
-        elif breakout_pct > 8:
-            score += 3.0
+            reason.append("靠近基底突破位")
+        elif 8 < base_extension_pct <= 15:
+            score += 5.0
+            reason.append("基底突破后小幅扩展")
+        elif base_extension_pct > 15:
+            score += 1.0
 
     return min(score, 100.0), " / ".join(reason) if reason else "普通趋势"
 
@@ -356,9 +456,15 @@ def _score_structure(row: pd.Series) -> float:
 
 
 def _score_timing(row: pd.Series, config: AppConfig) -> float:
-    """How favourable is the current price position for entry."""
-    breakout_pct = _to_float(row.get("breakout_pct"))
+    """How favourable is the current price position for entry.
+
+    Uses base_breakout_price (fixed base top, not rolling max) to compute
+    true extension from the Weinstein buy point.  Falls back to breakout_pct
+    (rolling resistance) when no base is detected.
+    """
     price_vs_ma_pct = _to_float(row.get("price_vs_ma_pct"))
+    base_breakout_price = _to_float(row.get("base_breakout_price"))
+    close_price = _to_float(row.get("close"))
 
     score = 0.0
 
@@ -375,36 +481,78 @@ def _score_timing(row: pd.Series, config: AppConfig) -> float:
         else:
             score += 10.0
 
-    # Distance from the breakout level — closer is better (but not extended).
-    if breakout_pct is not None:
-        if -2.0 <= breakout_pct <= 2.0:
-            score += 40.0
-        elif (-5.0 <= breakout_pct < -2.0) or (2.0 < breakout_pct <= config.strategy.watch_breakout_max_pct):
-            score += 25.0
-        elif breakout_pct > config.strategy.watch_breakout_max_pct:
-            score += 8.0
+    # Distance from base breakout price (fixed buy point).
+    # This replaces the old rolling-max breakout_pct which drifted upward
+    # as price rallied, hiding true extension.
+    if base_breakout_price is not None and base_breakout_price > 0 and close_price is not None:
+        base_ext_pct = (close_price / base_breakout_price - 1.0) * 100.0
+        if -2.0 <= base_ext_pct <= 3.0:
+            score += 45.0      # 最佳买点：刚突破或即将突破
+        elif 3.0 < base_ext_pct <= 8.0:
+            score += 35.0      # 可追但略贵
+        elif 8.0 < base_ext_pct <= 15.0:
+            score += 20.0      # 偏扩展
+        elif 15.0 < base_ext_pct <= 20.0:
+            score += 8.0       # 明显扩展
+        elif base_ext_pct > 20.0:
+            score += 0.0       # 严重扩展，不追
         else:
-            score += 15.0
+            score += 15.0      # 仍在基底下方，等待突破
+    else:
+        # Fallback: no base detected, use legacy breakout_pct
+        breakout_pct = _to_float(row.get("breakout_pct"))
+        if breakout_pct is not None:
+            if -2.0 <= breakout_pct <= 2.0:
+                score += 40.0
+            elif (-5.0 <= breakout_pct < -2.0) or (2.0 < breakout_pct <= config.strategy.watch_breakout_max_pct):
+                score += 25.0
+            elif breakout_pct > config.strategy.watch_breakout_max_pct:
+                score += 8.0
+            else:
+                score += 15.0
 
     return _clamp_score(score)
 
 
 def _score_breakout_quality(row: pd.Series, config: AppConfig) -> float:
-    """Rate the quality of the breakout event itself — status + volume."""
+    """Rate the quality of the breakout event itself — status + volume.
+
+    When a base is detected, uses the true base-breakout distance (fixed
+    base top) instead of the rolling-max breakout_pct which drifts.
+    """
     breakout_status = str(row.get("breakout_status") or "no_breakout_level")
     volume_ratio = _to_float(row.get("volume_ratio"))
     breakout_ok = _to_bool(row.get("breakout_ok"))
+    base_breakout_price = _to_float(row.get("base_breakout_price"))
+    close_price = _to_float(row.get("close"))
+    base_breakout_fixed = _to_bool(row.get("base_breakout_fixed"))
 
     score = 0.0
 
-    # Breakout status is the primary signal.
-    score += {
-        "just_broke_out": 42.0,
-        "near_breakout": 38.0,
-        "below_breakout": 18.0,
-        "extended_breakout": 5.0,
-        "no_breakout_level": 14.0,
-    }.get(breakout_status, 14.0)
+    # Base-based extension first (more accurate than rolling breakout_status)
+    if base_breakout_price is not None and base_breakout_price > 0 and close_price is not None:
+        base_ext_pct = (close_price / base_breakout_price - 1.0) * 100.0
+        if base_ext_pct <= 0:
+            score += 22.0       # 仍在基底内，等待突破
+        elif base_ext_pct <= 3.0:
+            score += 50.0       # 刚突破基底，最佳
+        elif base_ext_pct <= 8.0:
+            score += 35.0       # 小幅扩展，尚可
+        elif base_ext_pct <= 15.0:
+            score += 15.0       # 明显扩展
+        elif base_ext_pct <= 20.0:
+            score += 5.0        # 严重扩展
+        else:
+            score += 0.0        # 远超基底，不追
+    else:
+        # Fallback: no base detected, use old breakout_status logic
+        score += {
+            "just_broke_out": 42.0,
+            "near_breakout": 38.0,
+            "below_breakout": 18.0,
+            "extended_breakout": 5.0,
+            "no_breakout_level": 14.0,
+        }.get(breakout_status, 14.0)
 
     # Volume confirmation — stronger volume = higher conviction.
     if volume_ratio is not None:
@@ -461,19 +609,42 @@ def _score_strength(row: pd.Series) -> float:
 
 
 def _score_extension(row: pd.Series) -> float:
-    """Score how close the stock is to its 30-week MA (lower = better)."""
+    """Score how close the stock is to its 30-week MA AND base breakout price.
+
+    Lower extension = better entry point.  Weights: 60% MA distance, 40% base distance.
+    """
     extension_pct = _to_float(row.get("extension_pct"))
-    if extension_pct is None:
-        return 0.0
-    if extension_pct <= 5.0:
-        return 100.0
-    if extension_pct <= 10.0:
-        return 90.0
-    if extension_pct <= 15.0:
-        return 70.0
-    if extension_pct <= 20.0:
-        return 40.0
-    return 10.0
+    base_breakout_price = _to_float(row.get("base_breakout_price"))
+    close_price = _to_float(row.get("close"))
+
+    ma_score = 0.0
+    if extension_pct is not None:
+        if extension_pct <= 5.0:
+            ma_score = 100.0
+        elif extension_pct <= 10.0:
+            ma_score = 90.0
+        elif extension_pct <= 15.0:
+            ma_score = 70.0
+        elif extension_pct <= 20.0:
+            ma_score = 40.0
+        else:
+            ma_score = 10.0
+
+    base_score = 50.0  # neutral: no base detected
+    if base_breakout_price is not None and base_breakout_price > 0 and close_price is not None:
+        base_ext_pct = (close_price / base_breakout_price - 1.0) * 100.0
+        if base_ext_pct <= 3.0:
+            base_score = 100.0
+        elif base_ext_pct <= 8.0:
+            base_score = 85.0
+        elif base_ext_pct <= 15.0:
+            base_score = 50.0
+        elif base_ext_pct <= 20.0:
+            base_score = 20.0
+        else:
+            base_score = 0.0
+
+    return ma_score * 0.60 + base_score * 0.40
 
 
 def _score_stage2_age(row: pd.Series) -> float:
@@ -501,6 +672,8 @@ def _score_risk(row: pd.Series, config: AppConfig) -> float:
     price_vs_ma_pct = _to_float(row.get("price_vs_ma_pct"))
     breakout_pct = _to_float(row.get("breakout_pct"))
     headroom_pct = _to_float(row.get("headroom_pct"))
+    base_breakout_price = _to_float(row.get("base_breakout_price"))
+    close_price = _to_float(row.get("close"))
 
     score = 0.0
     if not _to_bool(row.get("market_ok")):
@@ -514,12 +687,24 @@ def _score_risk(row: pd.Series, config: AppConfig) -> float:
         if breakout_status not in {"near_breakout", "just_broke_out", "below_breakout"}:
             score += 14.0
 
-    if breakout_status == "extended_breakout":
-        score += 26.0
-    elif breakout_pct is not None and breakout_pct > config.strategy.watch_breakout_max_pct:
-        score += 18.0
-    elif breakout_pct is not None and breakout_pct < -6.0:
-        score += 10.0
+    # Extension penalty: use base_breakout_price when available
+    # (fixed base top — accurate), fall back to legacy breakout_pct
+    if base_breakout_price is not None and base_breakout_price > 0 and close_price is not None:
+        base_ext_pct = (close_price / base_breakout_price - 1.0) * 100.0
+        if base_ext_pct > 20.0:
+            score += 28.0      # 远离基底突破位，严重扩展
+        elif base_ext_pct > 15.0:
+            score += 20.0      # 明显扩展
+        elif base_ext_pct > 8.0:
+            score += 10.0      # 小幅扩展
+    else:
+        # Legacy: rolling breakout_pct (less accurate, drifts with price)
+        if breakout_status == "extended_breakout":
+            score += 26.0
+        elif breakout_pct is not None and breakout_pct > config.strategy.watch_breakout_max_pct:
+            score += 18.0
+        elif breakout_pct is not None and breakout_pct < -6.0:
+            score += 10.0
 
     if price_vs_ma_pct is not None:
         if price_vs_ma_pct > config.strategy.watch_max_price_vs_ma_pct + 5.0:
@@ -561,13 +746,28 @@ def _build_stage2_reason(
         f"风险{_risk_bucket(risk_score)}",
     ]
 
-    breakout_status = str(row.get("breakout_status") or "no_breakout_level")
-    if breakout_status == "just_broke_out":
-        bits.append("刚突破")
-    elif breakout_status == "near_breakout":
-        bits.append("临近突破")
-    elif breakout_status == "extended_breakout":
-        bits.append("突破后偏扩展")
+    # Base breakout extension (fixed base top, accurate)
+    base_breakout_price = _to_float(row.get("base_breakout_price"))
+    close_price = _to_float(row.get("close"))
+    if base_breakout_price is not None and base_breakout_price > 0 and close_price is not None:
+        base_ext_pct = (close_price / base_breakout_price - 1.0) * 100.0
+        if base_ext_pct <= 3.0:
+            bits.append("基底突破买点")
+        elif base_ext_pct <= 8.0:
+            bits.append("靠近基底突破位")
+        elif base_ext_pct <= 15.0:
+            bits.append("基底突破后扩展")
+        elif base_ext_pct > 15.0:
+            bits.append("远离基底(追高风险)")
+    else:
+        # Fallback to old breakout_status labels
+        breakout_status = str(row.get("breakout_status") or "no_breakout_level")
+        if breakout_status == "just_broke_out":
+            bits.append("刚突破")
+        elif breakout_status == "near_breakout":
+            bits.append("临近突破")
+        elif breakout_status == "extended_breakout":
+            bits.append("突破后偏扩展")
 
     if not _to_bool(row.get("market_ok")):
         bits.append("大盘过滤未通过")

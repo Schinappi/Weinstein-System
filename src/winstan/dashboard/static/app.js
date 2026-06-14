@@ -975,6 +975,12 @@ function drawCandles(canvas, chart) {
   if (Number.isFinite(chart.resistance_line)) {
     priceSeries.push(chart.resistance_line);
   }
+  if (Number.isFinite(chart.base_breakout_line)) {
+    priceSeries.push(chart.base_breakout_line);
+  }
+  if (Number.isFinite(chart.base_stop_line)) {
+    priceSeries.push(chart.base_stop_line);
+  }
   const maxHigh = Math.max(...priceSeries);
   const minLow = Math.min(...priceSeries);
   const paddedRange = Math.max((maxHigh - minLow) * 0.08, maxHigh * 0.015, 0.5);
@@ -986,8 +992,10 @@ function drawCandles(canvas, chart) {
 
   drawGrid(ctx, left, right, priceAreaTop, bottom, 5, '#e2e8f0');
   drawGrid(ctx, left, right, volumeAreaTop, volumeBottom, 2, '#edf2f7');
-  drawHorizontalLine(ctx, chart.breakout_line, scaleY, left, right, '#7c3aed', [6, 5], '突破线');
+  drawHorizontalLine(ctx, chart.base_breakout_line, scaleY, left, right, '#059669', [8, 4], '基底突破');   // 固定基底顶
+  drawHorizontalLine(ctx, chart.breakout_line, scaleY, left, right, '#7c3aed', [6, 5], '动态压力');        // 原突破线→动态压力线
   drawHorizontalLine(ctx, chart.resistance_line, scaleY, left, right, '#ea580c', [10, 6], '压力线');
+  drawHorizontalLine(ctx, chart.base_stop_line, scaleY, left, right, '#dc2626', [4, 3], '止损线');          // 基底底
   drawLine(ctx, candles, 'ma144', '#2563eb', scaleX, scaleY);
   drawLine(ctx, candles, 'ma169', '#d97706', scaleX, scaleY);
 

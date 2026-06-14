@@ -190,7 +190,10 @@ class WeinsteinScreener:
             volume_info = evaluate_volume(recent.tail(max(self.config.strategy.volume_avg_weeks, 3)))
             rs_info = evaluate_relative_strength(latest, self.config)
             resistance_info = evaluate_resistance(recent, latest, self.config)
-            breakout_info = evaluate_breakout(latest, self.config)
+            breakout_info = evaluate_breakout(
+                latest, self.config,
+                base_breakout_price=stage_info.get("base_breakout_price"),
+            )
 
             record = {
                 "symbol": symbol,
@@ -232,6 +235,14 @@ class WeinsteinScreener:
                 reasons.append(label)
         if cfg.enable_breakout_filter and not record.get("breakout_ok", False):
             reasons.append(f"突破确认(涨幅≥{cfg.breakout_min_pct}%)")
+        # 基底突破位扩展度提示（非门禁，纯信息）
+        base_bp = record.get("base_breakout_price")
+        base_bf = record.get("base_breakout_fixed")
+        close_p = record.get("close")
+        if base_bp is not None and base_bf and close_p is not None and float(base_bp) > 0:
+            base_ext = (float(close_p) / float(base_bp) - 1.0) * 100.0
+            if base_ext > 15.0:
+                reasons.append(f"距基底突破位+{base_ext:.0f}%(追高风险)")
         return "；".join(reasons) if reasons else ""
 
     def _build_summary(

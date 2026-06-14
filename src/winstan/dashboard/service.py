@@ -663,7 +663,10 @@ class DashboardService:
         volume_info = evaluate_volume(recent.tail(max(self.config.strategy.volume_avg_weeks, 3)))
         rs_info = evaluate_relative_strength(pd.Series({"rs_rank_pct": None, "rs_line": latest.get("rs_line")}), self.config)
         resistance_info = evaluate_resistance(recent, latest, self.config)
-        breakout_info = evaluate_breakout(latest, self.config)
+        breakout_info = evaluate_breakout(
+            latest, self.config,
+            base_breakout_price=stage_info.get("base_breakout_price"),
+        )
 
         record = {
             "symbol": symbol,
@@ -705,6 +708,8 @@ class DashboardService:
             {"label": "RS排名", "value": _format_percent_rank(row.get("rs_rank_pct"))},
             {"label": "上方空间", "value": _format_percent(row.get("headroom_pct"))},
             {"label": "距突破位", "value": _format_percent(row.get("breakout_pct"))},
+            {"label": "基底突破位", "value": _format_number(row.get("base_breakout_price"), "#0.00", "无基底")},
+            {"label": "距基底突破", "value": _format_base_extension(row)},
             {"label": "行业RS", "value": _format_industry_rs(row.get("industry_rs_rank_pct"))},
             {"label": "行业广度", "value": _format_percent(row.get("industry_breadth"))},
             {"label": "拒绝原因", "value": _first_text(row.get("reject_reason"), "无")},
@@ -716,6 +721,8 @@ class DashboardService:
         frame["ma169"] = frame["close"].rolling(169).mean()
         breakout_line = _to_float(row.get("breakout_level"))
         resistance_line = _to_float(row.get("nearest_resistance"))
+        base_breakout_line = _to_float(row.get("base_breakout_price"))
+        base_stop_line = _to_float(row.get("base_low"))
         items: list[dict[str, object]] = []
         for _, row in frame.iterrows():
             items.append(
@@ -734,6 +741,8 @@ class DashboardService:
             "candles": items,
             "breakout_line": breakout_line,
             "resistance_line": resistance_line,
+            "base_breakout_line": base_breakout_line,
+            "base_stop_line": base_stop_line,
         }
 
     def _serialize_stage1(self, frame: pd.DataFrame) -> list[dict[str, object]]:
@@ -1222,6 +1231,18 @@ def _format_percent(value: object) -> str:
 def _format_percent_rank(value: object) -> str:
     numeric = _to_float(value)
     return "--" if numeric is None else f"前 {numeric:.0f}%"
+
+
+def _format_base_extension(row: dict[str, object]) -> str:
+    """Format distance from base breakout price as percentage."""
+    base_bp = _to_float(row.get("base_breakout_price"))
+    close_p = _to_float(row.get("close"))
+    if base_bp is None or base_bp == 0 or close_p is None:
+        return "--"
+    ext = (close_p / base_bp - 1.0) * 100.0
+    fixed = row.get("base_breakout_fixed", False)
+    tag = " ✓锁定" if fixed else ""
+    return f"{ext:+.1f}%{tag}"
 
 
 def _format_industry_rs(value: object) -> str:

@@ -67,10 +67,10 @@ def build_trade_watch_signal(
 
 def _resolve_target_entry_price(row: pd.Series, config: AppConfig) -> float | None:
     close = _to_float(row.get("close"))
-    breakout_level = _to_float(row.get("breakout_level"))
+    breakout_ref = _to_float(row.get("breakout_ref_price")) or _to_float(row.get("breakout_level"))
     nearest_resistance = _to_float(row.get("nearest_resistance"))
     breakout_status = _to_text(row.get("breakout_status")) or "no_breakout_level"
-    confirm_step = (close or breakout_level or nearest_resistance or 0.0) * min(config.strategy.breakout_min_pct, 2.0) / 100.0
+    confirm_step = (close or breakout_ref or nearest_resistance or 0.0) * min(config.strategy.breakout_min_pct, 2.0) / 100.0
 
     if breakout_status == "just_broke_out":
         if nearest_resistance is not None and close is not None and nearest_resistance > close:
@@ -78,9 +78,9 @@ def _resolve_target_entry_price(row: pd.Series, config: AppConfig) -> float | No
         if close is not None:
             return round(close + max(confirm_step, 0.01), 4)
 
-    if breakout_level is not None:
-        if close is None or breakout_level >= close:
-            return round(breakout_level, 4)
+    if breakout_ref is not None:
+        if close is None or breakout_ref >= close:
+            return round(breakout_ref, 4)
         return round(close + max(confirm_step, 0.01), 4)
 
     if nearest_resistance is not None and close is not None and nearest_resistance > close:

@@ -25,8 +25,10 @@ from winstan.resample.weekly_builder import build_weekly_bars
 from winstan.rules.breakout_rule import evaluate_breakout
 from winstan.rules.market_trend import evaluate_market_trend
 from winstan.rules.relative_strength_rule import evaluate_relative_strength
-from winstan.rules.resistance_rule import evaluate_resistance
-from winstan.rules.stage_analysis import apply_stage2_scoring, evaluate_stage
+from winstan.rules.resistance_rule import evaluate_resistance, compute_overhead_supply
+from winstan.rules.stage_analysis import apply_stage2_scoring, detect_transition, evaluate_stage
+from winstan.rules.base_quality import compute_base_quality
+from winstan.rules.stage2_continuation import compute_continuation_quality
 from winstan.rules.volume_confirmation import evaluate_volume
 from winstan.scoring.ranker import build_stage2_top_n, score_and_rank
 from winstan.storage.duckdb_store import DuckDBStore
@@ -97,8 +99,24 @@ def run_batched_screener():
             volume_info = evaluate_volume(recent.tail(max(config.strategy.volume_avg_weeks, 3)))
             # Evaluate RS with batch-local rank (placeholder, will be fixed globally)
             rs_info = evaluate_relative_strength(latest, config)
-            resistance_info = evaluate_resistance(recent, latest, config)
+            resistance_info = evaluate_resistance(recent, latest, config, base_breakout_price=stage_info.get("base_breakout_price"))
             breakout_info = evaluate_breakout(latest, config)
+            # Overhead supply
+            daily = parquet_store.read_symbol_frame("daily_bars", symbol)
+            overhead_info = compute_overhead_supply(daily)
+
+            # Stage I 基底质量评分
+            base_quality_info = compute_base_quality(recent, config, base_info=stage_info, daily=daily)
+
+            # Stage2 续涨形态评分
+            continuation_info = compute_continuation_quality(recent, config, daily=daily)
+
+            # Stage1→2 转换检测
+            transition_info = detect_transition(
+                latest, recent, config,
+                base_info=stage_info,
+                base_quality_score=float(base_quality_info.get("base_quality_score", 0.0)),
+            )
 
             record = {
                 "symbol": symbol,
@@ -110,6 +128,10 @@ def run_batched_screener():
                 **rs_info,
                 **resistance_info,
                 **breakout_info,
+                **overhead_info,
+                **transition_info,
+                **base_quality_info,
+                **continuation_info,
                 "price_vs_ma_pct": float(latest["price_vs_ma_pct"]) if pd.notna(latest["price_vs_ma_pct"]) else None,
                 "ma_30w": float(latest["ma_30w"]) if pd.notna(latest["ma_30w"]) else None,
                 "ma_10w": float(latest["ma_10w"]) if pd.notna(latest["ma_10w"]) else None,

@@ -2,10 +2,16 @@ const navDashboard = document.getElementById('navDashboard');
 const navStage1 = document.getElementById('navStage1');
 const navRecommendations = document.getElementById('navRecommendations');
 const navQuasiStage2 = document.getElementById('navQuasiStage2');
+const navShareholder = document.getElementById('navShareholder');
+const navTransition = document.getElementById('navTransition');
+const navContinuation = document.getElementById('navContinuation');
 const pageDashboard = document.getElementById('pageDashboard');
 const pageStage1 = document.getElementById('pageStage1');
 const pageRecommendations = document.getElementById('pageRecommendations');
 const pageQuasiStage2 = document.getElementById('pageQuasiStage2');
+const pageShareholder = document.getElementById('pageShareholder');
+const pageTransition = document.getElementById('pageTransition');
+const pageContinuation = document.getElementById('pageContinuation');
 const updateStatusTitle = document.getElementById('updateStatusTitle');
 const updateStatusMessage = document.getElementById('updateStatusMessage');
 const updateStatusLevel = document.getElementById('updateStatusLevel');
@@ -76,7 +82,7 @@ async function boot() {
 }
 
 function bindEvents() {
-  [navDashboard, navStage1, navRecommendations, navQuasiStage2].forEach((button) => {
+  [navDashboard, navStage1, navRecommendations, navQuasiStage2, navShareholder, navTransition, navContinuation].forEach((button) => {
     button.addEventListener('click', () => switchPage(button.dataset.page));
   });
   searchButton.addEventListener('click', () => runSearch(searchInput.value));
@@ -96,6 +102,12 @@ function bindEvents() {
   refreshStage1Btn.addEventListener('click', () => refreshStage1());
   refreshRecsBtn.addEventListener('click', () => loadRecommendations({ force: true }));
   refreshDashboardBtn.addEventListener('click', () => refreshDashboard());
+  const refreshShareholderBtn = document.getElementById('refreshShareholderBtn');
+  if (refreshShareholderBtn) refreshShareholderBtn.addEventListener('click', () => loadShareholderRanking());
+  const refreshTransitionBtn = document.getElementById('refreshTransitionBtn');
+  if (refreshTransitionBtn) refreshTransitionBtn.addEventListener('click', () => loadTransitionRanking());
+  const refreshContinuationBtn = document.getElementById('refreshContinuationBtn');
+  if (refreshContinuationBtn) refreshContinuationBtn.addEventListener('click', () => loadContinuationRanking());
   startAnalysisBtn.addEventListener('click', () => startStockAnalysis());
   precloseRunBtn.addEventListener('click', runPreclose);
   quasiStage2DatePicker.addEventListener('change', () => {
@@ -123,13 +135,21 @@ function switchPage(pageKey) {
     stage1: pageStage1,
     recommendations: pageRecommendations,
     'quasi-stage2': pageQuasiStage2,
+    shareholder: pageShareholder,
+    transition: pageTransition,
+    continuation: pageContinuation,
   };
   Object.entries(pageMap).forEach(([key, node]) => {
     node.classList.toggle('hidden', key !== pageKey);
   });
-  [navDashboard, navStage1, navRecommendations, navQuasiStage2].forEach((button) => {
+  [navDashboard, navStage1, navRecommendations, navQuasiStage2, navShareholder, navTransition, navContinuation].forEach((button) => {
     button.classList.toggle('active', button.dataset.page === pageKey);
   });
+
+  // Auto-load data when switching pages
+  if (pageKey === 'shareholder') loadShareholderRanking();
+  if (pageKey === 'transition') loadTransitionRanking();
+  if (pageKey === 'continuation') loadContinuationRanking();
 }
 
 async function refreshDashboard() {
@@ -296,7 +316,7 @@ async function loadStage1() {
     renderStage1Table(currentStage1Data);
   } catch (e) {
     console.error('loadStage1 error:', e);
-    stage1Table.innerHTML = '<tr class="empty-row"><td colspan="8">加载失败。</td></tr>';
+    stage1Table.innerHTML = '<tr class="empty-row"><td colspan="9">加载失败。</td></tr>';
   }
 }
 
@@ -325,31 +345,198 @@ async function loadStage1ByDate(dateStr) {
     const items = payload.stage1 || [];
     renderStage1Table(items);
   } catch (e) {
-    stage1Table.innerHTML = '<tr class="empty-row"><td colspan="8">无该日历史数据。</td></tr>';
+    stage1Table.innerHTML = '<tr class="empty-row"><td colspan="9">无该日历史数据。</td></tr>';
   }
 }
 
 function renderStage1Table(items) {
   if (!items || !items.length) {
-    stage1Table.innerHTML = '<tr class="empty-row"><td colspan="8">暂无 Stage1 候选数据，请先运行筛选。</td></tr>';
+    stage1Table.innerHTML = '<tr class="empty-row"><td colspan="9">暂无 Stage1 候选数据，请先运行筛选。</td></tr>';
     return;
   }
-  stage1Table.innerHTML = items.map((item) => `
+  stage1Table.innerHTML = items.map((item) => {
+    const bq = item.base_quality_score ?? '--';
+    const grade = item.base_quality_grade ?? '--';
+    const gradeCls = (grade === 'S' || grade === 'A') ? 'positive' : '';
+    const reason = escapeHtml(item.base_quality_reason || '--');
+    return `
     <tr class="clickable" data-symbol="${item.symbol}">
       <td>${item.rank ?? '--'}</td>
       <td>${item.symbol}</td>
       <td>${escapeHtml(item.name || '')}</td>
       <td>${escapeHtml(item.stage || '')}</td>
       <td title="${escapeHtml(item.analysis || '')}">${escapeHtml(item.watch_reason || '')}</td>
-      <td>${item.watch_score ?? '--'}</td>
-      <td>${item.total_score ?? '--'}</td>
+      <td><strong>${bq}</strong></td>
+      <td><span class="pill ${gradeCls}">${grade}</span></td>
+      <td class="text-sm">${reason}</td>
       <td>${item.close ?? '--'}</td>
     </tr>
-  `).join('');
+  `}).join('');
 
   stage1Table.querySelectorAll('tr[data-symbol]').forEach((row) => {
     row.addEventListener('click', () => openStockDetail(row.dataset.symbol, 'stage1'));
   });
+}
+
+// ── 股东人数排行榜 ───────────────────────────────────────────
+async function loadShareholderRanking() {
+  const tableBody = document.getElementById('shareholderTable');
+  const updateTime = document.getElementById('shareholderUpdateTime');
+  if (!tableBody) return;
+
+  tableBody.innerHTML = '<tr><td colspan="9" class="loading-row">加载中...</td></tr>';
+  try {
+    const response = await fetch('/api/shareholder/ranking');
+    const payload = await response.json();
+    const items = payload.items || [];
+    if (updateTime && items.length > 0) {
+      updateTime.textContent = '更新于: ' + (items[0].scan_date || '--');
+    }
+    if (items.length === 0) {
+      tableBody.innerHTML = '<tr><td colspan="9" class="empty-row">暂无数据，请先运行 shareholder_scan.py</td></tr>';
+      return;
+    }
+    tableBody.innerHTML = items.map(item => {
+      const chg = item.holder_change_pct != null ? (item.holder_change_pct >= 0 ? '+' + item.holder_change_pct.toFixed(1) : item.holder_change_pct.toFixed(1)) + '%' : 'N/A';
+      const chgClass = item.holder_change_pct != null && item.holder_change_pct < 0 ? 'positive' : 'negative';
+      const ws = item.weinstein_available ? item.final_score.toFixed(0) : 'N/A';
+      const stage = item.stage_label || '--';
+      const stageClass = item.stage2_candidate ? 'pill stage2' : '';
+      const symbol = escapeHtml(item.symbol || '');
+      const name = escapeHtml(item.name || '--');
+      return `<tr class="clickable-row" data-symbol="${symbol}">
+        <td>${item.rank || '--'}</td>
+        <td class="mono">${symbol}</td>
+        <td>${name}</td>
+        <td class="${chgClass}">${chg}</td>
+        <td>${item.holder_change_score != null ? item.holder_change_score.toFixed(0) : '--'}</td>
+        <td>${ws}</td>
+        <td><span class="${stageClass}">${stage}</span></td>
+        <td><strong>${item.combined_score != null ? item.combined_score.toFixed(0) : '--'}</strong></td>
+        <td class="muted-text text-sm">${item.latest_quarter || '--'}</td>
+      </tr>`;
+    }).join('');
+
+    // Click to open detail modal
+    tableBody.querySelectorAll('.clickable-row').forEach(row => {
+      row.addEventListener('click', () => {
+        const sym = row.dataset.symbol;
+        if (sym) openStockDetail(sym);
+      });
+    });
+  } catch (e) {
+    console.error('loadShareholderRanking error:', e);
+    tableBody.innerHTML = '<tr><td colspan="9" class="error-row">加载失败</td></tr>';
+  }
+}
+
+// ── 突破候选（Stage1→2 转换） ─────────────────────────────
+async function loadTransitionRanking() {
+  const tableBody = document.getElementById('transitionTable');
+  if (!tableBody) return;
+
+  tableBody.innerHTML = '<tr><td colspan="12" class="loading-row">加载中...</td></tr>';
+  try {
+    const response = await fetch('/api/transition/ranking');
+    const payload = await response.json();
+    const items = payload.items || [];
+    if (items.length === 0) {
+      tableBody.innerHTML = '<tr><td colspan="12" class="empty-row">暂无突破候选（需运行 Phase1 筛选后刷新）</td></tr>';
+      return;
+    }
+    tableBody.innerHTML = items.map((item, i) => {
+      const symbol = escapeHtml(item.symbol || '');
+      const name = escapeHtml(item.name || '--');
+      const dist = item.transition_distance_pct != null ? item.transition_distance_pct.toFixed(1) + '%' : '--';
+      const distCls = item.transition_distance_pct != null && item.transition_distance_pct >= -2 ? 'positive' : '';
+      const vol = item.transition_volume_ratio != null ? item.transition_volume_ratio.toFixed(1) + 'x' : '--';
+      const weeks = item.transition_base_weeks || '--';
+      const baseHigh = item.transition_base_high != null ? item.transition_base_high.toFixed(2) : '--';
+      const ws = item.final_score != null ? item.final_score.toFixed(0) : '--';
+      const stage = item.stage_label || '--';
+      const bq = item.base_quality_score != null ? '<span class="' + (item.base_quality_score >= 70 ? 'positive' : '') + '">' + item.base_quality_score.toFixed(0) + '</span>' : '--';
+      const bqGrade = item.base_quality_grade || '';
+      const reason = escapeHtml(item.transition_reason || '');
+      return `<tr class="clickable-row" data-symbol="${symbol}">
+        <td>${i + 1}</td>
+        <td class="mono">${symbol}</td>
+        <td>${name}</td>
+        <td><strong>${item.transition_score != null ? item.transition_score.toFixed(0) : '--'}</strong></td>
+        <td>${bq} <span class="pill">${bqGrade}</span></td>
+        <td>${item.close != null ? item.close.toFixed(2) : '--'}</td>
+        <td>${baseHigh}</td>
+        <td class="${distCls}">${dist}</td>
+        <td>${weeks}周</td>
+        <td>${vol}</td>
+        <td>${stage}</td>
+        <td class="text-sm">${reason}</td>
+      </tr>`;
+    }).join('');
+
+    tableBody.querySelectorAll('.clickable-row').forEach(row => {
+      row.addEventListener('click', () => {
+        const sym = row.dataset.symbol;
+        if (sym) openStockDetail(sym);
+      });
+    });
+  } catch (e) {
+    console.error('loadTransitionRanking error:', e);
+    tableBody.innerHTML = '<tr><td colspan="12" class="error-row">加载失败</td></tr>';
+  }
+}
+
+// ── Stage2 续涨候选（暴涨后回踩整理） ─────────────────────
+async function loadContinuationRanking() {
+  const tableBody = document.getElementById('continuationTable');
+  if (!tableBody) return;
+
+  tableBody.innerHTML = '<tr><td colspan="11" class="loading-row">加载中...</td></tr>';
+  try {
+    const response = await fetch('/api/continuation/ranking');
+    const payload = await response.json();
+    const items = payload.items || [];
+    if (items.length === 0) {
+      tableBody.innerHTML = '<tr><td colspan="11" class="empty-row">暂无续涨候选（需运行 Phase1 筛选后刷新）</td></tr>';
+      return;
+    }
+    tableBody.innerHTML = items.map((item, i) => {
+      const symbol = escapeHtml(item.symbol || '');
+      const name = escapeHtml(item.name || '--');
+      const score = item.cont_quality_score != null ? item.cont_quality_score.toFixed(0) : '--';
+      const grade = item.cont_quality_grade || '';
+      const gradeCls = (grade === 'S' || grade === 'A') ? 'positive' : '';
+      const pullback = item.cont_pullback_pct != null ? '+' + item.cont_pullback_pct.toFixed(0) + '%' : '--';
+      const boxRange = item.cont_box_range_pct != null ? item.cont_box_range_pct.toFixed(0) + '%' : '--';
+      const boxWeeks = item.cont_box_duration_weeks || 0;
+      const boxWeeksText = boxWeeks >= 8 ? '<span class="positive">' + boxWeeks + '周</span>' : boxWeeks + '周';
+      const volOk = item.cont_volume_trend_ok ? '<span class="positive">是</span>' : '否';
+      const reason = escapeHtml(item.cont_quality_reason || '');
+      return `<tr class="clickable-row" data-symbol="${symbol}">
+        <td>${i + 1}</td>
+        <td class="mono">${symbol}</td>
+        <td>${name}</td>
+        <td><strong>${score}</strong></td>
+        <td><span class="pill ${gradeCls}">${grade}</span></td>
+        <td>${item.close != null ? item.close.toFixed(2) : '--'}</td>
+        <td>${pullback}</td>
+        <td>${boxRange}</td>
+        <td>${boxWeeksText}</td>
+        <td>${volOk}</td>
+        <td>${item.stage_label || '--'}</td>
+        <td class="text-sm">${reason}</td>
+      </tr>`;
+    }).join('');
+
+    tableBody.querySelectorAll('.clickable-row').forEach(row => {
+      row.addEventListener('click', () => {
+        const sym = row.dataset.symbol;
+        if (sym) openStockDetail(sym);
+      });
+    });
+  } catch (e) {
+    console.error('loadContinuationRanking error:', e);
+    tableBody.innerHTML = '<tr><td colspan="11" class="error-row">加载失败</td></tr>';
+  }
 }
 
 async function loadRecommendations(options = {}) {
@@ -981,6 +1168,11 @@ function drawCandles(canvas, chart) {
   if (Number.isFinite(chart.base_stop_line)) {
     priceSeries.push(chart.base_stop_line);
   }
+  // Box boundaries for continuation candidates
+  if (chart.box_upper && chart.box_lower) {
+    chart.box_upper.forEach(v => { if (Number.isFinite(v)) priceSeries.push(v); });
+    chart.box_lower.forEach(v => { if (Number.isFinite(v)) priceSeries.push(v); });
+  }
   const maxHigh = Math.max(...priceSeries);
   const minLow = Math.min(...priceSeries);
   const paddedRange = Math.max((maxHigh - minLow) * 0.08, maxHigh * 0.015, 0.5);
@@ -992,6 +1184,7 @@ function drawCandles(canvas, chart) {
 
   drawGrid(ctx, left, right, priceAreaTop, bottom, 5, '#e2e8f0');
   drawGrid(ctx, left, right, volumeAreaTop, volumeBottom, 2, '#edf2f7');
+  drawBoxBands(ctx, chart, candles, scaleX, scaleY, left, right);  // 续涨箱体
   drawHorizontalLine(ctx, chart.base_breakout_line, scaleY, left, right, '#059669', [8, 4], '基底突破');   // 固定基底顶
   drawHorizontalLine(ctx, chart.breakout_line, scaleY, left, right, '#7c3aed', [6, 5], '动态压力');        // 原突破线→动态压力线
   drawHorizontalLine(ctx, chart.resistance_line, scaleY, left, right, '#ea580c', [10, 6], '压力线');
@@ -1081,6 +1274,84 @@ function drawHorizontalLine(ctx, value, scaleY, left, right, color, dash, label)
   ctx.setLineDash([]);
   ctx.font = '12px Microsoft YaHei';
   ctx.fillText(`${label} ${value.toFixed(2)}`, right + 10, y + 4);
+  ctx.restore();
+}
+
+// ── 续涨箱体边界绘制 ──
+function drawBoxBands(ctx, chart, candles, scaleX, scaleY, left, right) {
+  const boxUpper = chart.box_upper;
+  const boxLower = chart.box_lower;
+  if (!boxUpper || !boxLower || !boxUpper.length) return;
+
+  // Find valid range of box data
+  let firstValid = null, lastValid = null;
+  for (let i = 0; i < boxUpper.length; i++) {
+    if (Number.isFinite(boxUpper[i]) && Number.isFinite(boxLower[i])) {
+      if (firstValid === null) firstValid = i;
+      lastValid = i;
+    }
+  }
+  if (firstValid === null) return;
+
+  // Draw upper boundary
+  ctx.save();
+  ctx.strokeStyle = '#0891b2';
+  ctx.lineWidth = 2;
+  ctx.setLineDash([]);
+  ctx.beginPath();
+  let started = false;
+  for (let i = firstValid; i <= lastValid; i++) {
+    if (Number.isFinite(boxUpper[i])) {
+      const x = scaleX(i);
+      const y = scaleY(boxUpper[i]);
+      if (!started) { ctx.moveTo(x, y); started = true; }
+      else ctx.lineTo(x, y);
+    }
+  }
+  ctx.stroke();
+
+  // Draw lower boundary
+  ctx.strokeStyle = '#0891b2';
+  ctx.setLineDash([6, 4]);
+  ctx.beginPath();
+  started = false;
+  for (let i = firstValid; i <= lastValid; i++) {
+    if (Number.isFinite(boxLower[i])) {
+      const x = scaleX(i);
+      const y = scaleY(boxLower[i]);
+      if (!started) { ctx.moveTo(x, y); started = true; }
+      else ctx.lineTo(x, y);
+    }
+  }
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  // Fill box area with light tint
+  ctx.fillStyle = 'rgba(8, 145, 178, 0.08)';
+  ctx.beginPath();
+  started = false;
+  for (let i = firstValid; i <= lastValid; i++) {
+    if (Number.isFinite(boxUpper[i])) {
+      const x = scaleX(i);
+      if (!started) { ctx.moveTo(x, scaleY(boxUpper[i])); started = true; }
+      else ctx.lineTo(x, scaleY(boxUpper[i]));
+    }
+  }
+  for (let i = lastValid; i >= firstValid; i--) {
+    if (Number.isFinite(boxLower[i])) {
+      ctx.lineTo(scaleX(i), scaleY(boxLower[i]));
+    }
+  }
+  ctx.closePath();
+  ctx.fill();
+
+  // Label
+  if (Number.isFinite(boxUpper[lastValid])) {
+    ctx.fillStyle = '#0891b2';
+    ctx.font = 'bold 11px Microsoft YaHei';
+    ctx.fillText('箱体', right + 10, scaleY(boxUpper[lastValid]) + 4);
+  }
+
   ctx.restore();
 }
 

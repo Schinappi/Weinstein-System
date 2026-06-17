@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from datetime import date
 from pathlib import Path
+
+from winstan.dashboard.box_chart import _compute_box_daily_boundaries
 from threading import RLock
 
 import pandas as pd
@@ -19,7 +21,7 @@ from winstan.resample.weekly_builder import build_weekly_bars
 from winstan.rules.breakout_rule import evaluate_breakout
 from winstan.rules.market_trend import evaluate_market_trend
 from winstan.rules.relative_strength_rule import evaluate_relative_strength
-from winstan.rules.resistance_rule import evaluate_resistance
+from winstan.rules.resistance_rule import evaluate_resistance, compute_overhead_supply
 from winstan.rules.stage_analysis import apply_stage2_scoring, evaluate_stage
 from winstan.rules.volume_confirmation import evaluate_volume
 from winstan.scoring.ranker import build_quasi_stage2_top_n, build_stage2_top_n, score_and_rank
@@ -225,6 +227,134 @@ class DashboardService:
             ]
         }
 
+    def get_shareholder_ranking_payload(self) -> dict[str, object]:
+        """读取股东人数排行榜（从 DuckDB shareholder_ranking 表）"""
+        store = DuckDBStore(self.config.duckdb_path)
+        rows: list[dict[str, object]] = []
+        try:
+            with store.connect() as conn:
+                df = conn.execute("""
+                    SELECT symbol, name, rank, holder_num_latest, holder_num_prev,
+                           holder_change_pct, holder_change_score,
+                           latest_quarter, prev_quarter,
+                           final_score, stage_label, stage2_candidate,
+                           combined_score, weinstein_available, scan_date
+                    FROM shareholder_ranking
+                    ORDER BY combined_score DESC
+                    LIMIT 50
+                """).fetchdf()
+            for _, r in df.iterrows():
+                rows.append({
+                    "symbol": _to_text(r.get("symbol")),
+                    "name": _to_text(r.get("name")),
+                    "rank": _to_int(r.get("rank")),
+                    "holder_num_latest": _to_int(r.get("holder_num_latest")),
+                    "holder_num_prev": _to_int(r.get("holder_num_prev")),
+                    "holder_change_pct": _to_float(r.get("holder_change_pct")),
+                    "holder_change_score": _to_float(r.get("holder_change_score")),
+                    "latest_quarter": _to_text(r.get("latest_quarter")),
+                    "prev_quarter": _to_text(r.get("prev_quarter")),
+                    "final_score": _to_float(r.get("final_score")),
+                    "stage_label": _to_text(r.get("stage_label")),
+                    "stage2_candidate": _to_bool(r.get("stage2_candidate")),
+                    "combined_score": _to_float(r.get("combined_score")),
+                    "weinstein_available": _to_bool(r.get("weinstein_available")),
+                    "scan_date": _to_text(r.get("scan_date")),
+                })
+        except Exception as exc:
+            return {"items": rows, "error": str(exc), "count": 0}
+        return {"items": rows, "count": len(rows), "error": ""}
+
+    def get_transition_ranking_payload(self) -> dict[str, object]:
+        """读取 Stage1→2 转换候选排行榜（transition_candidate=True, 按 transition_score 降序）"""
+        store = DuckDBStore(self.config.duckdb_path)
+        rows: list[dict[str, object]] = []
+        try:
+            with store.connect() as conn:
+                df = conn.execute("""
+                    SELECT symbol, name, close, stage_label,
+                           transition_score, transition_reason,
+                           transition_base_weeks, transition_base_high,
+                           transition_distance_pct, transition_volume_ratio,
+                           final_score, headroom_pct, overhead_supply_pct,
+                           rs_rank_pct,
+                           base_quality_score, base_quality_grade, base_quality_reason
+                    FROM screening_results
+                    WHERE transition_candidate = TRUE
+                    ORDER BY transition_score DESC
+                    LIMIT 50
+                """).fetchdf()
+            for _, r in df.iterrows():
+                rows.append({
+                    "symbol": _to_text(r.get("symbol")),
+                    "name": _to_text(r.get("name")),
+                    "close": _to_float(r.get("close")),
+                    "stage_label": _to_text(r.get("stage_label")),
+                    "transition_score": _to_float(r.get("transition_score")),
+                    "transition_reason": _to_text(r.get("transition_reason")),
+                    "transition_base_weeks": _to_int(r.get("transition_base_weeks")),
+                    "transition_base_high": _to_float(r.get("transition_base_high")),
+                    "transition_distance_pct": _to_float(r.get("transition_distance_pct")),
+                    "transition_volume_ratio": _to_float(r.get("transition_volume_ratio")),
+                    "final_score": _to_float(r.get("final_score")),
+                    "headroom_pct": _to_float(r.get("headroom_pct")),
+                    "overhead_supply_pct": _to_float(r.get("overhead_supply_pct")),
+                    "rs_rank_pct": _to_float(r.get("rs_rank_pct")),
+                    "base_quality_score": _to_float(r.get("base_quality_score")),
+                    "base_quality_grade": _to_text(r.get("base_quality_grade")),
+                    "base_quality_reason": _to_text(r.get("base_quality_reason")),
+                })
+        except Exception as exc:
+            return {"items": rows, "error": str(exc), "count": 0}
+        return {"items": rows, "count": len(rows), "error": ""}
+
+    def get_continuation_ranking_payload(self) -> dict[str, object]:
+        """读取 Stage2 续涨候选排行榜（cont_is_applicable=True, 按 cont_quality_score 降序）"""
+        store = DuckDBStore(self.config.duckdb_path)
+        rows: list[dict[str, object]] = []
+        try:
+            with store.connect() as conn:
+                df = conn.execute("""
+                    SELECT symbol, name, close, stage_label,
+                           cont_quality_score, cont_quality_grade, cont_quality_reason,
+                           cont_ma30w_slope_10w, cont_pullback_pct,
+                           cont_box_range_pct, cont_box_duration_weeks,
+                           cont_box_touch_count, cont_box_penetration_pct,
+                           cont_volume_trend_ok, cont_atr_rank_pct,
+                           base_quality_score, base_quality_grade,
+                           final_score, rs_rank_pct, headroom_pct
+                    FROM screening_results
+                    WHERE cont_is_applicable = TRUE AND cont_score_box > 0
+                    ORDER BY cont_quality_score DESC
+                    LIMIT 50
+                """).fetchdf()
+            for _, r in df.iterrows():
+                rows.append({
+                    "symbol": _to_text(r.get("symbol")),
+                    "name": _to_text(r.get("name")),
+                    "close": _to_float(r.get("close")),
+                    "stage_label": _to_text(r.get("stage_label")),
+                    "cont_quality_score": _to_float(r.get("cont_quality_score")),
+                    "cont_quality_grade": _to_text(r.get("cont_quality_grade")),
+                    "cont_quality_reason": _to_text(r.get("cont_quality_reason")),
+                    "cont_ma30w_slope_10w": _to_float(r.get("cont_ma30w_slope_10w")),
+                    "cont_pullback_pct": _to_float(r.get("cont_pullback_pct")),
+                    "cont_box_range_pct": _to_float(r.get("cont_box_range_pct")),
+                    "cont_box_duration_weeks": _to_int(r.get("cont_box_duration_weeks")),
+                    "cont_box_touch_count": _to_int(r.get("cont_box_touch_count")),
+                    "cont_box_penetration_pct": _to_float(r.get("cont_box_penetration_pct")),
+                    "cont_volume_trend_ok": _to_bool(r.get("cont_volume_trend_ok")),
+                    "cont_atr_rank_pct": _to_float(r.get("cont_atr_rank_pct")),
+                    "base_quality_score": _to_float(r.get("base_quality_score")),
+                    "base_quality_grade": _to_text(r.get("base_quality_grade")),
+                    "final_score": _to_float(r.get("final_score")),
+                    "rs_rank_pct": _to_float(r.get("rs_rank_pct")),
+                    "headroom_pct": _to_float(r.get("headroom_pct")),
+                })
+        except Exception as exc:
+            return {"items": rows, "error": str(exc), "count": 0}
+        return {"items": rows, "count": len(rows), "error": ""}
+
     def get_stage2_watchlist_payload(self) -> dict[str, object]:
         self.refresh_stage2_tracking()
         watchlist = self.watchlist_store.list_watchlist(["watching", "triggered", "expired", "cancelled"])
@@ -327,6 +457,35 @@ class DashboardService:
         daily = self._ensure_daily_bars(normalized)
         if daily.empty:
             raise ValueError(f"未找到 {normalized} 的行情数据")
+
+        # Re-evaluate resistance and breakout_level with fresh weekly data
+        # to avoid stale cache. Also restores the original rolling breakout_level
+        # which was incorrectly overwritten by base_breakout_price.
+        try:
+            weekly = compute_weekly_indicators(build_weekly_bars(daily), pd.DataFrame(), self.config)
+            if not weekly.empty:
+                recent = weekly.sort_values("trade_date").reset_index(drop=True)
+                latest = recent.iloc[-1]
+                base_bp = _to_float(row.get("base_breakout_price"))
+                fresh_resistance = evaluate_resistance(recent, latest, self.config, base_breakout_price=base_bp)
+                row = row.copy()
+                # Sync close to fresh data (intraday snapshot may be newer than cache)
+                row["close"] = float(latest["close"])
+                row["headroom_pct"] = fresh_resistance.get("headroom_pct")
+                row["nearest_resistance"] = fresh_resistance.get("nearest_resistance")
+                row["resistance_ok"] = fresh_resistance.get("resistance_ok")
+                # Restore original rolling breakout_level (dynamic pressure)
+                # and store effective reference separately
+                raw_bl = latest.get("breakout_level")
+                if pd.notna(raw_bl) and float(raw_bl) != 0:
+                    row["breakout_level"] = float(raw_bl)
+                row["breakout_ref_price"] = base_bp if base_bp else (float(raw_bl) if pd.notna(raw_bl) else None)
+                # Compute overhead supply from daily bars
+                overhead_info = compute_overhead_supply(daily)
+                row["overhead_supply_pct"] = overhead_info.get("overhead_supply_pct")
+                row["overhead_supply_ok"] = overhead_info.get("overhead_supply_ok")
+        except Exception:
+            pass  # fall back to cached values
 
         stage1, stage2, _ = self.get_rankings()
 
@@ -662,7 +821,7 @@ class DashboardService:
         stage_info = evaluate_stage(latest, recent, self.config)
         volume_info = evaluate_volume(recent.tail(max(self.config.strategy.volume_avg_weeks, 3)))
         rs_info = evaluate_relative_strength(pd.Series({"rs_rank_pct": None, "rs_line": latest.get("rs_line")}), self.config)
-        resistance_info = evaluate_resistance(recent, latest, self.config)
+        resistance_info = evaluate_resistance(recent, latest, self.config, base_breakout_price=stage_info.get("base_breakout_price"))
         breakout_info = evaluate_breakout(
             latest, self.config,
             base_breakout_price=stage_info.get("base_breakout_price"),
@@ -707,9 +866,11 @@ class DashboardService:
             {"label": "量能比", "value": _format_number(row.get("volume_ratio"))},
             {"label": "RS排名", "value": _format_percent_rank(row.get("rs_rank_pct"))},
             {"label": "上方空间", "value": _format_percent(row.get("headroom_pct"))},
+            {"label": "套牢盘", "value": _format_percent(row.get("overhead_supply_pct"))},
             {"label": "距突破位", "value": _format_percent(row.get("breakout_pct"))},
             {"label": "基底突破位", "value": _format_number(row.get("base_breakout_price"), "#0.00", "无基底")},
             {"label": "距基底突破", "value": _format_base_extension(row)},
+            {"label": "基底质量", "value": _format_base_quality(row)},
             {"label": "行业RS", "value": _format_industry_rs(row.get("industry_rs_rank_pct"))},
             {"label": "行业广度", "value": _format_percent(row.get("industry_breadth"))},
             {"label": "拒绝原因", "value": _first_text(row.get("reject_reason"), "无")},
@@ -723,6 +884,41 @@ class DashboardService:
         resistance_line = _to_float(row.get("nearest_resistance"))
         base_breakout_line = _to_float(row.get("base_breakout_price"))
         base_stop_line = _to_float(row.get("base_low"))
+
+        # ── 续涨箱体边界 ──
+        box_upper = box_lower = box_start_idx = box_end_idx = None
+        cont_box_score = _to_float(row.get("cont_score_box"))
+        if cont_box_score and cont_box_score > 0:
+            try:
+                from winstan.resample.weekly_builder import build_weekly_bars
+                from winstan.rules.stage2_continuation import _score_box_discipline
+                daily_sorted = daily.sort_values("trade_date")
+                weekly = build_weekly_bars(daily_sorted)
+                if not weekly.empty and len(weekly) >= 8:
+                    _, box_info = _score_box_discipline(weekly)
+                    if box_info.get("box_valid"):
+                        a_h = box_info.get("box_a_h")
+                        b_h = box_info.get("box_b_h")
+                        a_l = box_info.get("box_a_l")
+                        b_l = box_info.get("box_b_l")
+                        bs = box_info.get("box_start_idx", 0)
+                        be = box_info.get("box_end_idx", 0)
+                        # Convert from 30w-segment-relative to absolute weekly indices
+                        n_weekly = len(weekly)
+                        seg_offset = n_weekly - min(30, n_weekly)
+                        bs_abs = bs + seg_offset
+                        be_abs = be + seg_offset
+                        if a_h is not None and a_l is not None:
+                            # Map weekly box indices to daily bars via date alignment
+                            box_upper, box_lower, box_start_idx, box_end_idx = (
+                                _compute_box_daily_boundaries(
+                                    daily_sorted, weekly, a_h, b_h, a_l, b_l,
+                                    bs_abs, be_abs, seg_offset, len(frame)
+                                )
+                            )
+            except Exception:
+                pass  # box viz is best-effort
+
         items: list[dict[str, object]] = []
         for _, row in frame.iterrows():
             items.append(
@@ -743,6 +939,10 @@ class DashboardService:
             "resistance_line": resistance_line,
             "base_breakout_line": base_breakout_line,
             "base_stop_line": base_stop_line,
+            "box_upper": box_upper,
+            "box_lower": box_lower,
+            "box_start_idx": box_start_idx,
+            "box_end_idx": box_end_idx,
         }
 
     def _serialize_stage1(self, frame: pd.DataFrame) -> list[dict[str, object]]:
@@ -756,6 +956,19 @@ class DashboardService:
                     "stage": _stage_label_text(row.get("stage_label")),
                     "close": _format_number(row.get("close")),
                     "watch_reason": _to_text(row.get("watch_reason")),
+                    # 基底质量
+                    "base_quality_score": _format_number(row.get("base_quality_score"), ".0f"),
+                    "base_quality_grade": _to_text(row.get("base_quality_grade")),
+                    "base_quality_reason": _to_text(row.get("base_quality_reason")),
+                    "base_score_ma": _format_number(row.get("base_score_ma"), ".0f"),
+                    "base_score_range": _format_number(row.get("base_score_range"), ".0f"),
+                    "base_score_length": _format_number(row.get("base_score_length"), ".0f"),
+                    "base_score_volume": _format_number(row.get("base_score_volume"), ".0f"),
+                    "base_score_atr": _format_number(row.get("base_score_atr"), ".0f"),
+                    "base_duration_weeks": _to_int(row.get("base_duration_weeks")),
+                    "base_volume_contraction_ok": _to_bool(row.get("base_volume_contraction_ok")),
+                    "base_atr_rank_pct": _to_int(row.get("base_atr_rank_pct")),
+                    # 旧字段保留
                     "watch_score": _format_number(row.get("watch_score")),
                     "total_score": _format_number(row.get("total_score")),
                     "analysis": build_weinstein_analysis(row, self.config),
@@ -1064,11 +1277,11 @@ class DashboardService:
     def _build_holding_risk_flag(self, item: dict[str, object]) -> str:
         latest_close = _to_float(item.get("latest_close"))
         stop_loss_reference = _to_float(item.get("stop_loss_reference"))
-        breakout_level = _to_float(item.get("breakout_level"))
+        breakout_ref = _to_float(item.get("breakout_ref_price")) or _to_float(item.get("breakout_level"))
         stage_label_latest = _to_text(item.get("stage_label_latest"))
         if latest_close is not None and stop_loss_reference is not None and latest_close < stop_loss_reference:
             return "跌破止损参考"
-        if latest_close is not None and breakout_level is not None and latest_close < breakout_level:
+        if latest_close is not None and breakout_ref is not None and latest_close < breakout_ref:
             return "跌回突破位下方"
         if "Stage II" not in stage_label_latest:
             return "趋势阶段转弱"
@@ -1218,9 +1431,13 @@ def _format_quasi_missing_gates(row: pd.Series) -> str:
     return "、".join(missing) if missing else "--"
 
 
-def _format_number(value: object) -> str:
+def _format_number(value: object, format_spec: str = ".2f", fallback: str = "--") -> str:
     numeric = _to_float(value)
-    return "--" if numeric is None else f"{numeric:.2f}"
+    if numeric is None:
+        return fallback
+    if format_spec.startswith("#"):
+        return format(numeric, format_spec.replace("#", ""))
+    return format(numeric, format_spec)
 
 
 def _format_percent(value: object) -> str:
@@ -1243,6 +1460,17 @@ def _format_base_extension(row: dict[str, object]) -> str:
     fixed = row.get("base_breakout_fixed", False)
     tag = " ✓锁定" if fixed else ""
     return f"{ext:+.1f}%{tag}"
+
+
+def _format_base_quality(row: dict[str, object]) -> str:
+    """Format base quality score with grade."""
+    score = _to_float(row.get("base_quality_score"))
+    grade = _to_text(row.get("base_quality_grade"))
+    if score is None or grade is None or grade == "":
+        return "--"
+    icons = {"S": "🏆", "A": "⭐", "B": "✓", "C": "—"}
+    icon = icons.get(grade, "")
+    return f"{icon} {score:.0f}分 ({grade})"
 
 
 def _format_industry_rs(value: object) -> str:

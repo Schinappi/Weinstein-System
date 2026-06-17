@@ -14,8 +14,10 @@ from winstan.resample.weekly_builder import build_weekly_bars
 from winstan.rules.breakout_rule import evaluate_breakout
 from winstan.rules.market_trend import evaluate_market_trend
 from winstan.rules.relative_strength_rule import evaluate_relative_strength
-from winstan.rules.resistance_rule import evaluate_resistance
-from winstan.rules.stage_analysis import apply_stage2_scoring, evaluate_stage
+from winstan.rules.resistance_rule import evaluate_resistance, compute_overhead_supply
+from winstan.rules.stage_analysis import apply_stage2_scoring, detect_transition, evaluate_stage
+from winstan.rules.base_quality import compute_base_quality
+from winstan.rules.stage2_continuation import compute_continuation_quality
 from winstan.rules.volume_confirmation import evaluate_volume
 from winstan.scoring.fundamental import fetch_supplemental_data
 from winstan.scoring.ranker import build_stage2_top_n, score_and_rank
@@ -189,10 +191,33 @@ class WeinsteinScreener:
             stage_info = evaluate_stage(latest, recent, self.config)
             volume_info = evaluate_volume(recent.tail(max(self.config.strategy.volume_avg_weeks, 3)))
             rs_info = evaluate_relative_strength(latest, self.config)
-            resistance_info = evaluate_resistance(recent, latest, self.config)
+            resistance_info = evaluate_resistance(
+                recent, latest, self.config,
+                base_breakout_price=stage_info.get("base_breakout_price"),
+            )
             breakout_info = evaluate_breakout(
                 latest, self.config,
                 base_breakout_price=stage_info.get("base_breakout_price"),
+            )
+            # Overhead supply: % of past 250 days where close > current close
+            overhead_info = compute_overhead_supply(
+                self.parquet_store.read_symbol_frame("daily_bars", symbol),
+            )
+
+            # Stage I 基底质量评分（先算，供 transition 用）
+            daily_df = self.parquet_store.read_symbol_frame("daily_bars", symbol)
+            base_quality_info = compute_base_quality(recent, self.config,
+                                                      base_info=stage_info,
+                                                      daily=daily_df)
+
+            # Stage2 续涨形态评分（暴涨后回踩MA30w紧凑整理）
+            continuation_info = compute_continuation_quality(recent, self.config, daily=daily_df)
+
+            # Stage1→2 转换检测（用上基底质量评分）
+            transition_info = detect_transition(
+                latest, recent, self.config,
+                base_info=stage_info,
+                base_quality_score=float(base_quality_info.get("base_quality_score", 0.0)),
             )
 
             record = {
@@ -205,6 +230,10 @@ class WeinsteinScreener:
                 **rs_info,
                 **resistance_info,
                 **breakout_info,
+                **overhead_info,
+                **transition_info,
+                **base_quality_info,
+                **continuation_info,
                 "price_vs_ma_pct": float(latest["price_vs_ma_pct"]) if pd.notna(latest["price_vs_ma_pct"]) else None,
                 "ma_30w": float(latest["ma_30w"]) if pd.notna(latest["ma_30w"]) else None,
                 "ma_10w": float(latest["ma_10w"]) if pd.notna(latest["ma_10w"]) else None,
@@ -230,6 +259,7 @@ class WeinsteinScreener:
             ("volume_ok", "量能(周量比≥1.0)"),
             ("rs_ok", f"RS排名(前{cfg.rs_rank_threshold_pct}%)"),
             ("resistance_ok", f"上方空间(≥{cfg.resistance_min_headroom_pct}%)"),
+            ("overhead_supply_ok", "套牢盘(≤40%)"),
         ]:
             if not record.get(key, False):
                 reasons.append(label)

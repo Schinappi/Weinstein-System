@@ -64,9 +64,12 @@ def score_and_rank(results: pd.DataFrame, config: AppConfig) -> tuple[pd.DataFra
             & ~weighted["is_extended"]
         ].copy()
 
+    # Stage1 排名以基底质量为第一优先级
+    # base_quality_score (0-100) → 基底质量越高越靠前
+    # watch_score → 备选（RS+量能+突破状态）
     top_n = watch_pool.sort_values(
-        ["watch_score", "rs_rank_pct", "breakout_pct"],
-        ascending=[False, True, False],
+        ["base_quality_score", "watch_score", "rs_rank_pct"],
+        ascending=[False, False, True],
         na_position="last",
     ).head(config.ranking.top_n).reset_index(drop=True)
     top_n["top_n_rank"] = range(1, len(top_n) + 1)

@@ -25,13 +25,16 @@ def evaluate_breakout(
     # Choose reference price: base top > rolling breakout level
     ref_price: float | None = None
     use_base = False
+    original_breakout_level: float | None = None
+    raw_bl = latest.get("breakout_level")
+    if pd.notna(raw_bl) and float(raw_bl) != 0:
+        original_breakout_level = float(raw_bl)
+
     if base_breakout_price is not None and pd.notna(base_breakout_price) and base_breakout_price > 0:
         ref_price = float(base_breakout_price)
         use_base = True
-    else:
-        breakout_level = latest.get("breakout_level")
-        if pd.notna(breakout_level) and float(breakout_level) != 0:
-            ref_price = float(breakout_level)
+    elif original_breakout_level is not None:
+        ref_price = original_breakout_level
 
     if ref_price is None:
         return {
@@ -70,7 +73,8 @@ def evaluate_breakout(
         "breakout_ok": breakout_ok,
         "breakout_strength": max(breakout_pct, 0.0),
         "breakout_pct": breakout_pct,
-        "breakout_level": float(ref_price),
+        "breakout_level": original_breakout_level,    # original rolling max (dynamic pressure)
+        "breakout_ref_price": float(ref_price),        # effective reference (may be base_bp)
         "breakout_status": breakout_status,
         "breakout_reason": reason,
     }

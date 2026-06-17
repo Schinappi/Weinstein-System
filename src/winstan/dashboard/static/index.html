@@ -19,6 +19,9 @@
         <button id="navStage1" class="nav-btn" data-page="stage1" type="button">Stage1 排行榜</button>
         <button id="navRecommendations" class="nav-btn" data-page="recommendations" type="button">智能推荐</button>
         <button id="navQuasiStage2" class="nav-btn" data-page="quasi-stage2" type="button">准Stage2</button>
+        <button id="navShareholder" class="nav-btn" data-page="shareholder" type="button">股东人数</button>
+        <button id="navTransition" class="nav-btn" data-page="transition" type="button">突破候选</button>
+        <button id="navContinuation" class="nav-btn" data-page="continuation" type="button">续涨候选</button>
       </nav>
     </aside>
 
@@ -124,7 +127,7 @@
           <div>
             <div class="eyebrow">Stage1 Leaderboard</div>
             <h2>Stage1 排行榜</h2>
-            <p>处于阶段 I（蓄力筑底段）、基底平整、临近突破或刚突破的候选股。按观察分排序。</p>
+            <p>处于阶段 I（蓄力筑底段）、基底平整、临近突破或刚突破的候选股。按基底质量排序。</p>
           </div>
           <div class="page-actions">
             <div class="date-picker-box">
@@ -146,8 +149,9 @@
                   <th>名称</th>
                   <th>阶段</th>
                   <th>观察说明</th>
-                  <th>观察分</th>
-                  <th>综合分</th>
+                  <th>基底质量</th>
+                  <th>等级</th>
+                  <th>基底详情</th>
                   <th>入选价格</th>
                 </tr>
               </thead>
@@ -319,6 +323,137 @@
             </table>
           </div>
         </section>
+      </section>
+      <!-- ── 股东人数排行榜 ── -->
+      <section class="page hidden" id="pageShareholder" data-page="shareholder">
+        <header class="hero">
+          <div>
+            <div class="eyebrow">筹码集中度</div>
+            <h1>股东人数排行榜</h1>
+            <p>股东人数减少 → 筹码集中。结合 Weinstein 阶段分析交叉筛选。</p>
+          </div>
+          <div class="page-actions">
+            <button id="refreshShareholderBtn" class="refresh-btn" type="button">刷新数据</button>
+            <span id="shareholderUpdateTime" class="muted-text"></span>
+          </div>
+        </header>
+        <main class="content-grid">
+          <section class="panel full-width">
+            <div class="panel-header">
+              <div>
+                <h2>筹码集中度 TOP 50</h2>
+                <p class="muted-text">股东变化评分(50%) + Weinstein综合分(50%) 加权排序</p>
+              </div>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>排名</th>
+                    <th>代码</th>
+                    <th>名称</th>
+                    <th>股东变化%</th>
+                    <th>股东评分</th>
+                    <th>Weinstein</th>
+                    <th>阶段</th>
+                    <th>综合分</th>
+                    <th>最新季度</th>
+                  </tr>
+                </thead>
+                <tbody id="shareholderTable"></tbody>
+              </table>
+            </div>
+          </section>
+        </main>
+      </section>
+      <!-- ── 突破候选（Stage1→2 转换捕捉） ── -->
+      <section class="page hidden" id="pageTransition" data-page="transition">
+        <header class="hero">
+          <div>
+            <div class="eyebrow">Stage1 → 2 转换点</div>
+            <h1>突破候选</h1>
+            <p>捕捉基底完成、均线转升、正要突破的 Stage1→2 转换股票。</p>
+          </div>
+          <div class="page-actions">
+            <button id="refreshTransitionBtn" class="refresh-btn" type="button">刷新数据</button>
+          </div>
+        </header>
+        <main class="content-grid">
+          <section class="panel full-width">
+            <div class="panel-header">
+              <div>
+                <h2>突破候选 TOP 50</h2>
+                <p class="muted-text">要求：≥8周基底 + 振幅≤15% + MA30w刚转升 + 距基底顶≤5% + 放量≥1.2x + 上方空间≥5%</p>
+              </div>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>排名</th>
+                    <th>代码</th>
+                    <th>名称</th>
+                    <th>转换分</th>
+                    <th>基底质量</th>
+                    <th>当前价</th>
+                    <th>基底顶</th>
+                    <th>距离%</th>
+                    <th>基底周数</th>
+                    <th>量比</th>
+                    <th>阶段</th>
+                    <th>信号解读</th>
+                  </tr>
+                </thead>
+                <tbody id="transitionTable"></tbody>
+              </table>
+            </div>
+          </section>
+        </main>
+      </section>
+
+      <!-- ── 续涨候选（Stage2 暴涨后回踩紧凑整理） ── -->
+      <section class="page hidden" id="pageContinuation" data-page="continuation">
+        <header class="hero">
+          <div>
+            <div class="eyebrow">Stage2 Continuation</div>
+            <h1>续涨候选</h1>
+            <p>识别已处于上升趋势、前期暴涨后回踩MA30w进行紧凑整理的股票。这是趋势中继形态，不是底部反转。</p>
+          </div>
+          <div class="page-actions">
+            <button id="refreshContinuationBtn" class="refresh-btn" type="button">刷新数据</button>
+          </div>
+        </header>
+        <main class="content-grid">
+          <section class="panel full-width">
+            <div class="panel-header">
+              <div>
+                <h2>续涨候选 TOP 50</h2>
+                <p class="muted-text">要求：MA30w明显上升(斜率>5%) + 价格靠近MA30w(0~15%) + 近期整理紧凑(振幅≤25%) + 量能萎缩</p>
+              </div>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>排名</th>
+                    <th>代码</th>
+                    <th>名称</th>
+                    <th>续涨分</th>
+                    <th>等级</th>
+                    <th>当前价</th>
+                    <th>距MA30w</th>
+                    <th>箱幅</th>
+                    <th>箱体周数</th>
+                    <th>量缩</th>
+                    <th>阶段</th>
+                    <th>信号解读</th>
+                  </tr>
+                </thead>
+                <tbody id="continuationTable"></tbody>
+              </table>
+            </div>
+          </section>
+        </main>
       </section>
     </div>
   </div>

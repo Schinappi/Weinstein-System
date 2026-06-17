@@ -212,6 +212,262 @@ def _detect_bases(recent: pd.DataFrame, config: AppConfig) -> dict[str, object]:
     return result
 
 
+# ── Stage1→2 转换检测 ────────────────────────────────────────
+TRANSITION_MIN_BASE_WEEKS = 8
+TRANSITION_MAX_BASE_RANGE_PCT = 15.0
+TRANSITION_MAX_EXTENSION_PCT = 5.0   # 距基底顶 ≤5% 才算"附近"
+TRANSITION_MIN_VOLUME_RATIO = 1.2    # 突破周量能 ≥ 均量1.2倍
+
+
+def detect_transition(
+    latest: pd.Series,
+    recent: pd.DataFrame,
+    config: AppConfig,
+    base_info: dict[str, object] | None = None,
+    base_quality_score: float = 0.0,
+) -> dict[str, object]:
+    """检测 Stage1→2 转换候选。
+
+    核心条件：
+    1. 存在有效基底（≥8周，振幅≤15%）
+    2. MA30w 刚刚转升（近4周内从≤0变为>0，或持续上升<4周）
+    3. 价格接近基底顶（距突破≤5%）
+    4. 突破周放量 ≥ 1.2x 均量
+    5. 上方空间 ≥5%，套牢盘 ≤40%
+
+    Returns:
+        transition_candidate: bool
+        transition_score: float (0-100)
+        transition_reason: str
+        transition_base_weeks: int
+        transition_base_high: float | None
+        transition_distance_pct: float | None (距突破位距离)
+        transition_volume_ratio: float | None
+        transition_ma_slope_change: bool
+    """
+    default = {
+        "transition_candidate": False,
+        "transition_score": 0.0,
+        "transition_reason": "",
+        "transition_base_weeks": 0,
+        "transition_base_high": None,
+        "transition_distance_pct": None,
+        "transition_volume_ratio": None,
+        "transition_ma_slope_change": False,
+    }
+
+    if recent.empty or "close" not in recent.columns:
+        default["transition_reason"] = "无数据"
+        return default
+
+    # ── 1. 基底检测 ──
+    # 用更严格标准重新检测基底
+    bases = _detect_bases_strict(recent, config,
+                                  min_weeks=TRANSITION_MIN_BASE_WEEKS,
+                                  max_range_pct=TRANSITION_MAX_BASE_RANGE_PCT)
+    if not bases:
+        default["transition_reason"] = "无≥8周紧凑基底"
+        return default
+
+    last_base = bases[-1]
+    base_high = float(last_base["high"])
+    base_low = float(last_base["low"])
+    base_weeks = int(last_base["weeks"])
+    current_close = float(latest["close"])
+
+    # ── 2. 价格距基底顶 ──
+    distance_pct = (current_close / base_high - 1.0) * 100.0
+    if distance_pct > TRANSITION_MAX_EXTENSION_PCT:
+        default["transition_reason"] = f"距基底顶+{distance_pct:.0f}%（已跑远）"
+        return default
+    if distance_pct < -8.0:
+        default["transition_reason"] = f"距基底顶{distance_pct:.0f}%（尚未接近）"
+        return default
+
+    # ── 3. MA30w 斜率转升 ──
+    slope_change = _detect_slope_turn(recent)
+    if not slope_change:
+        default["transition_reason"] = "MA30w未确认转升"
+        return default
+
+    # ── 4. 量能确认 ──
+    vol_ratio = _compute_weekly_volume_ratio(latest)
+    if vol_ratio is None or vol_ratio < TRANSITION_MIN_VOLUME_RATIO:
+        default["transition_reason"] = f"量能{vol_ratio:.1f}x（需≥{TRANSITION_MIN_VOLUME_RATIO}x）"
+        return default
+
+    # ── 5. 上方空间 ──
+    headroom_pct = latest.get("headroom_pct")
+    if pd.notna(headroom_pct) and float(headroom_pct) < 5.0:
+        default["transition_reason"] = f"上方空间{float(headroom_pct):.1f}%（需≥5%）"
+        return default
+
+    # ── 评分 ──
+    score = 0.0
+    reason_parts: list[str] = []
+
+    # 基底质量 (35分) — 用独立 Base Quality 评分加权
+    if base_quality_score >= 85:
+        score += 35.0
+        reason_parts.append("极优质基底")
+    elif base_quality_score >= 70:
+        score += 28.0
+        reason_parts.append("优质基底")
+    elif base_quality_score >= 50:
+        score += 18.0
+        reason_parts.append("合格基底")
+    elif base_quality_score > 0:
+        score += 8.0
+        reason_parts.append(f"基底{base_quality_score:.0f}分")
+    else:
+        # Fallback to weeks-based
+        if base_weeks >= 20:
+            score += 30.0
+            reason_parts.append("大型基底")
+        elif base_weeks >= 12:
+            score += 24.0
+            reason_parts.append("中型基底")
+        else:
+            score += 12.0
+            reason_parts.append(f"基底{base_weeks}周")
+
+    # 突破距离 (25分) — 越近越高
+    if distance_pct >= -1.0:
+        score += 25.0
+        reason_parts.append("紧贴突破位")
+    elif distance_pct >= -3.0:
+        score += 18.0
+        reason_parts.append("接近突破位")
+    else:
+        score += 8.0
+        reason_parts.append("逼近基底顶")
+
+    # RS 强度 (20分)
+    rs_rank = latest.get("rs_rank_pct")
+    if pd.notna(rs_rank):
+        rs_val = float(rs_rank)
+        if rs_val >= 85:
+            score += 20.0; reason_parts.append("RS优秀")
+        elif rs_val >= 70:
+            score += 12.0; reason_parts.append("RS良好")
+        elif rs_val >= 50:
+            score += 6.0; reason_parts.append("RS中等")
+        else:
+            score += 0.0; reason_parts.append("RS偏弱")
+
+    # 量能 (15分)
+    if vol_ratio >= 2.0:
+        score += 15.0; reason_parts.append("倍量突破")
+    elif vol_ratio >= 1.5:
+        score += 10.0; reason_parts.append("放量突破")
+    else:
+        score += 5.0; reason_parts.append("温和放量")
+
+    # 上方空间 (10分)
+    if pd.notna(headroom_pct):
+        hp = float(headroom_pct)
+        if hp >= 15:
+            score += 10.0; reason_parts.append("空间充足")
+        elif hp >= 8:
+            score += 6.0; reason_parts.append("空间良好")
+        else:
+            score += 3.0; reason_parts.append("空间偏紧")
+
+    return {
+        "transition_candidate": True,
+        "transition_score": min(score, 100.0),
+        "transition_reason": " / ".join(reason_parts),
+        "transition_base_weeks": base_weeks,
+        "transition_base_high": base_high,
+        "transition_distance_pct": round(distance_pct, 1),
+        "transition_volume_ratio": round(vol_ratio, 2),
+        "transition_ma_slope_change": True,
+    }
+
+
+def _detect_bases_strict(
+    recent: pd.DataFrame,
+    config: AppConfig,
+    min_weeks: int = 8,
+    max_range_pct: float = 15.0,
+) -> list[dict[str, object]]:
+    """比 _detect_bases 更严格的基底检测：自定义最小周数和最大振幅。"""
+    if recent.empty:
+        return []
+
+    flat_mask: list[bool] = []
+    for i in range(len(recent)):
+        row = recent.iloc[i]
+        ok = _is_flat_base(row, config)
+        if ok:
+            # 额外检查振幅
+            base_range = row.get("base_range_pct")
+            if pd.notna(base_range) and float(base_range) <= max_range_pct:
+                flat_mask.append(True)
+            else:
+                flat_mask.append(False)
+        else:
+            flat_mask.append(False)
+
+    bases: list[dict[str, object]] = []
+    in_base = False
+    base_start = 0
+    for i, is_flat in enumerate(flat_mask):
+        if is_flat and not in_base:
+            in_base = True
+            base_start = i
+        elif not is_flat and in_base:
+            in_base = False
+            length = i - base_start
+            if length >= min_weeks:
+                bases.append({
+                    "start_idx": base_start,
+                    "end_idx": i - 1,
+                    "high": float(recent["high"].iloc[base_start:i].max()),
+                    "low": float(recent["low"].iloc[base_start:i].min()),
+                    "weeks": length,
+                })
+    if in_base:
+        length = len(flat_mask) - base_start
+        if length >= min_weeks:
+            bases.append({
+                "start_idx": base_start,
+                "end_idx": len(recent) - 1,
+                "high": float(recent["high"].iloc[base_start:].max()),
+                "low": float(recent["low"].iloc[base_start:].min()),
+                "weeks": length,
+            })
+    return bases
+
+
+def _detect_slope_turn(recent: pd.DataFrame) -> bool:
+    """检测 MA30w 斜率是否刚转升（近4周内从≤0变为>0）。"""
+    if "ma_30w_slope" not in recent.columns:
+        return False
+
+    slopes = recent["ma_30w_slope"].dropna().values
+    if len(slopes) < 5:
+        return recent["ma_30w_slope"].iloc[-1] > 0 if pd.notna(recent["ma_30w_slope"].iloc[-1]) else False
+
+    # 最新斜率必须 > 0
+    if slopes[-1] <= 0:
+        return False
+
+    # 近4周内必须出现过 ≤0（说明是"转升"不是"一直升"）
+    lookback = min(4, len(slopes) - 1)
+    recent_slopes = slopes[-(lookback + 1):-1]
+    return any(s <= 0 for s in recent_slopes)
+
+
+def _compute_weekly_volume_ratio(latest: pd.Series) -> float | None:
+    """计算周量比 = 本周成交量 / 10周均量。"""
+    vol = latest.get("volume")
+    vol_ma10 = latest.get("weekly_volume_ma_10")
+    if pd.isna(vol) or pd.isna(vol_ma10) or float(vol_ma10) <= 0:
+        return None
+    return round(float(vol) / float(vol_ma10), 2)
+
+
 def _stage2_score(
     latest: pd.Series,
     price_above: bool,
@@ -725,6 +981,16 @@ def _score_risk(row: pd.Series, config: AppConfig) -> float:
             score += 18.0
         elif headroom_pct < config.strategy.resistance_min_headroom_pct:
             score += 10.0
+
+    # Overhead supply penalty: heavy trapped sellers = risk
+    overhead_supply_pct = _to_float(row.get("overhead_supply_pct"))
+    if overhead_supply_pct is not None:
+        if overhead_supply_pct > 60.0:
+            score += 18.0       # very heavy overhead supply
+        elif overhead_supply_pct > 40.0:
+            score += 10.0       # moderate overhead supply
+        elif overhead_supply_pct > 20.0:
+            score += 4.0        # light overhead supply
 
     score += {"III": 8.0, "IV": 16.0}.get(stage_label, 0.0)
     if not _to_bool(row.get("breakout_ok")) and breakout_status not in {"near_breakout", "just_broke_out"}:

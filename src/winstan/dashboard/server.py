@@ -59,6 +59,18 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._send_json(self.service.get_stage2_holdings_payload())
             return
 
+        if path == "/api/shareholder/ranking":
+            self._send_json(self.service.get_shareholder_ranking_payload())
+            return
+
+        if path == "/api/transition/ranking":
+            self._send_json(self.service.get_transition_ranking_payload())
+            return
+
+        if path == "/api/continuation/ranking":
+            self._send_json(self.service.get_continuation_ranking_payload())
+            return
+
         if path == "/api/search":
             query = parse_qs(parsed.query).get("q", [""])[0]
             self._send_json({"items": self.service.search_stocks(query)})

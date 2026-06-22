@@ -64,6 +64,10 @@ def score_and_rank(results: pd.DataFrame, config: AppConfig) -> tuple[pd.DataFra
             & ~weighted["is_extended"]
         ].copy()
 
+    # 兼容老快照缺少 base_quality_score 列的情况
+    if "base_quality_score" not in watch_pool.columns:
+        watch_pool["base_quality_score"] = 0.0
+
     # Stage1 排名以基底质量为第一优先级
     # base_quality_score (0-100) → 基底质量越高越靠前
     # watch_score → 备选（RS+量能+突破状态）

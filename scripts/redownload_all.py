@@ -24,7 +24,7 @@ _, pro = build_tushare_pro(config.data.tushare_token)
 
 PARQUET_DIR = Path("data/parquet/daily_bars")
 START = "20220101"
-END = "20260529"
+END = "20260602"
 DAYS_PER_BATCH = 100
 
 SCHEMA = pa.schema([

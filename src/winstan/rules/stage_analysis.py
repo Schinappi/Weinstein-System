@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 
 from winstan.config import AppConfig
@@ -36,6 +37,7 @@ def evaluate_stage(latest: pd.Series, recent: pd.DataFrame, config: AppConfig) -
             "base_id": None,
             "base_breakout_fixed": False,
             "base_weeks": 0,
+            "base_slope_pct": None,
         }
 
     stage_window = recent.tail(config.strategy.min_stage2_weeks)
@@ -43,7 +45,16 @@ def evaluate_stage(latest: pd.Series, recent: pd.DataFrame, config: AppConfig) -
     lows_rising = _is_progressive_series(stage_window["low"])
     price_above = latest["close"] > latest["ma_30w"]
     slope_up = latest["ma_30w_slope"] > 0 if pd.notna(latest["ma_30w_slope"]) else False
-    base_flatness_ok = _is_flat_base(latest, config)
+
+    # 基底检测：扫描历史周线找连续平坦区间（≥MIN_BASE_WEEKS 才算有效基底）
+    # 放在 base_flatness_ok 之前，用多周检测结果替代单周快照
+    base_info = _detect_bases(recent, config)
+    # 要求同时满足：(1) 最新周本身平坦 (2) 已连续≥3周 (3) 尚未突破远离基底
+    latest_week_flat = _is_flat_base(latest, config)
+    multi_week_base = base_info["base_weeks"] >= MIN_BASE_WEEKS
+    still_near_base = not base_info["base_breakout_fixed"]  # 未突破/刚突破
+    base_flatness_ok = latest_week_flat and multi_week_base and still_near_base
+
     stage2_score, stage2_reason = _stage2_score(
         latest=latest,
         price_above=price_above,
@@ -83,9 +94,6 @@ def evaluate_stage(latest: pd.Series, recent: pd.DataFrame, config: AppConfig) -
     # Stage II age: count consecutive weeks with close > ma_30w (proxy for Stage II duration)
     stage2_age_weeks = _count_consecutive_above_ma(recent, config)
 
-    # 基底检测：识别最近的平坦基底区间，计算固定突破位
-    base_info = _detect_bases(recent, config)
-
     return {
         "stage_label": stage,
         "stage2_candidate": candidate,
@@ -100,6 +108,7 @@ def evaluate_stage(latest: pd.Series, recent: pd.DataFrame, config: AppConfig) -
         "base_id": base_info["base_id"],
         "base_breakout_fixed": base_info["base_breakout_fixed"],
         "base_weeks": base_info["base_weeks"],
+        "base_slope_pct": base_info["base_slope_pct"],
     }
 
 
@@ -152,6 +161,7 @@ def _detect_bases(recent: pd.DataFrame, config: AppConfig) -> dict[str, object]:
         "base_id": None,
         "base_breakout_fixed": False,
         "base_weeks": 0,
+        "base_slope_pct": None,     # 箱体斜率 (%/周), 越小越水平
     }
     if recent.empty or "high" not in recent.columns or "low" not in recent.columns:
         return result
@@ -204,11 +214,31 @@ def _detect_bases(recent: pd.DataFrame, config: AppConfig) -> dict[str, object]:
     current_close = float(recent["close"].iloc[-1])
     broken_out = current_close > float(last_base["high"])
 
+    # Compute box slope flatness: linear regression on weekly highs & lows within the base
+    start = int(last_base["start_idx"])
+    end = int(last_base["end_idx"]) + 1
+    base_highs = recent["high"].iloc[start:end].astype(float)
+    base_lows = recent["low"].iloc[start:end].astype(float)
+    x = np.arange(len(base_highs))
+    try:
+        a_h, b_h = np.polyfit(x, base_highs.values, 1)
+        a_l, b_l = np.polyfit(x, base_lows.values, 1)
+        midpoint = (float(base_highs.mean()) + float(base_lows.mean())) / 2.0
+        if midpoint > 0:
+            # Average absolute slope as % of midpoint per week
+            avg_slope = (abs(a_h) + abs(a_l)) / 2.0
+            slope_pct = (avg_slope / midpoint) * 100.0
+        else:
+            slope_pct = 999.0
+    except Exception:
+        slope_pct = 999.0
+
     result["base_breakout_price"] = float(last_base["high"])
     result["base_low"] = float(last_base["low"])
     result["base_id"] = len(bases)
     result["base_breakout_fixed"] = broken_out
     result["base_weeks"] = int(last_base["weeks"])
+    result["base_slope_pct"] = round(slope_pct, 3)
     return result
 
 
@@ -695,10 +725,23 @@ def _score_structure(row: pd.Series) -> float:
     base_flatness_ok = _to_bool(row.get("base_flatness_ok"))
     stage2_candidate = _to_bool(row.get("stage2_candidate"))
     ma_spread_pct = _to_float(row.get("ma_spread_pct"))
+    base_weeks = _to_float(row.get("base_weeks")) or 0.0
 
     score = trend_score * 0.45
     score += {"II": 18.0, "I": 12.0, "III": 5.0, "IV": 0.0, "UNKNOWN": 2.0}.get(stage_label, 2.0)
-    score += 15.0 if base_flatness_ok else 4.0
+
+    # 基底质量评分：按连续平坦周数分档，替代原来二值 15 vs 4
+    if base_weeks >= 8:
+        score += 15.0        # 长基底，极优质
+    elif base_weeks >= 5:
+        score += 12.0        # 中等基底
+    elif base_weeks >= 3:
+        score += 8.0         # 最低合格基底
+    elif base_weeks >= 1:
+        score += 4.0         # 有收敛但不充分
+    else:
+        score += 1.0         # 无明显基底
+
     if ma_spread_pct is not None:
         if ma_spread_pct <= 2.0:
             score += 8.0
@@ -708,6 +751,19 @@ def _score_structure(row: pd.Series) -> float:
             score += 1.0
     if stage2_candidate:
         score += 8.0
+
+    # 箱体水平度：斜率越小（越接近水平）得分越高
+    base_slope_pct = _to_float(row.get("base_slope_pct"))
+    if base_slope_pct is not None and not pd.isna(base_slope_pct) and base_slope_pct < 999:
+        if base_slope_pct <= 0.3:
+            score += 10.0       # 极其水平
+        elif base_slope_pct <= 0.6:
+            score += 7.0        # 接近水平
+        elif base_slope_pct <= 1.0:
+            score += 4.0        # 略有倾斜可接受
+        elif base_slope_pct <= 2.0:
+            score += 1.0        # 明显倾斜
+
     return _clamp_score(score)
 
 

@@ -327,7 +327,8 @@ class DashboardService:
                            base_quality_score, base_quality_grade,
                            final_score, rs_rank_pct, headroom_pct
                     FROM screening_results
-                    WHERE cont_is_applicable = TRUE AND cont_score_box > 0
+                    WHERE cont_is_applicable = TRUE
+                      AND cont_score_box > 0
                     ORDER BY cont_quality_score DESC
                     LIMIT 50
                 """).fetchdf()

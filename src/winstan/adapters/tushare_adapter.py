@@ -9,7 +9,7 @@ from typing import Iterable
 import pandas as pd
 
 from .base import BaseDataAdapter
-from .tushare_client import build_tushare_pro
+from .tushare_client import build_chinadata_pro, build_tushare_pro
 from winstan.config import DataConfig, normalize_date_like
 
 
@@ -389,3 +389,22 @@ class TushareAdapter(BaseDataAdapter):
             frame.rename(columns={"ts_code": "symbol", "vol": "volume"}),
             self.source_name,
         )
+
+
+class ChinadataAdapter(TushareAdapter):
+    """Tushare-compatible adapter using chinadata.ca_data as backend (fallback)."""
+
+    source_name = "chinadata"
+
+    def __init__(self, token: str | None = None, data_config: DataConfig | None = None) -> None:
+        # Skip TushareAdapter.__init__, set up with chinadata client directly
+        self._ts, self._pro = build_chinadata_pro(token)
+        self._config = data_config or DataConfig()
+        self._call_timestamps: deque[float] = deque()
+        self._trade_cal_cache: dict[tuple[str, str], list[str]] = {}
+        self._trade_cal_remote_unavailable = False
+        self._stock_daily_remote_unavailable = False
+        try:
+            self._pro._DataApi__timeout = self._config.tushare_timeout_seconds
+        except Exception:
+            pass

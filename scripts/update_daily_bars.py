@@ -137,7 +137,7 @@ def _merge_and_write(parquet_store: ParquetStore, dataset: str, symbol: str, new
         # the full adj_factor series first, then re-apply adjustment.
         if config is not None and _needs_adj_factor_refresh(cached, new_rows):
             merged = _refresh_adj_factors_on_merged(symbol, merged, config)
-        merged = _reapply_forward_adjustment(merged, symbol)
+            merged = _reapply_forward_adjustment(merged, symbol)
 
     # Strip adj_factor when not in forward mode — prevents stale
     # factor columns from triggering adjustment on future incremental runs.

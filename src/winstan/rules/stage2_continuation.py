@@ -59,9 +59,14 @@ def compute_continuation_quality(
         "cont_prior_trend_ok": False,
         "cont_box_top_slope": None,
         "cont_box_bottom_slope": None,
+        "cont_box_top_displacement_pct": None,
+        "cont_box_bottom_displacement_pct": None,
+        "cont_box_drift_monthly": None,
+        "cont_box_tilt_ratio": None,
         "cont_stage1_box_type": None,
         "cont_stage1_box_detail": None,
         "cont_score_stage1": 0.0,
+        "cont_box_start_idx": 0,
     }
 
     if weekly.empty or "close" not in weekly.columns or len(weekly) < 30:
@@ -148,8 +153,13 @@ def compute_continuation_quality(
         "cont_prior_trend_ok": True,
         "cont_box_top_slope": box_info.get("box_top_slope_monthly"),
         "cont_box_bottom_slope": box_info.get("box_bottom_slope_monthly"),
+        "cont_box_top_displacement_pct": box_info.get("box_top_displacement_pct"),
+        "cont_box_bottom_displacement_pct": box_info.get("box_bottom_displacement_pct"),
+        "cont_box_drift_monthly": box_info.get("box_drift_monthly"),
+        "cont_box_tilt_ratio": box_info.get("box_tilt_ratio"),
         "cont_stage1_box_type": box_info.get("stage1_box_type"),
         "cont_stage1_box_detail": box_info.get("stage1_box_detail"),
+        "cont_box_start_idx": box_info.get("box_start_idx", 0),
     }
 
 
@@ -216,9 +226,10 @@ def _score_box_discipline(df: pd.DataFrame) -> tuple[float, dict]:
     """箱体检测 + 纪律评分 (0-25)
 
     算法：
-    1. 扫描最近30周，找局部摆动高点和低点
-    2. 对高点和低点分别做线性回归，形成上下轨
-    3. 评估：触碰频率(10) + 越界控制(10) + 持续时间(5) = 25
+    1. 多窗口（30/24/18/12周）重试，确保早期箱体不被拉涨期淹没
+    2. 找局部摆动高点和低点
+    3. 对高点和低点分别做线性回归，形成上下轨
+    4. 评估：触碰频率(10) + 越界控制(10) + 持续时间(5) = 25
 
     返回: (score, info_dict)
     """
@@ -234,29 +245,56 @@ def _score_box_discipline(df: pd.DataFrame) -> tuple[float, dict]:
     if "high" not in df.columns or "low" not in df.columns or len(df) < 8:
         return 0.0, info
 
-    # ── 1. 找局部极值点 ──
-    lookback = min(30, len(df))
-    segment = df.iloc[-lookback:].reset_index(drop=True)
+    # 多窗口重试：早期箱体（8-12周）在30周窗口里被拉涨期主导
+    # 依次尝试更短的窗口，第一个成功就返回
+    for lookback in [30, 24, 18, 12]:
+        if lookback > len(df):
+            continue
+        segment = df.iloc[-lookback:].reset_index(drop=True)
+        box_score, result_info = _detect_box_core(segment)
+        if box_score > 0:
+            # 把 box_start_idx 映射回完整 DataFrame 的位置
+            result_info["box_start_idx"] = result_info.get("box_start_idx", 0) + (len(df) - lookback)
+            return box_score, result_info
+
+    return 0.0, info
+
+
+def _detect_box_core(segment: pd.DataFrame) -> tuple[float, dict]:
+    """核心箱体检测：在给定的 segment 内找箱体。
+
+    被 _score_box_discipline 的多窗口循环调用。
+    segment 已经是截好的 [-lookback:] 切片。
+    """
+    info: dict = {
+        "box_range_pct": None, "box_duration_weeks": 0, "touch_count": 0,
+        "penetration_pct": 100.0, "box_start_idx": 0, "box_valid": False,
+    }
+    if len(segment) < 3:
+        return 0.0, info
 
     highs = segment["high"].values
     lows = segment["low"].values
     n = len(segment)
 
-    # 局部高点：比前后2根都高
+    # 局部高点（短窗口放宽order，允许1+1摆点，但扣分）
     swing_high_idx = []
     swing_low_idx = []
-    order = 2
+    order = 1 if n <= 18 else 2
     for i in range(order, n - order):
         if highs[i] == highs[i-order:i+order+1].max():
-            # 确保是真正的局部最高
             if highs[i] > highs[i-1] and highs[i] > highs[i+1]:
                 swing_high_idx.append(i)
         if lows[i] == lows[i-order:i+order+1].min():
             if lows[i] < lows[i-1] and lows[i] < lows[i+1]:
                 swing_low_idx.append(i)
 
+    # 摆点质量分：2+2满分，1+1及格但扣分
+    swing_quality = 1.0
     if len(swing_high_idx) < 2 or len(swing_low_idx) < 2:
-        return 0.0, info
+        if len(swing_high_idx) < 1 or len(swing_low_idx) < 1:
+            return 0.0, info  # 完全没有摆点，放弃
+        swing_quality = 0.5  # 摆点不足，总分打对折
 
     # 只取最近的极值点（砍掉早期杂点，避免箱体起点被拖偏）
     MAX_SWING_POINTS = 6
@@ -284,75 +322,150 @@ def _score_box_discipline(df: pd.DataFrame) -> tuple[float, dict]:
     if len(swing_low_idx) >= 3:
         swing_low_idx = _refit_remove_outliers(swing_low_idx, lows)
 
-    if len(swing_high_idx) < 2 or len(swing_low_idx) < 2:
-        return 0.0, info
-
-    # ── 2. 拟合上下轨（线性回归，共用斜率确保平行）──
+    # ── 2. 拟合上下轨 ──
     x_highs = np.array(swing_high_idx, dtype=float)
     y_highs = highs[swing_high_idx]
     x_lows = np.array(swing_low_idx, dtype=float)
     y_lows = lows[swing_low_idx]
 
-    # 分别拟合上下轨（保存独立斜率，用于 Stage I 基底质量判断）
-    a_h_orig, b_h_orig = np.polyfit(x_highs, y_highs, 1)
-    a_l_orig, b_l_orig = np.polyfit(x_lows, y_lows, 1)
+    # 摆点不足时退化：只有1个摆点 → 水平线；≥2 → 线性回归
+    if len(x_highs) >= 2:
+        a_h_orig, b_h_orig = np.polyfit(x_highs, y_highs, 1)
+    else:
+        a_h_orig, b_h_orig = 0.0, float(y_highs[0])
+    if len(x_lows) >= 2:
+        a_l_orig, b_l_orig = np.polyfit(x_lows, y_lows, 1)
+    else:
+        a_l_orig, b_l_orig = 0.0, float(y_lows[0])
     a_h, b_h = a_h_orig, b_h_orig
     a_l, b_l = a_l_orig, b_l_orig
 
-    # 独立箱顶/箱底斜率（%/月），用于 Stage I 基底质量
     top_slope_monthly = (a_h_orig * 4) / b_h_orig * 100 if b_h_orig != 0 else 0
     bot_slope_monthly = (a_l_orig * 4) / b_l_orig * 100 if b_l_orig != 0 else 0
 
-    # 共用斜率 = 平均值，确保上下轨平行
     a_common = (a_h + a_l) / 2.0
     b_h = np.mean(y_highs - a_common * x_highs)
     b_l = np.mean(y_lows - a_common * x_lows)
     a_h = a_l = a_common
 
-    # 计算平行斜率 (%/月, 按4周=1月)
-    slope_h_monthly = (a_h * 4) / b_h * 100 if b_h != 0 else 0
-    slope_l_monthly = (a_l * 4) / b_l * 100 if b_l != 0 else 0
-    slope_max_abs = max(abs(slope_h_monthly), abs(slope_l_monthly))
-
     # ── 3. 箱体有效性检查 ──
-    box_start = min(swing_high_idx[0], swing_low_idx[0])
-    box_end = n - 1  # 到最新
+    box_start = int(min(swing_high_idx[0], swing_low_idx[0]))
+    box_end = n - 1
     box_len = box_end - box_start
     box_weeks = int(box_len)
 
-    if box_weeks < 4:
+    if box_weeks < 3:
         return 0.0, info
 
-    # 上轨必须在下轨之上（在箱体中间点检查）
     mid_x = (box_start + box_end) / 2.0
     upper_mid = a_h * mid_x + b_h
     lower_mid = a_l * mid_x + b_l
     if lower_mid <= 0 or upper_mid <= lower_mid:
         return 0.0, info
 
-    # 通道宽度 = 上轨/下轨 - 1（任何时间点，独立于斜率漂移）
     box_range_pct = (upper_mid / lower_mid - 1.0) * 100.0
-
-    # 通道宽度 ≤20%
     if box_range_pct > 20.0:
         return 0.0, info
 
-    # 斜率约束：|斜率| ≤ 5%/月，防止把趋势当成箱体
-    if slope_max_abs > 5.0:
-        return 0.0, info
+    # ── 漂移与倾斜：改为软扣分，不再硬拒绝 ──
+    top_first = a_h * box_start + b_h
+    top_last = a_h * box_end + b_h
+    bottom_first = a_l * box_start + b_l
+    bottom_last = a_l * box_end + b_l
+    top_displacement_pct = (top_last / top_first - 1.0) * 100.0 if top_first > 0 else 999
+    bottom_displacement_pct = (bottom_last / bottom_first - 1.0) * 100.0 if bottom_first > 0 else 999
+
+    box_mid_price = (upper_mid + lower_mid) / 2.0
+    drift_per_week = abs(a_common) / box_mid_price * 100.0 if box_mid_price > 0 else 999
+    drift_per_month = drift_per_week * 4.0
+    box_height_pct = (upper_mid / lower_mid - 1.0) * 100.0
+    total_displacement = max(abs(top_displacement_pct), abs(bottom_displacement_pct))
+    tilt_ratio = total_displacement / box_height_pct if box_height_pct > 0 else 999
+
+    # 漂移/倾斜扣分因子 (0.0-1.0)，替代硬过滤
+    drift_penalty = 1.0
+    if drift_per_month > 5.0 or tilt_ratio > 2.5:
+        return 0.0, info  # 极端情况仍然拒绝
+    if drift_per_month > 3.0:
+        drift_penalty *= 0.5
+    if tilt_ratio > 1.5:
+        drift_penalty *= 0.6
+
+    # 斜率(%/月) 保留作为参考信息，但不再用于过滤
+    slope_h_monthly = (a_h * 4) / b_h * 100 if b_h != 0 else 0
+    slope_l_monthly = (a_l * 4) / b_l * 100 if b_l != 0 else 0
 
     # ── 越界预检：只有足够多 bar 在通道内才算有效箱体 ──
-    inside_count = 0
-    total_bars = box_end - box_start + 1
-    margin = 0.04  # 4% 容差（平行箱体更紧致，适当放宽）
-    for i in range(box_start, box_end + 1):
-        upper_i = a_h * i + b_h
-        lower_i = a_l * i + b_l
-        if lower_i > 0 and lows[i] >= lower_i * (1 - margin) and highs[i] <= upper_i * (1 + margin):
-            inside_count += 1
-    inside_pct = inside_count / total_bars * 100.0
-    if inside_pct < 75.0:
-        return 0.0, info  # 通道太松，不够格
+    # 如果包含率不够，从左边逐步截短（排除拉涨阶段的峰值），重新拟合
+    margin = 0.04  # 4% 容差
+    best_inside_pct = 0.0
+    best_box_start = box_start
+    best_regression = (a_h, b_h, a_l, b_l)
+
+    for trim in range(0, box_weeks - 3):  # 至少保留4周
+        test_start = box_start + trim
+        # 只保留 test_start 之后的 swing points 重拟合
+        xh_trim = x_highs[x_highs >= test_start]
+        yh_trim = y_highs[x_highs >= test_start]
+        xl_trim = x_lows[x_lows >= test_start]
+        yl_trim = y_lows[x_lows >= test_start]
+
+        if len(xh_trim) < 2 or len(xl_trim) < 2:
+            continue
+
+        ah_t, bh_t = np.polyfit(xh_trim, yh_trim, 1)
+        al_t, bl_t = np.polyfit(xl_trim, yl_trim, 1)
+        ac_t = (ah_t + al_t) / 2.0
+        bh_ct = np.mean(yh_trim - ac_t * xh_trim)
+        bl_ct = np.mean(yl_trim - ac_t * xl_trim)
+
+        # Count inside bars
+        inside = 0
+        total_b = box_end - test_start + 1
+        for i in range(test_start, box_end + 1):
+            ui = ac_t * i + bh_ct
+            li = ac_t * i + bl_ct
+            if li > 0 and lows[i] >= li * (1 - margin) and highs[i] <= ui * (1 + margin):
+                inside += 1
+        pct = inside / total_b * 100.0
+
+        if pct > best_inside_pct:
+            best_inside_pct = pct
+            best_box_start = test_start
+            best_regression = (ac_t, bh_ct, ac_t, bl_ct)
+
+    inside_pct = best_inside_pct
+    if inside_pct < 60.0:
+        return 0.0, info
+
+    # 用最佳起点重算所有衍生指标
+    a_h, b_h, a_l, b_l = best_regression
+    a_common = a_h  # already common
+    box_start = int(best_box_start)
+    box_weeks = box_end - box_start
+
+    top_first = a_h * box_start + b_h
+    top_last = a_h * box_end + b_h
+    bottom_first = a_l * box_start + b_l
+    bottom_last = a_l * box_end + b_l
+    top_displacement_pct = (top_last / top_first - 1.0) * 100.0 if top_first > 0 else 999
+    bottom_displacement_pct = (bottom_last / bottom_first - 1.0) * 100.0 if bottom_first > 0 else 999
+    mid_x = (box_start + box_end) / 2.0
+    upper_mid = a_h * mid_x + b_h
+    lower_mid = a_l * mid_x + b_l
+    box_range_pct = (upper_mid / lower_mid - 1.0) * 100.0
+    box_mid_price = (upper_mid + lower_mid) / 2.0
+    drift_per_week = abs(a_common) / box_mid_price * 100.0 if box_mid_price > 0 else 999
+    drift_per_month = drift_per_week * 4.0
+    slope_h_monthly = (a_h * 4) / b_h * 100 if b_h != 0 else 0
+    slope_l_monthly = (a_l * 4) / b_l * 100 if b_l != 0 else 0
+    total_displacement = max(abs(top_displacement_pct), abs(bottom_displacement_pct))
+    box_height_pct = (upper_mid / lower_mid - 1.0) * 100.0
+    tilt_ratio = total_displacement / box_height_pct if box_height_pct > 0 else 999
+
+    # 漂移和倾斜复查
+    if drift_per_month > 3.0 or tilt_ratio > 1.5:
+        return 0.0, info
 
     info["box_valid"] = True
     info["box_range_pct"] = box_range_pct
@@ -363,34 +476,34 @@ def _score_box_discipline(df: pd.DataFrame) -> tuple[float, dict]:
     info["box_b_h"] = float(b_h)
     info["box_a_l"] = float(a_l)
     info["box_b_l"] = float(b_l)
-    # ── Stage I 基底质量：根据独立箱顶/箱底斜率判断 ──
-    info["box_top_slope_monthly"] = round(top_slope_monthly, 2)
-    info["box_bottom_slope_monthly"] = round(bot_slope_monthly, 2)
-    top_abs = abs(top_slope_monthly)
-    bot_abs = abs(bot_slope_monthly)
-    if top_abs <= 5.0 and bot_abs <= 5.0:
+    info["box_top_displacement_pct"] = round(top_displacement_pct, 2)
+    info["box_bottom_displacement_pct"] = round(bottom_displacement_pct, 2)
+    info["box_drift_monthly"] = round(drift_per_month, 2)
+    info["box_tilt_ratio"] = round(tilt_ratio, 3)
+    info["box_top_slope_monthly"] = round(slope_h_monthly, 2)
+    info["box_bottom_slope_monthly"] = round(slope_l_monthly, 2)
+
+    # ── Stage I 基底质量：根据漂移率和倾斜比判断 ──
+    if drift_per_month <= 1.0 and tilt_ratio < 0.4:
         stage1_type = "优秀"
         stage1_detail = (
-            f"箱顶斜率{top_slope_monthly:+.1f}%/月，"
-            f"箱底斜率{bot_slope_monthly:+.1f}%/月，几乎水平"
+            f"月漂移{drift_per_month:.1f}%，倾斜比{tilt_ratio:.2f}，接近水平平台"
         )
-    elif top_abs <= 10.0 and bot_abs <= 10.0:
+    elif drift_per_month <= 1.8 and tilt_ratio < 0.8:
         stage1_type = "可接受"
         stage1_detail = (
-            f"箱顶斜率{top_slope_monthly:+.1f}%/月，"
-            f"箱底斜率{bot_slope_monthly:+.1f}%/月，轻微倾斜"
+            f"月漂移{drift_per_month:.1f}%，倾斜比{tilt_ratio:.2f}，轻微倾斜"
         )
-    elif top_slope_monthly > 15.0:
+    elif drift_per_month > 2.5:
         stage1_type = "需警惕"
         stage1_detail = (
-            f"箱顶斜率{top_slope_monthly:+.1f}%/月（>15%），"
+            f"月漂移{drift_per_month:.1f}%（>2.5%/月），"
             f"持续创新高，更像Stage II初期而非Stage I"
         )
     else:
         stage1_type = "一般"
         stage1_detail = (
-            f"箱顶斜率{top_slope_monthly:+.1f}%/月，"
-            f"箱底斜率{bot_slope_monthly:+.1f}%/月"
+            f"月漂移{drift_per_month:.1f}%，倾斜比{tilt_ratio:.2f}"
         )
     info["stage1_box_type"] = stage1_type
     info["stage1_box_detail"] = stage1_detail
@@ -512,8 +625,8 @@ def _score_box_discipline(df: pd.DataFrame) -> tuple[float, dict]:
     else:
         duration_bonus = 0.0
 
-    # 总分 = (触碰 + 越界 + 时长) × 品质因子
-    total = (touch_score + penetration_score + duration_bonus) * pen_quality
+    # 总分 = (触碰 + 越界 + 时长) × 品质因子 × 摆点质量 × 漂移惩罚
+    total = (touch_score + penetration_score + duration_bonus) * pen_quality * swing_quality * drift_penalty
     total = min(total, 25.0)
 
     return total, info
@@ -526,8 +639,8 @@ def _score_box_discipline(df: pd.DataFrame) -> tuple[float, dict]:
 def _score_volume_trend(df: pd.DataFrame, box_start_idx: int = 0) -> tuple[float, bool]:
     """箱体内量能是否递减 (0-15)
 
-    把箱体分前1/3和后1/3，对比量能。
-    后段量能 < 前段 * 0.7 → 明显萎缩
+    三段式量能分析：前段（回踩期）→ 中段（缩量期）→ 后段（蓄力期）
+    真正的缩量发生在中段。后段放量是突破前兆，不应惩罚。
     """
     if "volume" not in df.columns or len(df) < 8:
         return 0.0, False
@@ -539,32 +652,48 @@ def _score_volume_trend(df: pd.DataFrame, box_start_idx: int = 0) -> tuple[float
     if box_start_idx > 0 and box_start_idx < n:
         start = box_start_idx
     else:
-        start = max(0, n - 12)  # fallback: 最近12周
+        start = max(0, n - 12)
 
     box_segment = segment.iloc[start:]
     box_len = len(box_segment)
-    if box_len < 4:
+    if box_len < 6:
         return 0.0, False
 
     third = max(1, box_len // 3)
     vol_early = box_segment["volume"].iloc[:third].mean()
+    vol_mid = box_segment["volume"].iloc[third:2*third].mean()
     vol_late = box_segment["volume"].iloc[-third:].mean()
 
     if vol_early <= 0:
         return 0.0, False
 
-    ratio = float(vol_late / vol_early)
-    contracted = ratio < 0.85
+    # 核心判断：中段 vs 前段 — 真正的缩量发生在这里
+    mid_ratio = float(vol_mid / vol_early) if vol_early > 0 else 999
+    late_ratio = float(vol_late / vol_early) if vol_early > 0 else 999
+    contracted = mid_ratio < 0.85  # 中段明显萎缩
 
-    if ratio <= 0.5:
-        return 15.0, contracted
-    elif ratio <= 0.65:
-        return 12.0, contracted
-    elif ratio <= 0.85:
-        return 8.0, contracted
-    elif ratio <= 1.0:
-        return 3.0, contracted
-    return 0.0, contracted
+    # 中段缩量得分（0-12）
+    if mid_ratio <= 0.4:
+        mid_score = 12.0
+    elif mid_ratio <= 0.55:
+        mid_score = 9.0
+    elif mid_ratio <= 0.7:
+        mid_score = 6.0
+    elif mid_ratio <= 0.85:
+        mid_score = 3.0
+    else:
+        mid_score = 0.0
+
+    # 后段蓄力加分（0-3）：后段放量（>前段50%）说明资金进场，是突破前兆
+    if late_ratio > 1.5 and mid_ratio < 0.85:
+        late_bonus = 3.0   # 中段缩量 + 后段放量 = 完美的量能结构
+    elif late_ratio > 1.0 and mid_ratio < 1.0:
+        late_bonus = 1.5
+    else:
+        late_bonus = 0.0
+
+    total = mid_score + late_bonus
+    return min(total, 15.0), contracted
 
 
 # ════════════════════════════════════════════════════

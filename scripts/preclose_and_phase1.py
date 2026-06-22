@@ -19,7 +19,9 @@ HERE = Path(__file__).resolve().parent
 PROJECT_ROOT = HERE.parent
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
+from winstan.adapters.tushare_client import build_tushare_pro
 from winstan.config import AppConfig, load_config
+from winstan.data.daily_updater import bulk_update_recent
 from winstan.pipeline.screener import WeinsteinScreener
 from winstan.storage.duckdb_store import DuckDBStore
 from winstan.storage.parquet_store import ParquetStore
@@ -170,6 +172,18 @@ def main() -> None:
     config = load_config(CONFIG_PATH)
     today = date.today()
     print(f"[preclose] Date: {today}")
+
+    # ── Step 0: 补全近期缺失的日K线 ──
+    print("[preclose] Step 0: Completing missing recent daily bars...")
+    parquet_store = ParquetStore(config.parquet_root)
+    try:
+        _, pro = build_tushare_pro(config.data.tushare_token)
+        update_result = bulk_update_recent(pro, parquet_store, days_back=5, end_date=today)
+        print(f"[preclose] K-line补全: updated={update_result['updated']} "
+              f"rows_added={update_result['rows_added']} "
+              f"api={update_result['api_seconds']:.1f}s merge={update_result['merge_seconds']:.0f}s")
+    except Exception as e:
+        print(f"[preclose] K-line补全失败 (继续): {e}")
 
     # ── Step 1: 拉实时行情 ──
     print("[preclose] Fetching all A-share real-time data...")

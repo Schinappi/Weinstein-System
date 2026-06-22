@@ -6,15 +6,20 @@ import pandas as pd
 
 from winstan.config import AppConfig
 
+from .akshare_adapter import AkshareAdapter
 from .base import BaseDataAdapter
 from .tickflow_adapter import TickflowAdapter
-from .tushare_adapter import TushareAdapter
+from .tushare_adapter import ChinadataAdapter, TushareAdapter
 
 
 def build_adapter(name: str, config: AppConfig) -> BaseDataAdapter:
     normalized = name.lower()
+    if normalized == "akshare":
+        return AkshareAdapter(config.data)
     if normalized == "tushare":
         return TushareAdapter(config.data.tushare_token, config.data)
+    if normalized == "chinadata":
+        return ChinadataAdapter(config.data.tushare_token, config.data)
     if normalized == "tickflow":
         return TickflowAdapter(
             api_key=config.data.tickflow_api_key,

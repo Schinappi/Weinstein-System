@@ -5,7 +5,7 @@ from datetime import date
 from pathlib import Path
 
 from winstan.dashboard.box_chart import _compute_box_daily_boundaries
-from threading import RLock
+from threading import RLock, Thread
 
 import pandas as pd
 
@@ -67,6 +67,9 @@ class DashboardService:
         self._detail_analysis_cache: dict[str, str] = {}
         self._recommendations: list[dict[str, object]] | None = None
         self._lock = RLock()
+        self._refresh_lock = RLock()
+        self._refresh_running: bool = False
+        self._refresh_result: dict[str, object] = {"status": "idle"}
 
     @property
     def router(self) -> DataSourceRouter:
@@ -612,32 +615,49 @@ class DashboardService:
         import subprocess
         import sys
         import time
+        import tempfile
+        import os
 
         t0 = time.time()
         script = Path(__file__).resolve().parent.parent.parent.parent / "scripts" / "preclose_and_phase1.py"
+        # 用临时文件避免管道缓冲区死锁
+        tmp = tempfile.NamedTemporaryFile(mode='w+', suffix='.txt', delete=False)
+        tmp_path = tmp.name
+        tmp.close()
+        stdout = ""
+        exit_code = -1
         try:
-            proc = subprocess.run(
-                [sys.executable, str(script)],
-                capture_output=True, text=True, timeout=300,
-                cwd=script.parent.parent,
-            )
+            with open(tmp_path, 'w') as f:
+                proc = subprocess.run(
+                    [sys.executable, str(script)],
+                    stdout=f, stderr=subprocess.STDOUT, timeout=600,
+                    cwd=script.parent.parent,
+                )
+                exit_code = proc.returncode
+            with open(tmp_path) as f:
+                stdout = f.read()
         except subprocess.TimeoutExpired:
-            return {"success": False, "message": "预收盘+Phase1超时（>300秒）", "elapsed_seconds": 300}
+            os.unlink(tmp_path)
+            return {"success": False, "message": "预收盘+Phase1超时（>600秒）", "elapsed_seconds": 600}
         except Exception as e:
+            os.unlink(tmp_path)
             return {"success": False, "message": f"预收盘执行失败: {e}", "elapsed_seconds": time.time() - t0}
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
 
         elapsed = time.time() - t0
-        stdout = proc.stdout or ""
-        stderr = proc.stderr or ""
-        exit_ok = proc.returncode == 0
+        exit_ok = exit_code == 0
         if not exit_ok:
             self.refresh_ranking_cache()
             self._recommendations = None
             return {
                 "success": False,
-                "message": f"预收盘脚本异常退出(code={proc.returncode})",
+                "message": f"预收盘脚本异常退出(code={exit_code})",
                 "elapsed_seconds": round(elapsed, 1),
-                "stderr": stderr[:500] if stderr else "",
+                "stderr": stdout[:500] if stdout else "",
             }
 
         # 解析 JSON 摘要行 `[preclose-summary] {...}`
@@ -673,6 +693,72 @@ class DashboardService:
                 "script_elapsed": details_elapsed,
             },
         }
+
+    def _refresh_bg_worker(self, script: Path) -> None:
+        """后台线程执行：拉最新K线 → 重跑续涨评分"""
+        import subprocess, sys, time
+        with self._refresh_lock:
+            self._refresh_result = {"status": "running", "started_at": time.time()}
+        t0 = time.time()
+        try:
+            proc = subprocess.run(
+                [sys.executable, str(script)],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                timeout=600,
+                cwd=script.parent.parent,
+            )
+            exit_ok = proc.returncode == 0
+        except subprocess.TimeoutExpired:
+            with self._refresh_lock:
+                self._refresh_running = False
+                self._refresh_result = {"status": "failed", "message": "续涨刷新超时（>600秒）", "elapsed_seconds": 600}
+            return
+        except Exception as e:
+            with self._refresh_lock:
+                self._refresh_running = False
+                self._refresh_result = {"status": "failed", "message": f"刷新异常: {e}", "elapsed_seconds": round(time.time() - t0, 1)}
+            return
+
+        elapsed = time.time() - t0
+        self.refresh_ranking_cache()
+        self._recommendations = None
+
+        # 统计续涨结果
+        results = self.get_results()
+        cont_count = int((results.get("cont_is_applicable", pd.Series(dtype=bool)) & (results.get("cont_score_box", 0) > 0)).sum()) if not results.empty else 0
+
+        with self._refresh_lock:
+            self._refresh_running = False
+            self._refresh_result = {
+                "status": "completed" if exit_ok else "failed",
+                "success": exit_ok,
+                "message": f"续涨刷新完成: {cont_count}只有效箱体候选" if exit_ok else f"Phase1异常退出(code={proc.returncode})",
+                "elapsed_seconds": round(elapsed, 1),
+                "continuation_count": cont_count,
+                "exit_code": proc.returncode,
+            }
+
+    def refresh_continuation(self) -> dict[str, object]:
+        """手动触发：拉最新K线 → 重跑续涨评分 → 刷新排行（后台异步）"""
+        import time
+        with self._refresh_lock:
+            if self._refresh_running:
+                return {"success": False, "message": "已有刷新任务在运行中，请稍后重试", "status": "busy"}
+
+        script = Path(__file__).resolve().parent.parent.parent.parent / "scripts" / "run_batched_phase1.py"
+        self._refresh_running = True
+        self._refresh_result = {"status": "starting"}
+
+        Thread(target=self._refresh_bg_worker, args=(script,), daemon=True).start()
+        return {"success": True, "status": "started", "message": "续涨刷新已在后台启动，预计3-5分钟完成"}
+
+    def get_refresh_status(self) -> dict[str, object]:
+        """查询续涨刷新状态"""
+        import time
+        with self._refresh_lock:
+            result = dict(self._refresh_result)
+        result["running"] = self._refresh_running
+        return result
 
     def get_rankings_by_date(self, dt: str) -> dict[str, object]:
         results = self.duckdb_store.read_snapshot(dt)

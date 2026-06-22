@@ -462,9 +462,13 @@
     <div class="modal-backdrop" data-close="true"></div>
     <div class="modal-card">
       <div class="modal-head">
-        <div>
-          <div class="eyebrow" id="modalSymbol"></div>
-          <h3 id="modalTitle">个股详情</h3>
+        <div style="display:flex;align-items:center;gap:10px;">
+          <button class="detail-nav-btn" id="detailPrevBtn" title="上一个 (←)" disabled>◀</button>
+          <div>
+            <div class="eyebrow" id="modalSymbol"></div>
+            <h3 id="modalTitle">个股详情</h3>
+          </div>
+          <button class="detail-nav-btn" id="detailNextBtn" title="下一个 (→)">▶</button>
         </div>
         <button class="close-btn" id="closeModal">关闭</button>
       </div>

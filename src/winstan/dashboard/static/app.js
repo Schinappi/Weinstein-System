@@ -42,6 +42,8 @@ const stage1Pill = document.getElementById('stage1Pill');
 const stage2Pill = document.getElementById('stage2Pill');
 const chartCanvas = document.getElementById('chartCanvas');
 const chartTooltip = document.getElementById('chartTooltip');
+const detailPrevBtn = document.getElementById('detailPrevBtn');
+const detailNextBtn = document.getElementById('detailNextBtn');
 const refreshStage2Btn = document.getElementById('refreshStage2Btn');
 const refreshQuasiStage2Btn = document.getElementById('refreshQuasiStage2Btn');
 const refreshStage1Btn = document.getElementById('refreshStage1Btn');
@@ -72,6 +74,45 @@ let currentPage = 'dashboard';
 let stage2DatePicker = document.getElementById('stage2DatePicker');
 let quasiStage2DatePicker = document.getElementById('quasiStage2DatePicker');
 
+// 弹窗内个股切换导航
+let symbolListMap = {};   // { mode: [symbols] }
+let currentDetailMode = null;
+let currentDetailSymbol = null;
+
+function setSymbolList(mode, items) {
+  if (!mode || !items) return;
+  symbolListMap[mode] = (items || []).map(i => i.symbol).filter(Boolean);
+}
+
+function navigateDetail(direction) {
+  if (!currentDetailSymbol || !currentDetailMode) return;
+  const list = symbolListMap[currentDetailMode];
+  if (!list || list.length < 2) return;
+  let idx = list.indexOf(currentDetailSymbol);
+  if (idx === -1) return;
+  idx = direction === 'next'
+    ? (idx + 1) % list.length
+    : (idx - 1 + list.length) % list.length;
+  openStockDetail(list[idx], currentDetailMode);
+}
+
+function updateDetailNavButtons() {
+  if (!currentDetailSymbol || !currentDetailMode) {
+    detailPrevBtn.disabled = true;
+    detailNextBtn.disabled = true;
+    return;
+  }
+  const list = symbolListMap[currentDetailMode];
+  if (!list || list.length < 2) {
+    detailPrevBtn.disabled = true;
+    detailNextBtn.disabled = true;
+    return;
+  }
+  const idx = list.indexOf(currentDetailSymbol);
+  detailPrevBtn.disabled = idx <= 0;
+  detailNextBtn.disabled = idx >= list.length - 1;
+}
+
 async function boot() {
   bindEvents();
   switchPage('dashboard');
@@ -94,6 +135,8 @@ function bindEvents() {
   systemLogButton.addEventListener('click', showSystemLogModal);
   closeModal.addEventListener('click', hideModal);
   closeSystemLogModal.addEventListener('click', hideSystemLogModal);
+  detailPrevBtn.addEventListener('click', () => navigateDetail('prev'));
+  detailNextBtn.addEventListener('click', () => navigateDetail('next'));
   stage2DatePicker.addEventListener('change', () => {
     loadRankingsByDate('stage2', stage2DatePicker.value);
   });
@@ -107,7 +150,7 @@ function bindEvents() {
   const refreshTransitionBtn = document.getElementById('refreshTransitionBtn');
   if (refreshTransitionBtn) refreshTransitionBtn.addEventListener('click', () => loadTransitionRanking());
   const refreshContinuationBtn = document.getElementById('refreshContinuationBtn');
-  if (refreshContinuationBtn) refreshContinuationBtn.addEventListener('click', () => loadContinuationRanking());
+  if (refreshContinuationBtn) refreshContinuationBtn.addEventListener('click', () => refreshContinuationData());
   startAnalysisBtn.addEventListener('click', () => startStockAnalysis());
   precloseRunBtn.addEventListener('click', runPreclose);
   quasiStage2DatePicker.addEventListener('change', () => {
@@ -125,6 +168,16 @@ function bindEvents() {
     if (event.target.dataset.systemLogClose === 'true') {
       hideSystemLogModal();
     }
+  });
+
+  // 键盘左右箭头：弹窗内切换个股
+  document.addEventListener('keydown', (event) => {
+    if (detailModal.classList.contains('hidden')) return;
+    // 如果焦点在 input/textarea 中，不拦截
+    const tag = document.activeElement?.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+    if (event.key === 'ArrowLeft') { event.preventDefault(); navigateDetail('prev'); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); navigateDetail('next'); }
   });
 }
 
@@ -350,6 +403,7 @@ async function loadStage1ByDate(dateStr) {
 }
 
 function renderStage1Table(items) {
+  setSymbolList('stage1', items);
   if (!items || !items.length) {
     stage1Table.innerHTML = '<tr class="empty-row"><td colspan="9">暂无 Stage1 候选数据，请先运行筛选。</td></tr>';
     return;
@@ -389,6 +443,7 @@ async function loadShareholderRanking() {
     const response = await fetch('/api/shareholder/ranking');
     const payload = await response.json();
     const items = payload.items || [];
+    setSymbolList('shareholder', items);
     if (updateTime && items.length > 0) {
       updateTime.textContent = '更新于: ' + (items[0].scan_date || '--');
     }
@@ -421,7 +476,7 @@ async function loadShareholderRanking() {
     tableBody.querySelectorAll('.clickable-row').forEach(row => {
       row.addEventListener('click', () => {
         const sym = row.dataset.symbol;
-        if (sym) openStockDetail(sym);
+        if (sym) openStockDetail(sym, 'shareholder');
       });
     });
   } catch (e) {
@@ -440,6 +495,7 @@ async function loadTransitionRanking() {
     const response = await fetch('/api/transition/ranking');
     const payload = await response.json();
     const items = payload.items || [];
+    setSymbolList('transition', items);
     if (items.length === 0) {
       tableBody.innerHTML = '<tr><td colspan="12" class="empty-row">暂无突破候选（需运行 Phase1 筛选后刷新）</td></tr>';
       return;
@@ -476,7 +532,7 @@ async function loadTransitionRanking() {
     tableBody.querySelectorAll('.clickable-row').forEach(row => {
       row.addEventListener('click', () => {
         const sym = row.dataset.symbol;
-        if (sym) openStockDetail(sym);
+        if (sym) openStockDetail(sym, 'transition');
       });
     });
   } catch (e) {
@@ -495,6 +551,7 @@ async function loadContinuationRanking() {
     const response = await fetch('/api/continuation/ranking');
     const payload = await response.json();
     const items = payload.items || [];
+    setSymbolList('continuation', items);
     if (items.length === 0) {
       tableBody.innerHTML = '<tr><td colspan="11" class="empty-row">暂无续涨候选（需运行 Phase1 筛选后刷新）</td></tr>';
       return;
@@ -530,7 +587,7 @@ async function loadContinuationRanking() {
     tableBody.querySelectorAll('.clickable-row').forEach(row => {
       row.addEventListener('click', () => {
         const sym = row.dataset.symbol;
-        if (sym) openStockDetail(sym);
+        if (sym) openStockDetail(sym, 'continuation');
       });
     });
   } catch (e) {
@@ -539,6 +596,74 @@ async function loadContinuationRanking() {
   }
 }
 
+async function refreshContinuationData() {
+  const btn = document.getElementById('refreshContinuationBtn');
+  const tableBody = document.getElementById('continuationTable');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ 启动中...'; }
+  if (tableBody) tableBody.innerHTML = '<tr><td colspan="11" class="loading-row">⏳ 正在启动续涨刷新...</td></tr>';
+
+  try {
+    // 1. 发起后台刷新
+    const resp = await fetch('/api/continuation/refresh', { method: 'POST' });
+    const result = await resp.json();
+
+    if (!result.success && result.status === 'busy') {
+      // 已有任务在跑，直接去轮询
+      if (btn) btn.textContent = '⏳ 已有任务运行中...';
+    } else if (!result.success && result.status !== 'started') {
+      if (tableBody) tableBody.innerHTML = '<tr><td colspan="11" class="error-row">刷新失败: ' + (result.message || '未知错误') + '</td></tr>';
+      if (btn) { btn.disabled = false; btn.textContent = '刷新数据'; }
+      return;
+    }
+
+    // 2. 轮询状态直到完成
+    if (btn) btn.textContent = '⏳ 拉取K线+筛选中...';
+    const maxWait = 900; // 最多等15分钟
+    const pollInterval = 5000; // 每5秒查一次
+    let waited = 0;
+    let done = false;
+
+    while (waited < maxWait) {
+      await new Promise(r => setTimeout(r, pollInterval));
+      waited += pollInterval;
+
+      const statusResp = await fetch('/api/continuation/refresh-status');
+      const statusResult = await statusResp.json();
+
+      if (statusResult.status === 'completed') {
+        done = true;
+        if (btn) btn.textContent = '✅ 完成，加载中...';
+        if (tableBody) {
+          const elapsed = statusResult.elapsed_seconds || 0;
+          const count = statusResult.continuation_count || 0;
+          tableBody.innerHTML = `<tr><td colspan="11" class="loading-row">✅ 刷新完成 (${elapsed.toFixed(0)}s, ${count}只候选)，正在加载排行...</td></tr>`;
+        }
+        break;
+      } else if (statusResult.status === 'failed') {
+        if (tableBody) tableBody.innerHTML = '<tr><td colspan="11" class="error-row">刷新失败: ' + (statusResult.message || '未知错误') + '</td></tr>';
+        if (btn) { btn.disabled = false; btn.textContent = '刷新数据'; }
+        return;
+      } else if (statusResult.status === 'running' && tableBody) {
+        const elapsed = statusResult.elapsed_seconds || (waited / 1000);
+        tableBody.innerHTML = `<tr><td colspan="11" class="loading-row">⏳ 拉取K线+筛选中... (${elapsed.toFixed(0)}s)</td></tr>`;
+      }
+    }
+
+    if (!done) {
+      if (tableBody) tableBody.innerHTML = '<tr><td colspan="11" class="error-row">刷新超时，请稍后手动刷新页面查看结果</td></tr>';
+      if (btn) { btn.disabled = false; btn.textContent = '刷新数据'; }
+      return;
+    }
+
+    // 3. 重新加载排行
+    await loadContinuationRanking();
+  } catch (e) {
+    console.error('refreshContinuationData error:', e);
+    if (tableBody) tableBody.innerHTML = '<tr><td colspan="11" class="error-row">刷新请求失败: ' + e.message + '</td></tr>';
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '刷新数据'; }
+  }
+}
 async function loadRecommendations(options = {}) {
   if (options.force) {
     // Refresh cache first
@@ -561,6 +686,7 @@ async function loadRecommendations(options = {}) {
 
 function renderRecommendations(items) {
   const sItems = items.filter(i => i.rec_level === 'S');
+  setSymbolList('recs', items);
   const aItems = items.filter(i => i.rec_level === 'A');
   const bpItems = items.filter(i => i.rec_level === 'B+');
   const bItems = items.filter(i => i.rec_level === 'B');
@@ -714,6 +840,7 @@ function buildSystemLogSubtitle(status) {
 }
 
 function renderRankingTable(container, items, mode) {
+  setSymbolList(mode, items);
   if (!items.length) {
     container.innerHTML = '<tr class="empty-row"><td colspan="9">暂无数据，请先运行筛选。</td></tr>';
     return;
@@ -738,6 +865,7 @@ function renderRankingTable(container, items, mode) {
 }
 
 function renderQuasiStage2Table(container, items) {
+  setSymbolList('quasi-stage2', items);
   if (!items.length) {
     container.innerHTML = '<tr class="empty-row"><td colspan="7">暂无准Stage2 候选。</td></tr>';
     return;
@@ -763,6 +891,7 @@ async function runSearch(query) {
   const response = await fetch(`/api/search?q=${encodeURIComponent(query || '')}`);
   const payload = await response.json();
   const items = payload.items || [];
+  setSymbolList('search', items);
   if (!items.length) {
     searchTable.innerHTML = '<tr class="empty-row"><td colspan="5">未找到匹配股票。</td></tr>';
     return;
@@ -834,10 +963,13 @@ function formatBoolean(value) {
   return value ? '是' : '否';
 }
 
-async function openStockDetail(symbol) {
+async function openStockDetail(symbol, mode) {
   const requestId = ++currentDetailRequestId;
   currentAnalysisSymbol = symbol;
   currentAnalysisRequestId = requestId;
+  currentDetailSymbol = symbol;
+  if (mode) currentDetailMode = mode;
+  updateDetailNavButtons();
   modalTitle.textContent = '加载中...';
   modalSymbol.textContent = symbol;
   setAnalysisLoading(false);

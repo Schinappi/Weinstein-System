@@ -71,6 +71,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._send_json(self.service.get_continuation_ranking_payload())
             return
 
+        if path == "/api/continuation/refresh-status":
+            self._send_json(self.service.get_refresh_status())
+            return
+
         if path == "/api/search":
             query = parse_qs(parsed.query).get("q", [""])[0]
             self._send_json({"items": self.service.search_stocks(query)})
@@ -113,6 +117,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
         if path == "/api/preclose/run":
             result = self.service.run_preclose()
+            self._send_json(result)
+            return
+
+        if path == "/api/continuation/refresh":
+            result = self.service.refresh_continuation()
             self._send_json(result)
             return
 

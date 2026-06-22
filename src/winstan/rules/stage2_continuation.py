@@ -57,6 +57,11 @@ def compute_continuation_quality(
         "cont_atr_rank_pct": None,
         "cont_is_applicable": False,
         "cont_prior_trend_ok": False,
+        "cont_box_top_slope": None,
+        "cont_box_bottom_slope": None,
+        "cont_stage1_box_type": None,
+        "cont_stage1_box_detail": None,
+        "cont_score_stage1": 0.0,
     }
 
     if weekly.empty or "close" not in weekly.columns or len(weekly) < 30:
@@ -87,8 +92,9 @@ def compute_continuation_quality(
     box_score, box_info = _score_box_discipline(working)
     volume_score, vol_ok = _score_volume_trend(working, box_info.get("box_start_idx", 0))
     atr_score, atr_rank = _score_atr_compression(working, daily)
+    stage1_bonus = _score_stage1_quality(box_info)
 
-    total = trend_score + pullback_score + box_score + volume_score + atr_score
+    total = trend_score + pullback_score + box_score + volume_score + atr_score + stage1_bonus
     total = min(total, 100.0)
 
     grade, grade_label = "C", "一般"
@@ -112,6 +118,13 @@ def compute_continuation_quality(
         reason_parts.append("量缩")
     if atr_score >= 5:
         reason_parts.append("波压")
+    stage1_type = box_info.get("stage1_box_type")
+    if stage1_type == "优秀":
+        reason_parts.append("基底优良")
+    elif stage1_type == "可接受":
+        reason_parts.append("基底可接受")
+    elif stage1_type == "需警惕":
+        reason_parts.append("基底需警惕")
 
     return {
         "cont_quality_score": round(total, 1),
@@ -122,6 +135,7 @@ def compute_continuation_quality(
         "cont_score_box": round(box_score, 1),
         "cont_score_volume": round(volume_score, 1),
         "cont_score_atr": round(atr_score, 1),
+        "cont_score_stage1": round(stage1_bonus, 1),
         "cont_ma30w_slope_10w": round(slope_10w, 2),
         "cont_pullback_pct": round(pullback_pct, 1) if pullback_pct is not None else None,
         "cont_box_range_pct": round(box_range, 1) if box_range is not None else None,
@@ -132,6 +146,10 @@ def compute_continuation_quality(
         "cont_atr_rank_pct": round(atr_rank, 1) if atr_rank is not None else None,
         "cont_is_applicable": True,
         "cont_prior_trend_ok": True,
+        "cont_box_top_slope": box_info.get("box_top_slope_monthly"),
+        "cont_box_bottom_slope": box_info.get("box_bottom_slope_monthly"),
+        "cont_stage1_box_type": box_info.get("stage1_box_type"),
+        "cont_stage1_box_detail": box_info.get("stage1_box_detail"),
     }
 
 
@@ -275,9 +293,15 @@ def _score_box_discipline(df: pd.DataFrame) -> tuple[float, dict]:
     x_lows = np.array(swing_low_idx, dtype=float)
     y_lows = lows[swing_low_idx]
 
-    # 分别拟合上下轨
-    a_h, b_h = np.polyfit(x_highs, y_highs, 1)
-    a_l, b_l = np.polyfit(x_lows, y_lows, 1)
+    # 分别拟合上下轨（保存独立斜率，用于 Stage I 基底质量判断）
+    a_h_orig, b_h_orig = np.polyfit(x_highs, y_highs, 1)
+    a_l_orig, b_l_orig = np.polyfit(x_lows, y_lows, 1)
+    a_h, b_h = a_h_orig, b_h_orig
+    a_l, b_l = a_l_orig, b_l_orig
+
+    # 独立箱顶/箱底斜率（%/月），用于 Stage I 基底质量
+    top_slope_monthly = (a_h_orig * 4) / b_h_orig * 100 if b_h_orig != 0 else 0
+    bot_slope_monthly = (a_l_orig * 4) / b_l_orig * 100 if b_l_orig != 0 else 0
 
     # 共用斜率 = 平均值，确保上下轨平行
     a_common = (a_h + a_l) / 2.0
@@ -285,7 +309,7 @@ def _score_box_discipline(df: pd.DataFrame) -> tuple[float, dict]:
     b_l = np.mean(y_lows - a_common * x_lows)
     a_h = a_l = a_common
 
-    # 计算斜率 (%/月, 按4周=1月)
+    # 计算平行斜率 (%/月, 按4周=1月)
     slope_h_monthly = (a_h * 4) / b_h * 100 if b_h != 0 else 0
     slope_l_monthly = (a_l * 4) / b_l * 100 if b_l != 0 else 0
     slope_max_abs = max(abs(slope_h_monthly), abs(slope_l_monthly))
@@ -339,7 +363,37 @@ def _score_box_discipline(df: pd.DataFrame) -> tuple[float, dict]:
     info["box_b_h"] = float(b_h)
     info["box_a_l"] = float(a_l)
     info["box_b_l"] = float(b_l)
-
+    # ── Stage I 基底质量：根据独立箱顶/箱底斜率判断 ──
+    info["box_top_slope_monthly"] = round(top_slope_monthly, 2)
+    info["box_bottom_slope_monthly"] = round(bot_slope_monthly, 2)
+    top_abs = abs(top_slope_monthly)
+    bot_abs = abs(bot_slope_monthly)
+    if top_abs <= 5.0 and bot_abs <= 5.0:
+        stage1_type = "优秀"
+        stage1_detail = (
+            f"箱顶斜率{top_slope_monthly:+.1f}%/月，"
+            f"箱底斜率{bot_slope_monthly:+.1f}%/月，几乎水平"
+        )
+    elif top_abs <= 10.0 and bot_abs <= 10.0:
+        stage1_type = "可接受"
+        stage1_detail = (
+            f"箱顶斜率{top_slope_monthly:+.1f}%/月，"
+            f"箱底斜率{bot_slope_monthly:+.1f}%/月，轻微倾斜"
+        )
+    elif top_slope_monthly > 15.0:
+        stage1_type = "需警惕"
+        stage1_detail = (
+            f"箱顶斜率{top_slope_monthly:+.1f}%/月（>15%），"
+            f"持续创新高，更像Stage II初期而非Stage I"
+        )
+    else:
+        stage1_type = "一般"
+        stage1_detail = (
+            f"箱顶斜率{top_slope_monthly:+.1f}%/月，"
+            f"箱底斜率{bot_slope_monthly:+.1f}%/月"
+        )
+    info["stage1_box_type"] = stage1_type
+    info["stage1_box_detail"] = stage1_detail
     # ── 箱体完整性检查：用前2/3箱体拟合，检查后1/3是否脱离 ──
     # 防止回归线自适应地把破位"兜"进去
     box_mid = int(box_start + (box_end - box_start) * 0.67)
@@ -545,3 +599,28 @@ def _score_atr_compression(
     elif atr_rank <= 50.0:
         return 3.0, round(atr_rank, 1)
     return 0.0, round(atr_rank, 1)
+
+
+# ════════════════════════════════════════════════════
+#  维度6: Stage I 基底质量奖惩（箱顶/箱底独立斜率）
+#  优秀=+5, 可接受=+2, 一般=0, 需警惕=-5
+# ════════════════════════════════════════════════════
+
+def _score_stage1_quality(box_info: dict) -> float:
+    """根据箱体独立斜率判定 Stage I 基底质量，返回奖惩分。
+
+    奖惩分说明：
+      +5  优秀   → 箱顶斜率±5%且箱底斜率±5%，几乎水平
+      +2  可接受 → 箱顶斜率±10%且箱底斜率±10%，轻微倾斜
+       0  一般   → 介于可接受和需警惕之间
+      -5  需警惕 → 箱顶斜率>+15%，更像Stage II初期
+       0  无数据 → 箱体无效或无分类
+    """
+    stage1_type = box_info.get("stage1_box_type")
+    if stage1_type == "优秀":
+        return 5.0
+    elif stage1_type == "可接受":
+        return 2.0
+    elif stage1_type == "需警惕":
+        return -5.0
+    return 0.0

@@ -62,6 +62,7 @@ def compute_continuation_quality(
         "cont_box_top_displacement_pct": None,
         "cont_box_bottom_displacement_pct": None,
         "cont_box_drift_monthly": None,
+        "cont_box_center_drift_pct": None,
         "cont_box_tilt_ratio": None,
         "cont_stage1_box_type": None,
         "cont_stage1_box_detail": None,
@@ -156,6 +157,7 @@ def compute_continuation_quality(
         "cont_box_top_displacement_pct": box_info.get("box_top_displacement_pct"),
         "cont_box_bottom_displacement_pct": box_info.get("box_bottom_displacement_pct"),
         "cont_box_drift_monthly": box_info.get("box_drift_monthly"),
+        "cont_box_center_drift_pct": box_info.get("box_center_drift_pct"),
         "cont_box_tilt_ratio": box_info.get("box_tilt_ratio"),
         "cont_stage1_box_type": box_info.get("stage1_box_type"),
         "cont_stage1_box_detail": box_info.get("stage1_box_detail"),
@@ -253,8 +255,11 @@ def _score_box_discipline(df: pd.DataFrame) -> tuple[float, dict]:
         segment = df.iloc[-lookback:].reset_index(drop=True)
         box_score, result_info = _detect_box_core(segment)
         if box_score > 0:
-            # 把 box_start_idx 映射回完整 DataFrame 的位置
-            result_info["box_start_idx"] = result_info.get("box_start_idx", 0) + (len(df) - lookback)
+            # 把 segment 内索引映射回完整 DataFrame 的位置
+            offset = len(df) - lookback
+            result_info["box_start_idx"] = result_info.get("box_start_idx", 0) + offset
+            result_info["box_end_idx"] = result_info.get("box_end_idx", 0) + offset
+            result_info["box_seg_offset"] = offset
             return box_score, result_info
 
     return 0.0, info
@@ -382,14 +387,47 @@ def _detect_box_core(segment: pd.DataFrame) -> tuple[float, dict]:
     total_displacement = max(abs(top_displacement_pct), abs(bottom_displacement_pct))
     tilt_ratio = total_displacement / box_height_pct if box_height_pct > 0 else 999
 
-    # 漂移/倾斜扣分因子 (0.0-1.0)，替代硬过滤
+    # ── 中枢漂移：箱体中心从起点到终点的位移 ──
+    # 趋势整理(Trend Consolidation) vs 基底(Base Formation) 的核心区别
+    # 基底：价格中枢稳定，center_drift < 5%
+    # 趋势整理：中枢持续上移，center_drift > 10%
+    center_first = (top_first + bottom_first) / 2.0
+    center_last = (top_last + bottom_last) / 2.0
+    center_drift_pct = abs(center_last / center_first - 1.0) * 100.0 if center_first > 0 else 999
+
+    # ── 箱体水平度：顶和底各自都要平，不是只看中枢 ──
+    # 中枢可能是平的（顶+5%,底-5%抵消），但实际是扩张三角形
+    # 要求：顶位移和底位移各自在阈值内，确保真正横盘
+    top_disp_abs = abs(top_displacement_pct)
+    bot_disp_abs = abs(bottom_displacement_pct)
+
+    # 下降通道：顶底双降
+    if top_displacement_pct < -3.0 and bottom_displacement_pct < -3.0:
+        return 0.0, info
+    # 上升通道：顶底双升 > 阈值
+    if top_displacement_pct > 5.0 and bottom_displacement_pct > 5.0:
+        return 0.0, info  # 上升通道，不是横盘箱体
+
+    # 确保有实际震荡（不是一条直线）：箱体振幅 > 5%
+    if box_range_pct < 5.0:
+        return 0.0, info
+
+    # 漂移/倾斜/中枢 综合扣分因子
     drift_penalty = 1.0
-    if drift_per_month > 5.0 or tilt_ratio > 2.5:
-        return 0.0, info  # 极端情况仍然拒绝
+    # 中枢漂移硬过滤：>12% 中枢位移 → 趋势整理，不是箱体
+    if center_drift_pct > 12.0:
+        return 0.0, info
+    # 软扣分
+    if center_drift_pct > 8.0:
+        drift_penalty *= 0.5     # 勉强接受，大幅扣分
+    elif center_drift_pct > 5.0:
+        drift_penalty *= 0.7     # 轻微漂移，扣分
     if drift_per_month > 3.0:
-        drift_penalty *= 0.5
-    if tilt_ratio > 1.5:
         drift_penalty *= 0.6
+    if tilt_ratio > 0.8:
+        drift_penalty *= 0.5
+    if tilt_ratio > 1.5 or drift_per_month > 5.0:
+        return 0.0, info  # 极端倾斜/漂移拒绝
 
     # 斜率(%/月) 保留作为参考信息，但不再用于过滤
     slope_h_monthly = (a_h * 4) / b_h * 100 if b_h != 0 else 0
@@ -463,9 +501,32 @@ def _detect_box_core(segment: pd.DataFrame) -> tuple[float, dict]:
     box_height_pct = (upper_mid / lower_mid - 1.0) * 100.0
     tilt_ratio = total_displacement / box_height_pct if box_height_pct > 0 else 999
 
-    # 漂移和倾斜复查
-    if drift_per_month > 3.0 or tilt_ratio > 1.5:
+    # 中枢漂移
+    center_first = (top_first + bottom_first) / 2.0
+    center_last = (top_last + bottom_last) / 2.0
+    center_drift_pct = abs(center_last / center_first - 1.0) * 100.0 if center_first > 0 else 999
+
+    # 下降通道：顶底双降
+    if top_displacement_pct < -3.0 and bottom_displacement_pct < -3.0:
         return 0.0, info
+    # 上升通道：顶底双升 > 阈值
+    if top_displacement_pct > 5.0 and bottom_displacement_pct > 5.0:
+        return 0.0, info
+
+    # 硬过滤：中枢漂移 > 12% 或 极度倾斜
+    if center_drift_pct > 12.0 or drift_per_month > 5.0:
+        return 0.0, info
+
+    # 重算综合扣分因子
+    _drift_penalty = 1.0
+    if center_drift_pct > 8.0:
+        _drift_penalty *= 0.5
+    elif center_drift_pct > 5.0:
+        _drift_penalty *= 0.7
+    if drift_per_month > 3.0:
+        _drift_penalty *= 0.6
+    if tilt_ratio > 0.8:
+        _drift_penalty *= 0.5
 
     info["box_valid"] = True
     info["box_range_pct"] = box_range_pct
@@ -479,31 +540,32 @@ def _detect_box_core(segment: pd.DataFrame) -> tuple[float, dict]:
     info["box_top_displacement_pct"] = round(top_displacement_pct, 2)
     info["box_bottom_displacement_pct"] = round(bottom_displacement_pct, 2)
     info["box_drift_monthly"] = round(drift_per_month, 2)
+    info["box_center_drift_pct"] = round(center_drift_pct, 2)
     info["box_tilt_ratio"] = round(tilt_ratio, 3)
     info["box_top_slope_monthly"] = round(slope_h_monthly, 2)
     info["box_bottom_slope_monthly"] = round(slope_l_monthly, 2)
 
-    # ── Stage I 基底质量：根据漂移率和倾斜比判断 ──
-    if drift_per_month <= 1.0 and tilt_ratio < 0.4:
+    # ── Stage I 基底质量：根据中枢漂移和倾斜比判断 ──
+    if center_drift_pct <= 3.0 and tilt_ratio < 0.3:
         stage1_type = "优秀"
         stage1_detail = (
-            f"月漂移{drift_per_month:.1f}%，倾斜比{tilt_ratio:.2f}，接近水平平台"
+            f"中枢漂移{center_drift_pct:.1f}%，倾斜比{tilt_ratio:.2f}，价格中枢稳定"
         )
-    elif drift_per_month <= 1.8 and tilt_ratio < 0.8:
+    elif center_drift_pct <= 5.0 and tilt_ratio < 0.5:
         stage1_type = "可接受"
         stage1_detail = (
-            f"月漂移{drift_per_month:.1f}%，倾斜比{tilt_ratio:.2f}，轻微倾斜"
+            f"中枢漂移{center_drift_pct:.1f}%，倾斜比{tilt_ratio:.2f}，轻微上漂"
         )
-    elif drift_per_month > 2.5:
+    elif center_drift_pct > 8.0:
         stage1_type = "需警惕"
         stage1_detail = (
-            f"月漂移{drift_per_month:.1f}%（>2.5%/月），"
-            f"持续创新高，更像Stage II初期而非Stage I"
+            f"中枢漂移{center_drift_pct:.1f}%（>8%），"
+            f"价格中枢持续上移，更像趋势整理而非基底"
         )
     else:
         stage1_type = "一般"
         stage1_detail = (
-            f"月漂移{drift_per_month:.1f}%，倾斜比{tilt_ratio:.2f}"
+            f"中枢漂移{center_drift_pct:.1f}%，倾斜比{tilt_ratio:.2f}"
         )
     info["stage1_box_type"] = stage1_type
     info["stage1_box_detail"] = stage1_detail
@@ -625,8 +687,8 @@ def _detect_box_core(segment: pd.DataFrame) -> tuple[float, dict]:
     else:
         duration_bonus = 0.0
 
-    # 总分 = (触碰 + 越界 + 时长) × 品质因子 × 摆点质量 × 漂移惩罚
-    total = (touch_score + penetration_score + duration_bonus) * pen_quality * swing_quality * drift_penalty
+    # 总分 = (触碰 + 越界 + 时长) × 品质因子 × 摆点质量 × 综合惩罚
+    total = (touch_score + penetration_score + duration_bonus) * pen_quality * swing_quality * _drift_penalty
     total = min(total, 25.0)
 
     return total, info

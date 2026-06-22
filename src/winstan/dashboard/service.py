@@ -988,19 +988,16 @@ class DashboardService:
                         b_h = box_info.get("box_b_h")
                         a_l = box_info.get("box_a_l")
                         b_l = box_info.get("box_b_l")
-                        bs = box_info.get("box_start_idx", 0)
-                        be = box_info.get("box_end_idx", 0)
-                        # Convert from 30w-segment-relative to absolute weekly indices
-                        n_weekly = len(weekly)
-                        seg_offset = n_weekly - min(30, n_weekly)
-                        bs_abs = bs + seg_offset
-                        be_abs = be + seg_offset
+                        bs_abs = box_info.get("box_start_idx", 0)
+                        be_abs = box_info.get("box_end_idx", 0)
+                        seg_off = box_info.get("box_seg_offset", 0)
+                        if be_abs <= bs_abs:
+                            be_abs = len(weekly) - 1
                         if a_h is not None and a_l is not None:
-                            # Map weekly box indices to daily bars via date alignment
                             box_upper, box_lower, box_start_idx, box_end_idx = (
                                 _compute_box_daily_boundaries(
                                     daily_sorted, weekly, a_h, b_h, a_l, b_l,
-                                    bs_abs, be_abs, seg_offset, len(frame)
+                                    bs_abs, be_abs, seg_off, len(frame)
                                 )
                             )
             except Exception:

@@ -129,6 +129,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if path == "/api/backtest":
             symbols_str = str(payload.get("symbols", ""))
             target_date = str(payload.get("date", ""))
+            reuse_scan = bool(payload.get("reuse_scan", False))
+            force_refresh = bool(payload.get("force_refresh", False))
             from winstan.dashboard.backtest_handler import run_backtest_for_symbols, get_scan_status
             # 轮询模式：?job_id=xxx
             job_id = parse_qs(parsed.query).get("job_id", [""])[0]
@@ -136,7 +138,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._send_json(get_scan_status(job_id))
                 return
             self._send_json(run_backtest_for_symbols(
-                self.service.parquet_store, self.service.config, symbols_str, target_date))
+                self.service.parquet_store, self.service.config, symbols_str, target_date,
+                reuse_scan=reuse_scan, force_refresh=force_refresh,
+                name_lookup=self.service._lookup_stock_name))
             return
 
         self._send_json({"error": "Unsupported endpoint"}, status=HTTPStatus.NOT_FOUND)

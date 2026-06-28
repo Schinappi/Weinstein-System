@@ -1,1218 +1,95 @@
-const navDashboard = document.getElementById('navDashboard');
-const navStage1 = document.getElementById('navStage1');
-const navRecommendations = document.getElementById('navRecommendations');
-const navQuasiStage2 = document.getElementById('navQuasiStage2');
-const navShareholder = document.getElementById('navShareholder');
-const navTransition = document.getElementById('navTransition');
-const navContinuation = document.getElementById('navContinuation');
-const navBacktest = document.getElementById('navBacktest');
-const pageDashboard = document.getElementById('pageDashboard');
-const pageStage1 = document.getElementById('pageStage1');
-const pageRecommendations = document.getElementById('pageRecommendations');
-const pageQuasiStage2 = document.getElementById('pageQuasiStage2');
-const pageShareholder = document.getElementById('pageShareholder');
-const pageTransition = document.getElementById('pageTransition');
-const pageContinuation = document.getElementById('pageContinuation');
-const pageBacktest = document.getElementById('pageBacktest');
-const updateStatusTitle = document.getElementById('updateStatusTitle');
-const updateStatusMessage = document.getElementById('updateStatusMessage');
-const updateStatusLevel = document.getElementById('updateStatusLevel');
-const updateStatusMetrics = document.getElementById('updateStatusMetrics');
-const systemLogButton = document.getElementById('systemLogButton');
-const stage2Table = document.getElementById('stage2Table');
-const quasiStage2Table = document.getElementById('quasiStage2Table');
-const searchTable = document.getElementById('searchTable');
-const searchInput = document.getElementById('searchInput');
-const searchButton = document.getElementById('searchButton');
-const detailModal = document.getElementById('detailModal');
-const closeModal = document.getElementById('closeModal');
-const systemLogModal = document.getElementById('systemLogModal');
-const closeSystemLogModal = document.getElementById('closeSystemLogModal');
-const systemLogStatusTag = document.getElementById('systemLogStatusTag');
-const systemLogTitle = document.getElementById('systemLogTitle');
-const systemLogSubtitle = document.getElementById('systemLogSubtitle');
-const systemLogGrid = document.getElementById('systemLogGrid');
-const systemLogMessage = document.getElementById('systemLogMessage');
-const systemLogRaw = document.getElementById('systemLogRaw');
-const modalTitle = document.getElementById('modalTitle');
-const modalSymbol = document.getElementById('modalSymbol');
-const analysisMarkdown = document.getElementById('analysisMarkdown');
-const analysisLoading = document.getElementById('analysisLoading');
-const startAnalysisBtn = document.getElementById('startAnalysisBtn');
-const metricGrid = document.getElementById('metricGrid');
-const stage1Pill = document.getElementById('stage1Pill');
-const stage2Pill = document.getElementById('stage2Pill');
-const chartCanvas = document.getElementById('chartCanvas');
-const chartTooltip = document.getElementById('chartTooltip');
-const detailPrevBtn = document.getElementById('detailPrevBtn');
-const detailNextBtn = document.getElementById('detailNextBtn');
-const refreshStage2Btn = document.getElementById('refreshStage2Btn');
-const refreshQuasiStage2Btn = document.getElementById('refreshQuasiStage2Btn');
-const refreshStage1Btn = document.getElementById('refreshStage1Btn');
-const refreshRecsBtn = document.getElementById('refreshRecsBtn');
-const recsLoading = document.getElementById('recsLoading');
-const recSTable = document.getElementById('recSTable');
-const recATable = document.getElementById('recATable');
-const recBpTable = document.getElementById('recBpTable');
-const recBTable = document.getElementById('recBTable');
-const recSSection = document.getElementById('recSSection');
-const recASection = document.getElementById('recASection');
-const recBpSection = document.getElementById('recBpSection');
-const recBSection = document.getElementById('recBSection');
-const stage1Table = document.getElementById('stage1Table');
-const stage1DatePicker = document.getElementById('stage1DatePicker');
-const refreshDashboardBtn = document.getElementById('refreshDashboardBtn');
-const precloseRunBtn = document.getElementById('precloseRunBtn');
-const precloseLoading = document.getElementById('precloseLoading');
+const { useEffect, useMemo, useRef, useState } = React;
+const html = htm.bind(React.createElement);
+const {
+  App: AntApp,
+  Alert,
+  Button,
+  Card,
+  Col,
+  ConfigProvider,
+  DatePicker,
+  Empty,
+  Flex,
+  Form,
+  Input,
+  Layout,
+  List,
+  Menu,
+  Modal,
+  Row,
+  Segmented,
+  Space,
+  Spin,
+  Statistic,
+  Table,
+  Tag,
+  Typography,
+  message,
+} = antd;
 
-let currentStage1Data = [];
+const { Header, Sider, Content } = Layout;
+const { TextArea } = Input;
+const { Title, Paragraph, Text } = Typography;
 
-let currentChartState = null;
-let currentDetailRequestId = 0;
-let currentAnalysisSymbol = null;
-let currentAnalysisRequestId = 0;
-let latestUpdateStatus = {};
-let currentPage = 'dashboard';
-let stage2DatePicker = document.getElementById('stage2DatePicker');
-let quasiStage2DatePicker = document.getElementById('quasiStage2DatePicker');
+const TODAY = dayjs().format("YYYY-MM-DD");
+const PAGE_OVERVIEW = "overview";
+const PAGE_BACKTEST = "backtest";
 
-// 弹窗内个股切换导航
-let symbolListMap = {};   // { mode: [symbols] }
-let currentDetailMode = null;
-let currentDetailSymbol = null;
-let currentChartType = 'weekly';
-
-function switchChartType(type) {
-  currentChartType = type;
-  document.getElementById('chartTypeWeekly').classList.toggle('active', type === 'weekly');
-  document.getElementById('chartTypeDaily').classList.toggle('active', type === 'daily');
-  if (currentDetailSymbol) openStockDetail(currentDetailSymbol, currentDetailMode);
+function formatNumber(value, digits = 1, fallback = "--") {
+  return Number.isFinite(Number(value)) ? Number(value).toFixed(digits) : fallback;
 }
 
-function setSymbolList(mode, items) {
-  if (!mode || !items) return;
-  symbolListMap[mode] = (items || []).map(i => i.symbol).filter(Boolean);
+function formatInt(value, fallback = "--") {
+  return Number.isFinite(Number(value)) ? String(Math.round(Number(value))) : fallback;
 }
 
-function navigateDetail(direction) {
-  if (!currentDetailSymbol || !currentDetailMode) return;
-  const list = symbolListMap[currentDetailMode];
-  if (!list || list.length < 2) return;
-  let idx = list.indexOf(currentDetailSymbol);
-  if (idx === -1) return;
-  idx = direction === 'next'
-    ? (idx + 1) % list.length
-    : (idx - 1 + list.length) % list.length;
-  openStockDetail(list[idx], currentDetailMode);
+function formatPercent(value, digits = 1, fallback = "--") {
+  return Number.isFinite(Number(value)) ? `${Number(value).toFixed(digits)}%` : fallback;
 }
 
-function updateDetailNavButtons() {
-  if (!currentDetailSymbol || !currentDetailMode) {
-    detailPrevBtn.disabled = true;
-    detailNextBtn.disabled = true;
-    return;
-  }
-  const list = symbolListMap[currentDetailMode];
-  if (!list || list.length < 2) {
-    detailPrevBtn.disabled = true;
-    detailNextBtn.disabled = true;
-    return;
-  }
-  const idx = list.indexOf(currentDetailSymbol);
-  detailPrevBtn.disabled = idx <= 0;
-  detailNextBtn.disabled = idx >= list.length - 1;
-}
-
-async function boot() {
-  bindEvents();
-  switchPage('dashboard');
-  await loadDashboard();
-  await loadStage1();
-  await loadRecommendations();
-  await runSearch('');
-}
-
-function bindEvents() {
-  [navDashboard, navStage1, navRecommendations, navQuasiStage2, navShareholder, navTransition, navContinuation, navBacktest].forEach((button) => {
-    button.addEventListener('click', () => switchPage(button.dataset.page));
-  });
-  searchButton.addEventListener('click', () => runSearch(searchInput.value));
-  searchInput.addEventListener('keydown', (event) => {
-    if (event.key === 'Enter') {
-      runSearch(searchInput.value);
-    }
-  });
-  systemLogButton.addEventListener('click', showSystemLogModal);
-  closeModal.addEventListener('click', hideModal);
-  closeSystemLogModal.addEventListener('click', hideSystemLogModal);
-  detailPrevBtn.addEventListener('click', () => navigateDetail('prev'));
-  detailNextBtn.addEventListener('click', () => navigateDetail('next'));
-  stage2DatePicker.addEventListener('change', () => {
-    loadRankingsByDate('stage2', stage2DatePicker.value);
-  });
-  refreshStage2Btn.addEventListener('click', () => refreshRankings('stage2'));
-  refreshQuasiStage2Btn.addEventListener('click', () => refreshRankings('quasi-stage2'));
-  refreshStage1Btn.addEventListener('click', () => refreshStage1());
-  refreshRecsBtn.addEventListener('click', () => loadRecommendations({ force: true }));
-  refreshDashboardBtn.addEventListener('click', () => refreshDashboard());
-  const refreshShareholderBtn = document.getElementById('refreshShareholderBtn');
-  if (refreshShareholderBtn) refreshShareholderBtn.addEventListener('click', () => loadShareholderRanking());
-  const refreshTransitionBtn = document.getElementById('refreshTransitionBtn');
-  if (refreshTransitionBtn) refreshTransitionBtn.addEventListener('click', () => loadTransitionRanking());
-  const refreshContinuationBtn = document.getElementById('refreshContinuationBtn');
-  if (refreshContinuationBtn) refreshContinuationBtn.addEventListener('click', () => refreshContinuationData());
-  startAnalysisBtn.addEventListener('click', () => startStockAnalysis());
-  document.getElementById('chartTypeWeekly').addEventListener('click', () => switchChartType('weekly'));
-  document.getElementById('chartTypeDaily').addEventListener('click', () => switchChartType('daily'));
-  precloseRunBtn.addEventListener('click', runPreclose);
-  const backtestRunBtn = document.getElementById('backtestRunBtn');
-  if (backtestRunBtn) backtestRunBtn.addEventListener('click', runBacktest);
-  // Set default date to today
-  const backtestDateEl = document.getElementById('backtestDate');
-  if (backtestDateEl) backtestDateEl.value = new Date().toISOString().split('T')[0];
-  quasiStage2DatePicker.addEventListener('change', () => {
-    loadRankingsByDate('quasi-stage2', quasiStage2DatePicker.value);
-  });
-  stage1DatePicker.addEventListener('change', () => {
-    loadStage1ByDate(stage1DatePicker.value);
-  });
-  detailModal.addEventListener('click', (event) => {
-    if (event.target.dataset.close === 'true') {
-      hideModal();
-    }
-  });
-  systemLogModal.addEventListener('click', (event) => {
-    if (event.target.dataset.systemLogClose === 'true') {
-      hideSystemLogModal();
-    }
-  });
-
-  // 键盘左右箭头：弹窗内切换个股
-  document.addEventListener('keydown', (event) => {
-    if (detailModal.classList.contains('hidden')) return;
-    // 如果焦点在 input/textarea 中，不拦截
-    const tag = document.activeElement?.tagName;
-    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
-    if (event.key === 'ArrowLeft') { event.preventDefault(); navigateDetail('prev'); }
-    if (event.key === 'ArrowRight') { event.preventDefault(); navigateDetail('next'); }
-  });
-}
-
-function switchPage(pageKey) {
-  currentPage = pageKey;
-  const pageMap = {
-    dashboard: pageDashboard,
-    stage1: pageStage1,
-    recommendations: pageRecommendations,
-    'quasi-stage2': pageQuasiStage2,
-    shareholder: pageShareholder,
-    transition: pageTransition,
-    continuation: pageContinuation,
-    backtest: pageBacktest,
-  };
-  Object.entries(pageMap).forEach(([key, node]) => {
-    node.classList.toggle('hidden', key !== pageKey);
-  });
-  [navDashboard, navStage1, navRecommendations, navQuasiStage2, navShareholder, navTransition, navContinuation, navBacktest].forEach((button) => {
-    button.classList.toggle('active', button.dataset.page === pageKey);
-  });
-
-  // Auto-load data when switching pages
-  if (pageKey === 'shareholder') loadShareholderRanking();
-  if (pageKey === 'transition') loadTransitionRanking();
-  if (pageKey === 'continuation') loadContinuationRanking();
-}
-
-async function refreshDashboard() {
-  refreshDashboardBtn.disabled = true;
-  refreshDashboardBtn.textContent = '刷新中...';
-  try {
-    await fetch('/api/dashboard/refresh', { method: 'POST' });
-    await loadDashboard();
-  } catch (e) {
-    console.error(e);
-  } finally {
-    refreshDashboardBtn.disabled = false;
-    refreshDashboardBtn.textContent = '刷新';
-  }
-}
-
-async function refreshRankings(section) {
-  const btn = section === 'stage2' ? refreshStage2Btn : refreshQuasiStage2Btn;
-  btn.disabled = true;
-  btn.textContent = '刷新中...';
-  try {
-    await fetch('/api/dashboard/refresh', { method: 'POST' });
-    const response = await fetch('/api/dashboard');
-    const payload = await response.json();
-    if (section === 'stage2') {
-      renderRankingTable(stage2Table, payload.stage2 || [], 'stage2');
-    } else {
-      renderQuasiStage2Table(quasiStage2Table, payload.quasi_stage2 || []);
-    }
-    populateDatePickers(payload.snapshot_dates || []);
-  } catch (e) {
-    console.error(e);
-  } finally {
-    btn.disabled = false;
-    btn.textContent = '刷新';
-  }
-}
-
-async function loadDashboard() {
-  const response = await fetch('/api/dashboard');
-  const payload = await response.json();
-  renderUpdateStatus(payload.update_status || {});
-  populateDatePickers(payload.snapshot_dates || []);
-  renderRankingTable(stage2Table, payload.stage2 || [], 'stage2');
-  renderQuasiStage2Table(quasiStage2Table, payload.quasi_stage2 || []);
-}
-
-async function runPreclose() {
-  precloseRunBtn.disabled = true;
-  precloseRunBtn.textContent = '⏳ 更新中...';
-  precloseLoading.classList.remove('hidden');
-  try {
-    const resp = await fetch('/api/preclose/run', { method: 'POST' });
-    const result = await resp.json();
-    if (result.success) {
-      // 重新加载所有排行榜
-      await loadDashboard();
-      await loadStage1();
-      await loadRecommendations();
-      precloseLoading.textContent = `✅ 更新完成（${result.elapsed_seconds}秒）`;
-    } else {
-      precloseLoading.textContent = `❌ ${result.message}`;
-    }
-  } catch (e) {
-    precloseLoading.textContent = `❌ 网络错误: ${e.message}`;
-  } finally {
-    precloseRunBtn.disabled = false;
-    precloseRunBtn.innerHTML = '<span class="btn-icon">🔄</span> 实时更新排行榜';
-    setTimeout(() => {
-      precloseLoading.classList.add('hidden');
-      precloseLoading.textContent = '拉取腾讯行情并重算中...';
-    }, 5000);
-  }
-}
-
-function populateDatePickers(dates) {
-  const fragment1 = document.createDocumentFragment();
-  const fragment2 = document.createDocumentFragment();
-  const fragment3 = document.createDocumentFragment();
-  const makeOpt = (label, value) => {
-    const o = document.createElement('option');
-    o.value = value;
-    o.textContent = label;
-    return o;
-  };
-  fragment1.appendChild(makeOpt('最新数据', ''));
-  fragment2.appendChild(makeOpt('最新数据', ''));
-  fragment3.appendChild(makeOpt('最新数据', ''));
-  dates.forEach((d) => {
-    fragment1.appendChild(makeOpt(d, d));
-    fragment2.appendChild(makeOpt(d, d));
-    fragment3.appendChild(makeOpt(d, d));
-  });
-  stage2DatePicker.innerHTML = '';
-  quasiStage2DatePicker.innerHTML = '';
-  stage1DatePicker.innerHTML = '';
-  stage2DatePicker.appendChild(fragment1);
-  quasiStage2DatePicker.appendChild(fragment2);
-  stage1DatePicker.appendChild(fragment3);
-  stage2DatePicker.value = '';
-  quasiStage2DatePicker.value = '';
-  stage1DatePicker.value = '';
-}
-
-async function loadRankingsByDate(section, dateStr) {
-  if (!dateStr) {
-    // Reload latest data
-    const response = await fetch('/api/dashboard');
-    const payload = await response.json();
-    if (section === 'stage2') {
-      renderRankingTable(stage2Table, payload.stage2 || [], 'stage2');
-    } else if (section === 'quasi-stage2') {
-      renderQuasiStage2Table(quasiStage2Table, payload.quasi_stage2 || []);
-    }
-    return;
-  }
-  const response = await fetch(`/api/rankings/by-date?date=${encodeURIComponent(dateStr)}`);
-  const payload = await response.json();
-  if (payload.error || !payload.stage2) {
-    if (section === 'stage2') {
-      stage2Table.innerHTML = '<tr class="empty-row"><td colspan="10">无该日历史数据。</td></tr>';
-    } else if (section === 'quasi-stage2') {
-      quasiStage2Table.innerHTML = '<tr class="empty-row"><td colspan="10">无该日历史数据。</td></tr>';
-    }
-    return;
-  }
-  if (section === 'stage2') {
-    renderRankingTable(stage2Table, payload.stage2 || [], 'stage2');
-  } else if (section === 'quasi-stage2') {
-    renderQuasiStage2Table(quasiStage2Table, payload.quasi_stage2 || []);
-  }
-}
-
-function renderUpdateStatus(status) {
-  latestUpdateStatus = status || {};
-  const title = status.title || '缓存更新状态';
-  const message = status.message || '--';
-  const level = status.level === 'ok' ? '正常' : '提醒';
-  updateStatusTitle.textContent = title;
-  updateStatusMessage.textContent = message;
-  updateStatusLevel.textContent = level;
-  updateStatusLevel.className = `tag ${status.level === 'ok' ? 'ok' : 'warn'}`;
-
-  const metrics = [
-    { label: '最近完成时间', value: formatDateTime(status.finished_at) },
-    { label: '最新交易日', value: status.latest_trade_date || '--' },
-    { label: '总耗时', value: formatSeconds(status.total_runtime_seconds) },
-    { label: '补数耗时', value: formatSeconds(status.stock_update_runtime_seconds) },
-    { label: 'Phase1耗时', value: formatSeconds(status.phase1_runtime_seconds) },
-  ];
-  updateStatusMetrics.innerHTML = metrics.map((item) => `
-    <div class="update-status-metric">
-      <div class="label">${item.label}</div>
-      <div class="value">${item.value}</div>
-    </div>
-  `).join('');
-}
-
-async function loadStage1() {
-  try {
-    const response = await fetch('/api/stage1');
-    const payload = await response.json();
-    currentStage1Data = payload.stage1 || [];
-    renderStage1Table(currentStage1Data);
-  } catch (e) {
-    console.error('loadStage1 error:', e);
-    stage1Table.innerHTML = '<tr class="empty-row"><td colspan="9">加载失败。</td></tr>';
-  }
-}
-
-async function refreshStage1() {
-  refreshStage1Btn.disabled = true;
-  refreshStage1Btn.textContent = '刷新中...';
-  try {
-    await fetch('/api/dashboard/refresh', { method: 'POST' });
-    await loadStage1();
-  } catch (e) {
-    console.error(e);
-  } finally {
-    refreshStage1Btn.disabled = false;
-    refreshStage1Btn.textContent = '刷新';
-  }
-}
-
-async function loadStage1ByDate(dateStr) {
-  if (!dateStr) {
-    await loadStage1();
-    return;
-  }
-  try {
-    const response = await fetch(`/api/rankings/by-date?date=${encodeURIComponent(dateStr)}`);
-    const payload = await response.json();
-    const items = payload.stage1 || [];
-    renderStage1Table(items);
-  } catch (e) {
-    stage1Table.innerHTML = '<tr class="empty-row"><td colspan="9">无该日历史数据。</td></tr>';
-  }
-}
-
-function renderStage1Table(items) {
-  setSymbolList('stage1', items);
-  if (!items || !items.length) {
-    stage1Table.innerHTML = '<tr class="empty-row"><td colspan="9">暂无 Stage1 候选数据，请先运行筛选。</td></tr>';
-    return;
-  }
-  stage1Table.innerHTML = items.map((item) => {
-    const bq = item.base_quality_score ?? '--';
-    const grade = item.base_quality_grade ?? '--';
-    const gradeCls = (grade === 'S' || grade === 'A') ? 'positive' : '';
-    const reason = escapeHtml(item.base_quality_reason || '--');
-    return `
-    <tr class="clickable" data-symbol="${item.symbol}">
-      <td>${item.rank ?? '--'}</td>
-      <td>${item.symbol}</td>
-      <td>${escapeHtml(item.name || '')}</td>
-      <td>${escapeHtml(item.stage || '')}</td>
-      <td title="${escapeHtml(item.analysis || '')}">${escapeHtml(item.watch_reason || '')}</td>
-      <td><strong>${bq}</strong></td>
-      <td><span class="pill ${gradeCls}">${grade}</span></td>
-      <td class="text-sm">${reason}</td>
-      <td>${item.close ?? '--'}</td>
-    </tr>
-  `}).join('');
-
-  stage1Table.querySelectorAll('tr[data-symbol]').forEach((row) => {
-    row.addEventListener('click', () => openStockDetail(row.dataset.symbol, 'stage1'));
-  });
-}
-
-// ── 股东人数排行榜 ───────────────────────────────────────────
-async function loadShareholderRanking() {
-  const tableBody = document.getElementById('shareholderTable');
-  const updateTime = document.getElementById('shareholderUpdateTime');
-  if (!tableBody) return;
-
-  tableBody.innerHTML = '<tr><td colspan="9" class="loading-row">加载中...</td></tr>';
-  try {
-    const response = await fetch('/api/shareholder/ranking');
-    const payload = await response.json();
-    const items = payload.items || [];
-    setSymbolList('shareholder', items);
-    if (updateTime && items.length > 0) {
-      updateTime.textContent = '更新于: ' + (items[0].scan_date || '--');
-    }
-    if (items.length === 0) {
-      tableBody.innerHTML = '<tr><td colspan="9" class="empty-row">暂无数据，请先运行 shareholder_scan.py</td></tr>';
-      return;
-    }
-    tableBody.innerHTML = items.map(item => {
-      const chg = item.holder_change_pct != null ? (item.holder_change_pct >= 0 ? '+' + item.holder_change_pct.toFixed(1) : item.holder_change_pct.toFixed(1)) + '%' : 'N/A';
-      const chgClass = item.holder_change_pct != null && item.holder_change_pct < 0 ? 'positive' : 'negative';
-      const ws = item.weinstein_available ? item.final_score.toFixed(0) : 'N/A';
-      const stage = item.stage_label || '--';
-      const stageClass = item.stage2_candidate ? 'pill stage2' : '';
-      const symbol = escapeHtml(item.symbol || '');
-      const name = escapeHtml(item.name || '--');
-      return `<tr class="clickable-row" data-symbol="${symbol}">
-        <td>${item.rank || '--'}</td>
-        <td class="mono">${symbol}</td>
-        <td>${name}</td>
-        <td class="${chgClass}">${chg}</td>
-        <td>${item.holder_change_score != null ? item.holder_change_score.toFixed(0) : '--'}</td>
-        <td>${ws}</td>
-        <td><span class="${stageClass}">${stage}</span></td>
-        <td><strong>${item.combined_score != null ? item.combined_score.toFixed(0) : '--'}</strong></td>
-        <td class="muted-text text-sm">${item.latest_quarter || '--'}</td>
-      </tr>`;
-    }).join('');
-
-    // Click to open detail modal
-    tableBody.querySelectorAll('.clickable-row').forEach(row => {
-      row.addEventListener('click', () => {
-        const sym = row.dataset.symbol;
-        if (sym) openStockDetail(sym, 'shareholder');
-      });
-    });
-  } catch (e) {
-    console.error('loadShareholderRanking error:', e);
-    tableBody.innerHTML = '<tr><td colspan="9" class="error-row">加载失败</td></tr>';
-  }
-}
-
-// ── 突破候选（Stage1→2 转换） ─────────────────────────────
-async function loadTransitionRanking() {
-  const tableBody = document.getElementById('transitionTable');
-  if (!tableBody) return;
-
-  tableBody.innerHTML = '<tr><td colspan="12" class="loading-row">加载中...</td></tr>';
-  try {
-    const response = await fetch('/api/transition/ranking');
-    const payload = await response.json();
-    const items = payload.items || [];
-    setSymbolList('transition', items);
-    if (items.length === 0) {
-      tableBody.innerHTML = '<tr><td colspan="12" class="empty-row">暂无突破候选（需运行 Phase1 筛选后刷新）</td></tr>';
-      return;
-    }
-    tableBody.innerHTML = items.map((item, i) => {
-      const symbol = escapeHtml(item.symbol || '');
-      const name = escapeHtml(item.name || '--');
-      const dist = item.transition_distance_pct != null ? item.transition_distance_pct.toFixed(1) + '%' : '--';
-      const distCls = item.transition_distance_pct != null && item.transition_distance_pct >= -2 ? 'positive' : '';
-      const vol = item.transition_volume_ratio != null ? item.transition_volume_ratio.toFixed(1) + 'x' : '--';
-      const weeks = item.transition_base_weeks || '--';
-      const baseHigh = item.transition_base_high != null ? item.transition_base_high.toFixed(2) : '--';
-      const ws = item.final_score != null ? item.final_score.toFixed(0) : '--';
-      const stage = item.stage_label || '--';
-      const bq = item.base_quality_score != null ? '<span class="' + (item.base_quality_score >= 70 ? 'positive' : '') + '">' + item.base_quality_score.toFixed(0) + '</span>' : '--';
-      const bqGrade = item.base_quality_grade || '';
-      const reason = escapeHtml(item.transition_reason || '');
-      return `<tr class="clickable-row" data-symbol="${symbol}">
-        <td>${i + 1}</td>
-        <td class="mono">${symbol}</td>
-        <td>${name}</td>
-        <td><strong>${item.transition_score != null ? item.transition_score.toFixed(0) : '--'}</strong></td>
-        <td>${bq} <span class="pill">${bqGrade}</span></td>
-        <td>${item.close != null ? item.close.toFixed(2) : '--'}</td>
-        <td>${baseHigh}</td>
-        <td class="${distCls}">${dist}</td>
-        <td>${weeks}周</td>
-        <td>${vol}</td>
-        <td>${stage}</td>
-        <td class="text-sm">${reason}</td>
-      </tr>`;
-    }).join('');
-
-    tableBody.querySelectorAll('.clickable-row').forEach(row => {
-      row.addEventListener('click', () => {
-        const sym = row.dataset.symbol;
-        if (sym) openStockDetail(sym, 'transition');
-      });
-    });
-  } catch (e) {
-    console.error('loadTransitionRanking error:', e);
-    tableBody.innerHTML = '<tr><td colspan="12" class="error-row">加载失败</td></tr>';
-  }
-}
-
-// ── Stage2 续涨候选（暴涨后回踩整理） ─────────────────────
-async function loadContinuationRanking() {
-  const tableBody = document.getElementById('continuationTable');
-  if (!tableBody) return;
-
-  tableBody.innerHTML = '<tr><td colspan="11" class="loading-row">加载中...</td></tr>';
-  try {
-    const response = await fetch('/api/continuation/ranking');
-    const payload = await response.json();
-    const items = payload.items || [];
-    setSymbolList('continuation', items);
-    if (items.length === 0) {
-      tableBody.innerHTML = '<tr><td colspan="11" class="empty-row">暂无续涨候选（需运行 Phase1 筛选后刷新）</td></tr>';
-      return;
-    }
-    tableBody.innerHTML = items.map((item, i) => {
-      const symbol = escapeHtml(item.symbol || '');
-      const name = escapeHtml(item.name || '--');
-      const score = item.cont_quality_score != null ? item.cont_quality_score.toFixed(0) : '--';
-      const grade = item.cont_quality_grade || '';
-      const gradeCls = (grade === 'S' || grade === 'A') ? 'positive' : '';
-      const pullback = item.cont_pullback_pct != null ? '+' + item.cont_pullback_pct.toFixed(0) + '%' : '--';
-      const boxRange = item.cont_box_range_pct != null ? item.cont_box_range_pct.toFixed(0) + '%' : '--';
-      const boxWeeks = item.cont_box_duration_weeks || 0;
-      const boxWeeksText = boxWeeks >= 8 ? '<span class="positive">' + boxWeeks + '周</span>' : boxWeeks + '周';
-      const volOk = item.cont_volume_trend_ok
-        ? '<span class="positive tip-hint" title="三段式量能确认: 箱体中段量能 < 前段×0.85">是</span>'
-        : '<span class="tip-hint" title="三段式量能: 中段缩量不达标\n箱体中段量能 > 前段×0.85">否</span>';
-      const reason = escapeHtml(item.cont_quality_reason || '');
-      return `<tr class="clickable-row" data-symbol="${symbol}">
-        <td>${i + 1}</td>
-        <td class="mono">${symbol}</td>
-        <td>${name}</td>
-        <td><strong>${score}</strong></td>
-        <td><span class="pill ${gradeCls}">${grade}</span></td>
-        <td>${item.close != null ? item.close.toFixed(2) : '--'}</td>
-        <td>${pullback}</td>
-        <td>${boxRange}</td>
-        <td>${boxWeeksText}</td>
-        <td>${volOk}</td>
-        <td>${item.stage_label || '--'}</td>
-        <td class="text-sm">${reason}</td>
-      </tr>`;
-    }).join('');
-
-    tableBody.querySelectorAll('.clickable-row').forEach(row => {
-      row.addEventListener('click', () => {
-        const sym = row.dataset.symbol;
-        if (sym) openStockDetail(sym, 'continuation');
-      });
-    });
-  } catch (e) {
-    console.error('loadContinuationRanking error:', e);
-    tableBody.innerHTML = '<tr><td colspan="11" class="error-row">加载失败</td></tr>';
-  }
-}
-
-async function refreshContinuationData() {
-  const btn = document.getElementById('refreshContinuationBtn');
-  const tableBody = document.getElementById('continuationTable');
-  if (btn) { btn.disabled = true; btn.textContent = '⏳ 启动中...'; }
-  if (tableBody) tableBody.innerHTML = '<tr><td colspan="11" class="loading-row">⏳ 正在启动续涨刷新...</td></tr>';
-
-  try {
-    // 1. 发起后台刷新
-    const resp = await fetch('/api/continuation/refresh', { method: 'POST' });
-    const result = await resp.json();
-
-    if (!result.success && result.status === 'busy') {
-      // 已有任务在跑，直接去轮询
-      if (btn) btn.textContent = '⏳ 已有任务运行中...';
-    } else if (!result.success && result.status !== 'started') {
-      if (tableBody) tableBody.innerHTML = '<tr><td colspan="11" class="error-row">刷新失败: ' + (result.message || '未知错误') + '</td></tr>';
-      if (btn) { btn.disabled = false; btn.textContent = '刷新数据'; }
-      return;
-    }
-
-    // 2. 轮询状态直到完成
-    if (btn) btn.textContent = '⏳ 拉取K线+筛选中...';
-    const maxWait = 900; // 最多等15分钟
-    const pollInterval = 5000; // 每5秒查一次
-    let waited = 0;
-    let done = false;
-
-    while (waited < maxWait) {
-      await new Promise(r => setTimeout(r, pollInterval));
-      waited += pollInterval;
-
-      const statusResp = await fetch('/api/continuation/refresh-status');
-      const statusResult = await statusResp.json();
-
-      if (statusResult.status === 'completed') {
-        done = true;
-        if (btn) btn.textContent = '✅ 完成，加载中...';
-        if (tableBody) {
-          const elapsed = statusResult.elapsed_seconds || 0;
-          const count = statusResult.continuation_count || 0;
-          tableBody.innerHTML = `<tr><td colspan="11" class="loading-row">✅ 刷新完成 (${elapsed.toFixed(0)}s, ${count}只候选)，正在加载排行...</td></tr>`;
-        }
-        break;
-      } else if (statusResult.status === 'failed') {
-        if (tableBody) tableBody.innerHTML = '<tr><td colspan="11" class="error-row">刷新失败: ' + (statusResult.message || '未知错误') + '</td></tr>';
-        if (btn) { btn.disabled = false; btn.textContent = '刷新数据'; }
-        return;
-      } else if (statusResult.status === 'running' && tableBody) {
-        const elapsed = statusResult.elapsed_seconds || (waited / 1000);
-        tableBody.innerHTML = `<tr><td colspan="11" class="loading-row">⏳ 拉取K线+筛选中... (${elapsed.toFixed(0)}s)</td></tr>`;
-      }
-    }
-
-    if (!done) {
-      if (tableBody) tableBody.innerHTML = '<tr><td colspan="11" class="error-row">刷新超时，请稍后手动刷新页面查看结果</td></tr>';
-      if (btn) { btn.disabled = false; btn.textContent = '刷新数据'; }
-      return;
-    }
-
-    // 3. 重新加载排行
-    await loadContinuationRanking();
-  } catch (e) {
-    console.error('refreshContinuationData error:', e);
-    if (tableBody) tableBody.innerHTML = '<tr><td colspan="11" class="error-row">刷新请求失败: ' + e.message + '</td></tr>';
-  } finally {
-    if (btn) { btn.disabled = false; btn.textContent = '刷新数据'; }
-  }
-}
-async function loadRecommendations(options = {}) {
-  if (options.force) {
-    // Refresh cache first
-    try { await fetch('/api/dashboard/refresh', { method: 'POST' }); } catch (e) {}
-  }
-  refreshRecsBtn.disabled = true;
-  recsLoading.classList.remove('hidden');
-  try {
-    const response = await fetch('/api/recommendations');
-    const payload = await response.json();
-    const items = payload.recommendations || [];
-    renderRecommendations(items);
-  } catch (e) {
-    console.error('loadRecommendations error:', e);
-  } finally {
-    refreshRecsBtn.disabled = false;
-    recsLoading.classList.add('hidden');
-  }
-}
-
-function renderRecommendations(items) {
-  const sItems = items.filter(i => i.rec_level === 'S');
-  setSymbolList('recs', items);
-  const aItems = items.filter(i => i.rec_level === 'A');
-  const bpItems = items.filter(i => i.rec_level === 'B+');
-  const bItems = items.filter(i => i.rec_level === 'B');
-
-  recSSection.classList.toggle('hidden', !sItems.length);
-  recASection.classList.toggle('hidden', !aItems.length);
-  recBpSection.classList.toggle('hidden', !bpItems.length);
-  recBSection.classList.toggle('hidden', !bItems.length);
-
-  // S级
-  if (sItems.length) {
-    recSTable.innerHTML = sItems.map(i => {
-      const wb = i.w_bottom || {};
-      return `<tr class="clickable" data-symbol="${i.symbol}">
-        <td>${i.rank}</td>
-        <td>${i.symbol}</td>
-        <td>${escapeHtml(i.name || '')}</td>
-        <td>${i.weinstein_score || '--'}</td>
-        <td title="${escapeHtml(i.analysis || '')}">${escapeHtml(i.rec_reason || '')}</td>
-        <td>${wb.pattern_score || '--'}</td>
-        <td>${wb.neckline || '--'}</td>
-        <td>${i.close || '--'}</td>
-        <td>${i.stop_loss || '--'}</td>
-      </tr>`;
-    }).join('');
-    recSTable.querySelectorAll('tr[data-symbol]').forEach(r => {
-      r.addEventListener('click', () => openStockDetail(r.dataset.symbol, 'recs'));
-    });
-  }
-
-  // A级
-  if (aItems.length) {
-    recATable.innerHTML = aItems.map(i => {
-      return `<tr class="clickable" data-symbol="${i.symbol}">
-        <td>${i.rank}</td>
-        <td>${i.symbol}</td>
-        <td>${escapeHtml(i.name || '')}</td>
-        <td>${i.weinstein_score || '--'}</td>
-        <td title="${escapeHtml(i.analysis || '')}">${escapeHtml(i.rec_reason || '')}</td>
-        <td>${i.close || '--'}</td>
-        <td>${i.stop_loss || '--'}</td>
-      </tr>`;
-    }).join('');
-    recATable.querySelectorAll('tr[data-symbol]').forEach(r => {
-      r.addEventListener('click', () => openStockDetail(r.dataset.symbol, 'recs'));
-    });
-  }
-
-  // B+级 提前埋伏
-  if (bpItems.length) {
-    recBpTable.innerHTML = bpItems.map(i => {
-      const wb = i.w_bottom || {};
-      const neck = parseFloat(wb.neckline) || 0;
-      const close = parseFloat(i.close) || 0;
-      const distPct = neck > 0 ? ((close / neck - 1) * 100).toFixed(1) : '--';
-      return `<tr class="clickable" data-symbol="${i.symbol}">
-        <td>${i.rank}</td>
-        <td>${i.symbol}</td>
-        <td>${escapeHtml(i.name || '')}</td>
-        <td>${i.weinstein_score || '--'}</td>
-        <td title="${escapeHtml(i.analysis || '')}">${escapeHtml(i.rec_reason || '')}</td>
-        <td>${distPct}%</td>
-        <td>${wb.pattern_score || '--'}</td>
-        <td>${i.close || '--'}</td>
-        <td>${i.stop_loss || '--'}</td>
-      </tr>`;
-    }).join('');
-    recBpTable.querySelectorAll('tr[data-symbol]').forEach(r => {
-      r.addEventListener('click', () => openStockDetail(r.dataset.symbol, 'recs'));
-    });
-  }
-
-  // B级
-  if (bItems.length) {
-    recBTable.innerHTML = bItems.map(i => {
-      const hasWb = i.has_w_bottom;
-      return `<tr class="clickable" data-symbol="${i.symbol}">
-        <td>${i.rank}</td>
-        <td>${i.symbol}</td>
-        <td>${escapeHtml(i.name || '')}</td>
-        <td>${i.weinstein_score || '--'}</td>
-        <td title="${escapeHtml(i.analysis || '')}">${escapeHtml(i.rec_reason || '')}</td>
-        <td>${hasWb ? 'W底' : '--'}</td>
-        <td>${i.close || '--'}</td>
-        <td>${i.stop_loss || '--'}</td>
-      </tr>`;
-    }).join('');
-    recBTable.querySelectorAll('tr[data-symbol]').forEach(r => {
-      r.addEventListener('click', () => openStockDetail(r.dataset.symbol, 'recs'));
-    });
-  }
-}
-
-function showSystemLogModal() {
-  renderSystemLog(latestUpdateStatus || {});
-  systemLogModal.classList.remove('hidden');
-}
-
-function hideSystemLogModal() {
-  systemLogModal.classList.add('hidden');
-}
-
-function renderSystemLog(status) {
-  const ok = status.level === 'ok' && status.success;
-  const tagText = ok ? '成功' : status.skipped_non_trading_day ? '已跳过' : '失败/提醒';
-  systemLogStatusTag.textContent = tagText;
-  systemLogStatusTag.className = `tag ${ok ? 'ok' : 'warn'}`;
-  systemLogTitle.textContent = status.title || '增量更新系统日志';
-  systemLogSubtitle.textContent = buildSystemLogSubtitle(status);
-
-  const metrics = [
-    { label: '最近完成时间', value: formatDateTime(status.finished_at) },
-    { label: '最新交易日', value: status.latest_trade_date || '--' },
-    { label: '股票更新数', value: formatCount(status.stock_symbols_updated) },
-    { label: '新增K线行数', value: formatCount(status.stock_rows_added) },
-    { label: '指数是否更新', value: formatBoolean(status.index_updated) },
-    { label: '指数新增行数', value: formatCount(status.index_rows_added) },
-    { label: 'Phase1是否执行', value: formatBoolean(status.phase1_ran) },
-    { label: '候选数', value: formatCount(status.phase1_candidate_count) },
-    { label: 'Stage1榜单', value: formatCount(status.phase1_stage1_count) },
-    { label: 'Stage2榜单', value: formatCount(status.phase1_stage2_count) },
-    { label: '总耗时', value: formatSeconds(status.total_runtime_seconds) },
-    { label: 'Phase1跳过原因', value: status.phase1_skipped_reason || '--' },
-  ];
-  systemLogGrid.innerHTML = metrics.map((item) => `
-    <div class="metric-card">
-      <div class="label">${item.label}</div>
-      <div class="value">${escapeHtml(item.value || '--')}</div>
-    </div>
-  `).join('');
-
-  const messageLines = [status.message || '--'];
-  if (status.error) {
-    messageLines.push(`错误信息：${status.error}`);
-  }
-  systemLogMessage.innerHTML = renderMarkdown(messageLines.map((line) => `- ${line}`).join('\n'));
-  systemLogRaw.textContent = status.raw_payload_text || '暂无原始状态。';
-}
-
-function buildSystemLogSubtitle(status) {
-  if (status.skipped_non_trading_day) {
-    return '本次任务已识别为非交易日，因此自动跳过执行。';
-  }
-  if (status.success && status.phase1_ran) {
-    return '本次增量更新成功，并已自动重跑排行榜。';
-  }
-  if (status.success) {
-    return '本次增量更新成功，但未触发排行榜重算。';
-  }
-  return '最近一次增量更新存在失败或异常，请查看下方详情。';
-}
-
-function renderRankingTable(container, items, mode) {
-  setSymbolList(mode, items);
-  if (!items.length) {
-    container.innerHTML = '<tr class="empty-row"><td colspan="9">暂无数据，请先运行筛选。</td></tr>';
-    return;
-  }
-  container.innerHTML = items.map((item) => `
-    <tr class="clickable" data-symbol="${item.symbol}">
-      <td>${item.rank ?? '--'}</td>
-      <td>${item.symbol}</td>
-      <td>${escapeHtml(item.name || '')}</td>
-      <td>${escapeHtml(item.stage || '')}</td>
-      <td title="${escapeHtml(item.analysis || '')}">${escapeHtml(item.watch_reason || '')}</td>
-      <td>${item.final_score ?? '--'}</td>
-      <td>${item.target_entry_price ?? '--'}</td>
-      <td>${item.stop_loss_reference ?? '--'}</td>
-      <td>${item.close ?? '--'}</td>
-    </tr>
-  `).join('');
-
-  container.querySelectorAll('tr[data-symbol]').forEach((row) => {
-    row.addEventListener('click', () => openStockDetail(row.dataset.symbol, mode));
-  });
-}
-
-function renderQuasiStage2Table(container, items) {
-  setSymbolList('quasi-stage2', items);
-  if (!items.length) {
-    container.innerHTML = '<tr class="empty-row"><td colspan="7">暂无准Stage2 候选。</td></tr>';
-    return;
-  }
-  container.innerHTML = items.map((item) => `
-    <tr class="clickable" data-symbol="${item.symbol}">
-      <td>${item.rank ?? '--'}</td>
-      <td>${item.symbol}</td>
-      <td>${escapeHtml(item.name || '')}</td>
-      <td>${escapeHtml(item.stage || '')}</td>
-      <td>${item.final_score ?? '--'}</td>
-      <td>${item.close ?? '--'}</td>
-      <td>${escapeHtml(item.missing_gates || '')}</td>
-    </tr>
-  `).join('');
-
-  container.querySelectorAll('tr[data-symbol]').forEach((row) => {
-    row.addEventListener('click', () => openStockDetail(row.dataset.symbol, 'quasi-stage2'));
-  });
-} 
-
-async function runSearch(query) {
-  const response = await fetch(`/api/search?q=${encodeURIComponent(query || '')}`);
-  const payload = await response.json();
-  const items = payload.items || [];
-  setSymbolList('search', items);
-  if (!items.length) {
-    searchTable.innerHTML = '<tr class="empty-row"><td colspan="5">未找到匹配股票。</td></tr>';
-    return;
-  }
-
-  searchTable.innerHTML = items.map((item) => `
-    <tr class="clickable" data-symbol="${item.symbol}">
-      <td>${item.symbol}</td>
-      <td>${escapeHtml(item.name || '')}</td>
-      <td>${renderTag(item.in_results, item.in_results ? '已覆盖' : '待补数')}</td>
-      <td>${renderTag(item.in_stage1, item.in_stage1 ? '已上榜' : '未上榜')}</td>
-      <td>${renderTag(item.in_stage2, item.in_stage2 ? '已上榜' : '未上榜')}</td>
-    </tr>
-  `).join('');
-
-  searchTable.querySelectorAll('tr[data-symbol]').forEach((row) => {
-    row.addEventListener('click', () => openStockDetail(row.dataset.symbol, 'search'));
-  });
-}
-
-function renderTag(ok, text) {
-  const cls = ok ? 'tag ok' : 'tag warn';
-  return `<span class="${cls}">${text}</span>`;
-}
-
-function formatSeconds(value) {
-  if (value === null || value === undefined || Number.isNaN(Number(value))) {
-    return '--';
-  }
-  return `${Number(value).toFixed(2)} 秒`;
-}
-
-function formatDateTime(value) {
-  if (!value) {
-    return '--';
-  }
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return value;
-  }
-  return date.toLocaleString('zh-CN', { hour12: false });
-}
-
-function formatCount(value) {
-  if (value === null || value === undefined || Number.isNaN(Number(value))) {
-    return '--';
-  }
-  return `${Number(value)}`;
-}
-
-function formatPercentValue(value) {
-  if (value === null || value === undefined || Number.isNaN(Number(value))) {
-    return '--';
-  }
-  return `${Number(value).toFixed(2)}%`;
-}
-
-function formatEntryMode(value) {
-  if (value === 'breakout') {
-    return '突破买点';
-  }
-  return value || '--';
+function formatElapsedSeconds(value, fallback = "--") {
+  return Number.isFinite(Number(value)) ? `${Math.max(0, Math.round(Number(value)))}s` : fallback;
 }
 
 function formatBoolean(value) {
-  if (value === null || value === undefined || value === '') {
-    return '--';
-  }
-  return value ? '是' : '否';
+  return value ? "是" : "否";
 }
 
-async function openStockDetail(symbol, mode) {
-  const requestId = ++currentDetailRequestId;
-  currentAnalysisSymbol = symbol;
-  currentAnalysisRequestId = requestId;
-  currentDetailSymbol = symbol;
-  if (mode) currentDetailMode = mode;
-  updateDetailNavButtons();
-  modalTitle.textContent = '加载中...';
-  modalSymbol.textContent = symbol;
-  setAnalysisLoading(false);
-  startAnalysisBtn.classList.add('hidden');
-  analysisMarkdown.innerHTML = '<p class="analysis-placeholder">点击「开始AI分析」获取 DeepSeek 温斯坦分析报告</p>';
-  metricGrid.innerHTML = '';
-  stage1Pill.textContent = 'Stage1: --';
-  stage2Pill.textContent = 'Stage2: --';
-  hideTooltip();
-  showModal();
-  document.getElementById('fundamentalSection').classList.add('hidden');
-  detailModal.querySelector('.modal-card').scrollTop = 0;
-  detailModal.querySelector('.chart-panel').scrollTop = 0;
-  detailModal.querySelector('.analysis-panel').scrollTop = 0;
-
-  try {
-    const response = await fetch(`/api/stock/${encodeURIComponent(symbol)}?chart=${currentChartType}`);
-    const payload = await response.json();
-    if (!response.ok || payload.error) {
-      throw new Error(payload.error || '加载失败');
-    }
-    if (requestId !== currentDetailRequestId) {
-      return;
-    }
-    modalTitle.textContent = `${payload.name || ''} ${payload.symbol}`.trim();
-    modalSymbol.textContent = payload.symbol;
-    stage1Pill.textContent = payload.stage1_rank ? `Stage1: 第 ${payload.stage1_rank} 名` : 'Stage1: 未上榜';
-    stage2Pill.textContent = payload.stage2_rank ? `Stage2: 第 ${payload.stage2_rank} 名` : 'Stage2: 未上榜';
-    renderMetrics(payload.metrics || []);
-    renderFundamentalMetrics(payload.fundamental || null);
-    drawCandles(chartCanvas, payload.chart || {});
-    if (payload.analysis) {
-      renderAnalysisMarkdown(payload.analysis);
-      setAnalysisLoading(false);
-      startAnalysisBtn.classList.add('hidden');
-    } else {
-      startAnalysisBtn.classList.remove('hidden');
-      setAnalysisLoading(false);
-    }
-  } catch (error) {
-    if (requestId !== currentDetailRequestId) {
-      return;
-    }
-    modalTitle.textContent = symbol;
-    setAnalysisLoading(false);
-    renderAnalysisMarkdown(`> ${error.message || '加载失败'}`);
-    drawCandles(chartCanvas, {});
-  }
-}
-
-function startStockAnalysis() {
-  const symbol = currentAnalysisSymbol;
-  const requestId = currentAnalysisRequestId;
-  if (!symbol) return;
-  startAnalysisBtn.classList.add('hidden');
-  setAnalysisLoading(true);
-  analysisMarkdown.innerHTML = '<p class="analysis-placeholder">LLM 正在生成分析，请稍候...</p>';
-  loadStockAnalysis(symbol, requestId);
-}
-
-async function loadStockAnalysis(symbol, requestId) {
-  try {
-    const response = await fetch(`/api/stock/${encodeURIComponent(symbol)}/analysis`);
-    const payload = await response.json();
-    if (!response.ok || payload.error) {
-      throw new Error(payload.error || '分析生成失败');
-    }
-    if (requestId !== currentDetailRequestId) {
-      return;
-    }
-    renderAnalysisMarkdown(payload.analysis || '--');
-  } catch (error) {
-    if (requestId !== currentDetailRequestId) {
-      return;
-    }
-    renderAnalysisMarkdown(`> ${error.message || '分析生成失败'}`);
-  } finally {
-    if (requestId === currentDetailRequestId) {
-      setAnalysisLoading(false);
-    }
-  }
-}
-
-function renderMetrics(metrics) {
-  metricGrid.innerHTML = metrics.map((item) => `
-    <div class="metric-card">
-      <div class="label">${escapeHtml(item.label || '')}</div>
-      <div class="value">${escapeHtml(item.value || '--')}</div>
-    </div>
-  `).join('');
-}
-
-function renderFundamentalMetrics(fundamental) {
-  const section = document.getElementById('fundamentalSection');
-  const grid = document.getElementById('fundamentalGrid');
-  // Show if at least one dimension has data
-  const hasData = fundamental && (
-    (fundamental.holder_score !== null && fundamental.holder_score !== undefined && !Number.isNaN(fundamental.holder_score))
-    || (fundamental.nb_score !== null && fundamental.nb_score !== undefined && !Number.isNaN(fundamental.nb_score))
-    || (fundamental.moneyflow_confirm !== null && fundamental.moneyflow_confirm !== undefined && !Number.isNaN(fundamental.moneyflow_confirm))
-  );
-  if (!hasData) {
-    section.classList.add('hidden');
-    return;
-  }
-  section.classList.remove('hidden');
-
-  const fNum = (v, d = '--') => (v !== null && v !== undefined && !Number.isNaN(v) ? Number(v).toFixed(2) : d);
-  const fInt = (v) => (v !== null && v !== undefined && !Number.isNaN(v) ? Number(v).toFixed(0) : '--');
-  const scoreClass = (v) => {
-    if (v === null || v === undefined || Number.isNaN(v)) return '';
-    return v > 0 ? 'score-positive' : v < 0 ? 'score-negative' : 'score-neutral';
-  };
-
-  const holderScore = fundamental.holder_score;
-  const holderPct = fundamental.holder_change_pct;
-  const nbScore = fundamental.nb_score;
-  const nbRatio = fundamental.nb_ratio;
-  const nb5d = fundamental.nb_vol_chg_5d;
-  const nb10d = fundamental.nb_vol_chg_10d;
-  const nb20d = fundamental.nb_vol_chg_20d;
-  const mfConfirm = fundamental.moneyflow_confirm;
-  const mfAmount = fundamental.net_mf_amount;
-
-  let holderDetail = '';
-  if (holderPct !== null && holderPct !== undefined && !Number.isNaN(holderPct)) {
-    const arrow = holderPct < 0 ? '📉' : '📈';
-    holderDetail = `${arrow} 环比 ${fNum(holderPct)}%`;
-  } else {
-    holderDetail = '暂无数据';
-  }
-
-  let nbDetail = '';
-  if (nbRatio !== null && nbRatio !== undefined && !Number.isNaN(nbRatio)) {
-    const parts = [`持仓占比 ${fNum(nbRatio)}%`];
-    const valid20d = nb20d !== null && nb20d !== undefined && !Number.isNaN(nb20d);
-    if (valid20d) parts.push(`季度持仓变动 ${nb20d > 0 ? '+' : ''}${fNum(nb20d)}%`);
-    nbDetail = parts.join(' · ');
-  } else {
-    nbDetail = '暂无数据';
-  }
-
-  let mfDetail = '';
-  if (mfAmount !== null && mfAmount !== undefined && !Number.isNaN(mfAmount)) {
-    const arrow = mfAmount > 0 ? '🟢' : '🔴';
-    const absAmt = Math.abs(mfAmount);
-    if (absAmt >= 100000000) {
-      mfDetail = `${arrow} 净流向 ${(absAmt / 100000000).toFixed(2)} 亿`;
-    } else if (absAmt >= 10000) {
-      mfDetail = `${arrow} 净流向 ${(absAmt / 10000).toFixed(2)} 万`;
-    } else {
-      mfDetail = `${arrow} 净流向 ${absAmt.toFixed(0)}`;
-    }
-  } else {
-    mfDetail = '暂无数据';
-  }
-
-  grid.innerHTML = `
-    <div class="fundamental-card">
-      <div class="fundamental-card-head">
-        <span class="fundamental-card-label">👥 股东人数</span>
-        <span class="fundamental-score ${scoreClass(holderScore)}">${fInt(holderScore)}</span>
-      </div>
-      <div class="fundamental-card-detail">${holderDetail}</div>
-    </div>
-    <div class="fundamental-card">
-      <div class="fundamental-card-head">
-        <span class="fundamental-card-label">🏦 北向资金</span>
-        <span class="fundamental-score ${scoreClass(nbScore)}">${fInt(nbScore)}</span>
-      </div>
-      <div class="fundamental-card-detail">${nbDetail}</div>
-    </div>
-    <div class="fundamental-card">
-      <div class="fundamental-card-head">
-        <span class="fundamental-card-label">💰 资金流向</span>
-        <span class="fundamental-score ${scoreClass(mfConfirm)}">${fInt(mfConfirm)}</span>
-      </div>
-      <div class="fundamental-card-detail">${mfDetail}</div>
-    </div>`;
-}
-
-function showModal() {
-  detailModal.classList.remove('hidden');
-}
-
-function hideModal() {
-  currentDetailRequestId += 1;
-  detailModal.classList.add('hidden');
-  hideTooltip();
-}
-
-function setAnalysisLoading(isLoading) {
-  analysisLoading.classList.toggle('hidden', !isLoading);
-}
-
-function renderAnalysisMarkdown(markdown) {
-  analysisMarkdown.innerHTML = renderMarkdown(markdown || '--');
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
 }
 
 function renderMarkdown(markdown) {
-  const source = String(markdown || '').replace(/\r\n/g, '\n');
-  const lines = source.split('\n');
+  const source = String(markdown || "").replace(/\r\n/g, "\n");
+  const lines = source.split("\n");
   const blocks = [];
   let paragraph = [];
   let listItems = [];
-  let listType = '';
+  let listType = "";
+
+  const formatInlineMarkdown = (text) =>
+    escapeHtml(text)
+      .replace(/`([^`]+)`/g, "<code>$1</code>")
+      .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+      .replace(/\*([^*]+)\*/g, "<em>$1</em>");
 
   const flushParagraph = () => {
-    if (!paragraph.length) {
-      return;
-    }
-    blocks.push(`<p>${formatInlineMarkdown(paragraph.join('\n')).replace(/\n/g, '<br>')}</p>`);
+    if (!paragraph.length) return;
+    blocks.push(`<p>${formatInlineMarkdown(paragraph.join("\n")).replace(/\n/g, "<br>")}</p>`);
     paragraph = [];
   };
 
   const flushList = () => {
-    if (!listItems.length || !listType) {
-      return;
-    }
-    const items = listItems.map((item) => `<li>${formatInlineMarkdown(item)}</li>`).join('');
+    if (!listItems.length || !listType) return;
+    const items = listItems.map((item) => `<li>${formatInlineMarkdown(item)}</li>`).join("");
     blocks.push(`<${listType}>${items}</${listType}>`);
     listItems = [];
-    listType = '';
+    listType = "";
   };
 
   lines.forEach((rawLine) => {
@@ -1235,10 +112,8 @@ function renderMarkdown(markdown) {
     const unorderedMatch = line.match(/^[-*]\s+(.*)$/);
     if (unorderedMatch) {
       flushParagraph();
-      if (listType && listType !== 'ul') {
-        flushList();
-      }
-      listType = 'ul';
+      if (listType && listType !== "ul") flushList();
+      listType = "ul";
       listItems.push(unorderedMatch[1]);
       return;
     }
@@ -1246,10 +121,8 @@ function renderMarkdown(markdown) {
     const orderedMatch = line.match(/^\d+\.\s+(.*)$/);
     if (orderedMatch) {
       flushParagraph();
-      if (listType && listType !== 'ol') {
-        flushList();
-      }
-      listType = 'ol';
+      if (listType && listType !== "ol") flushList();
+      listType = "ol";
       listItems.push(orderedMatch[1]);
       return;
     }
@@ -1268,32 +141,83 @@ function renderMarkdown(markdown) {
 
   flushParagraph();
   flushList();
-  return blocks.join('') || '<p>--</p>';
+  return blocks.join("") || "<p>--</p>";
 }
 
-function formatInlineMarkdown(text) {
-  return escapeHtml(text)
-    .replace(/`([^`]+)`/g, '<code>$1</code>')
-    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-    .replace(/\*([^*]+)\*/g, '<em>$1</em>');
+async function fetchJson(url, options = {}) {
+  const response = await fetch(url, options);
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok || payload.error) {
+    throw new Error(payload.error || `请求失败: ${response.status}`);
+  }
+  return payload;
 }
 
-function drawCandles(canvas, chart) {
-  const ctx = canvas.getContext('2d');
+function usePollingBacktestJob() {
+  const timeoutRef = useRef(null);
+
+  useEffect(() => () => {
+    if (timeoutRef.current) {
+      clearTimeout(timeoutRef.current);
+    }
+  }, []);
+
+  const stop = () => {
+    if (timeoutRef.current) {
+      clearTimeout(timeoutRef.current);
+      timeoutRef.current = null;
+    }
+  };
+
+  const poll = ({ jobId, onProgress, onDone, onError, intervalMs = 5000, maxAttempts = 360 }) => {
+    let attempts = 0;
+    stop();
+
+    const tick = async () => {
+      try {
+        const payload = await fetchJson(`/api/backtest?job_id=${encodeURIComponent(jobId)}`, { method: "POST" });
+        if (payload.status === "running" || payload.status === "started") {
+          attempts += 1;
+          onProgress?.(attempts, payload);
+          if (attempts >= maxAttempts) {
+            onError?.(new Error("扫描超时，请稍后刷新"));
+            stop();
+            return;
+          }
+          timeoutRef.current = setTimeout(tick, intervalMs);
+          return;
+        }
+        stop();
+        onDone?.(payload);
+      } catch (error) {
+        stop();
+        onError?.(error);
+      }
+    };
+
+    timeoutRef.current = setTimeout(tick, 2500);
+  };
+
+  return { poll, stop };
+}
+
+function drawChart(canvas, chart, tooltipEl, stateRef) {
+  if (!canvas) return;
+  const ctx = canvas.getContext("2d");
   const width = canvas.width;
   const height = canvas.height;
   ctx.clearRect(0, 0, width, height);
-
-  ctx.fillStyle = '#ffffff';
+  ctx.fillStyle = "#ffffff";
   ctx.fillRect(0, 0, width, height);
 
-  const candles = chart.candles || [];
-
+  const candles = Array.isArray(chart?.candles) ? chart.candles : [];
+  const isDaily = chart?.chart_type === "daily";
   if (!candles.length) {
-    currentChartState = null;
-    ctx.fillStyle = '#64748b';
-    ctx.font = '18px Microsoft YaHei';
-    ctx.fillText('暂无K线数据', width / 2 - 56, height / 2);
+    ctx.fillStyle = "#64748b";
+    ctx.font = "18px Noto Sans SC";
+    ctx.fillText("暂无K线数据", width / 2 - 50, height / 2);
+    stateRef.current = null;
+    if (tooltipEl) tooltipEl.classList.add("hidden");
     return;
   }
 
@@ -1305,26 +229,23 @@ function drawCandles(canvas, chart) {
   const right = width - 92;
   const bottom = priceAreaTop + priceAreaHeight;
   const volumeBottom = volumeAreaTop + volumeAreaHeight;
-  const candleWidth = Math.max(3, (right - left) / candles.length * 0.6);
+  const candleWidth = Math.max(3, ((right - left) / Math.max(candles.length, 1)) * 0.6);
 
-  const priceSeries = candles.flatMap((item) => [item.high, item.low, item.ma30w, item.ma10w]).filter((value) => Number.isFinite(value));
-  if (Number.isFinite(chart.breakout_line)) {
-    priceSeries.push(chart.breakout_line);
-  }
-  if (Number.isFinite(chart.resistance_line)) {
-    priceSeries.push(chart.resistance_line);
-  }
-  if (Number.isFinite(chart.base_breakout_line)) {
-    priceSeries.push(chart.base_breakout_line);
-  }
-  if (Number.isFinite(chart.base_stop_line)) {
-    priceSeries.push(chart.base_stop_line);
-  }
-  // Box boundaries for continuation candidates
-  if (chart.box_upper && chart.box_lower) {
-    chart.box_upper.forEach(v => { if (Number.isFinite(v)) priceSeries.push(v); });
-    chart.box_lower.forEach(v => { if (Number.isFinite(v)) priceSeries.push(v); });
-  }
+  const priceSeries = candles
+    .flatMap((item) => isDaily
+      ? [item.high, item.low, item.ema144, item.ema169]
+      : [item.high, item.low, item.ema30w])
+    .filter((value) => Number.isFinite(value));
+  [chart.breakout_line, chart.resistance_line, chart.base_breakout_line, chart.base_stop_line].forEach((value) => {
+    if (Number.isFinite(value)) priceSeries.push(value);
+  });
+  (chart.box_upper || []).forEach((value) => {
+    if (Number.isFinite(value)) priceSeries.push(value);
+  });
+  (chart.box_lower || []).forEach((value) => {
+    if (Number.isFinite(value)) priceSeries.push(value);
+  });
+
   const maxHigh = Math.max(...priceSeries);
   const minLow = Math.min(...priceSeries);
   const paddedRange = Math.max((maxHigh - minLow) * 0.08, maxHigh * 0.015, 0.5);
@@ -1334,15 +255,140 @@ function drawCandles(canvas, chart) {
   const scaleY = (value) => bottom - ((value - axisLow) / Math.max(axisHigh - axisLow, 0.0001)) * priceAreaHeight;
   const scaleX = (index) => left + ((right - left) / Math.max(candles.length - 1, 1)) * index;
 
-  drawGrid(ctx, left, right, priceAreaTop, bottom, 5, '#e2e8f0');
-  drawGrid(ctx, left, right, volumeAreaTop, volumeBottom, 2, '#edf2f7');
-  drawBoxBands(ctx, chart, candles, scaleX, scaleY, left, right);  // 续涨箱体
-  drawHorizontalLine(ctx, chart.base_breakout_line, scaleY, left, right, '#059669', [8, 4], '基底突破');   // 固定基底顶
-  drawHorizontalLine(ctx, chart.breakout_line, scaleY, left, right, '#7c3aed', [6, 5], '动态压力');        // 原突破线→动态压力线
-  drawHorizontalLine(ctx, chart.resistance_line, scaleY, left, right, '#ea580c', [10, 6], '压力线');
-  drawHorizontalLine(ctx, chart.base_stop_line, scaleY, left, right, '#dc2626', [4, 3], '止损线');          // 基底底
-  drawLine(ctx, candles, 'ma30w', '#2563eb', scaleX, scaleY);
-  drawLine(ctx, candles, 'ma10w', '#d97706', scaleX, scaleY);
+  const drawGrid = (top, bottomLine, rows, color) => {
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1;
+    for (let i = 0; i <= rows; i += 1) {
+      const y = top + ((bottomLine - top) / rows) * i;
+      ctx.beginPath();
+      ctx.moveTo(left, y);
+      ctx.lineTo(right, y);
+      ctx.stroke();
+    }
+  };
+
+  const drawLine = (key, color) => {
+    const points = candles
+      .map((item, index) => ({ x: scaleX(index), y: item[key] }))
+      .filter((item) => Number.isFinite(item.y));
+    if (points.length < 2) return;
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    points.forEach((point, index) => {
+      const y = scaleY(point.y);
+      if (index === 0) ctx.moveTo(point.x, y);
+      else ctx.lineTo(point.x, y);
+    });
+    ctx.stroke();
+  };
+
+  const drawHorizontalLine = (value, color, dash, label) => {
+    if (!Number.isFinite(value)) return;
+    const y = scaleY(value);
+    ctx.save();
+    ctx.strokeStyle = color;
+    ctx.fillStyle = color;
+    ctx.lineWidth = 1.2;
+    ctx.setLineDash(dash);
+    ctx.beginPath();
+    ctx.moveTo(left, y);
+    ctx.lineTo(right, y);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.font = "12px Noto Sans SC";
+    ctx.fillText(`${label} ${value.toFixed(2)}`, right + 10, y + 4);
+    ctx.restore();
+  };
+
+  const drawBoxBands = () => {
+    const boxUpper = chart.box_upper;
+    const boxLower = chart.box_lower;
+    if (!boxUpper || !boxLower || !boxUpper.length) return;
+    let firstValid = null;
+    let lastValid = null;
+    for (let i = 0; i < boxUpper.length; i += 1) {
+      if (Number.isFinite(boxUpper[i]) && Number.isFinite(boxLower[i])) {
+        if (firstValid === null) firstValid = i;
+        lastValid = i;
+      }
+    }
+    if (firstValid === null) return;
+
+    ctx.save();
+    ctx.strokeStyle = "#0891b2";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    let started = false;
+    for (let i = firstValid; i <= lastValid; i += 1) {
+      if (Number.isFinite(boxUpper[i])) {
+        const x = scaleX(i);
+        const y = scaleY(boxUpper[i]);
+        if (!started) {
+          ctx.moveTo(x, y);
+          started = true;
+        } else {
+          ctx.lineTo(x, y);
+        }
+      }
+    }
+    ctx.stroke();
+
+    ctx.setLineDash([6, 4]);
+    ctx.beginPath();
+    started = false;
+    for (let i = firstValid; i <= lastValid; i += 1) {
+      if (Number.isFinite(boxLower[i])) {
+        const x = scaleX(i);
+        const y = scaleY(boxLower[i]);
+        if (!started) {
+          ctx.moveTo(x, y);
+          started = true;
+        } else {
+          ctx.lineTo(x, y);
+        }
+      }
+    }
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    ctx.fillStyle = "rgba(8, 145, 178, 0.08)";
+    ctx.beginPath();
+    started = false;
+    for (let i = firstValid; i <= lastValid; i += 1) {
+      if (Number.isFinite(boxUpper[i])) {
+        const x = scaleX(i);
+        if (!started) {
+          ctx.moveTo(x, scaleY(boxUpper[i]));
+          started = true;
+        } else {
+          ctx.lineTo(x, scaleY(boxUpper[i]));
+        }
+      }
+    }
+    for (let i = lastValid; i >= firstValid; i -= 1) {
+      if (Number.isFinite(boxLower[i])) {
+        ctx.lineTo(scaleX(i), scaleY(boxLower[i]));
+      }
+    }
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+  };
+
+  drawGrid(priceAreaTop, bottom, 5, "#e2e8f0");
+  drawGrid(volumeAreaTop, volumeBottom, 2, "#edf2f7");
+  drawBoxBands();
+  drawHorizontalLine(chart.base_breakout_line, "#059669", [8, 4], "基底突破");
+  drawHorizontalLine(chart.breakout_line, "#7c3aed", [6, 5], "动态压力");
+  drawHorizontalLine(chart.resistance_line, "#ea580c", [10, 6], "压力线");
+  drawHorizontalLine(chart.base_stop_line, "#dc2626", [4, 3], "止损线");
+  if (isDaily) {
+    drawLine("ema144", "#2563eb");
+    drawLine("ema169", "#d97706");
+  } else {
+    drawLine("ema30w", "#2563eb");
+  }
 
   candles.forEach((item, index) => {
     const x = scaleX(index);
@@ -1350,459 +396,1080 @@ function drawCandles(canvas, chart) {
     const closeY = scaleY(item.close);
     const highY = scaleY(item.high);
     const lowY = scaleY(item.low);
-    const color = item.close >= item.open ? '#16a34a' : '#dc2626';
-
+    const color = item.close >= item.open ? "#16a34a" : "#dc2626";
     ctx.strokeStyle = color;
     ctx.lineWidth = 1;
     ctx.beginPath();
     ctx.moveTo(x, highY);
     ctx.lineTo(x, lowY);
     ctx.stroke();
-
     const bodyTop = Math.min(openY, closeY);
     const bodyHeight = Math.max(Math.abs(closeY - openY), 1);
     ctx.fillStyle = color;
     ctx.fillRect(x - candleWidth / 2, bodyTop, candleWidth, bodyHeight);
-
     const volumeHeight = ((item.volume || 0) / maxVolume) * volumeAreaHeight;
     ctx.globalAlpha = 0.7;
     ctx.fillRect(x - candleWidth / 2, volumeBottom - volumeHeight, candleWidth, volumeHeight);
     ctx.globalAlpha = 1;
   });
 
-  currentChartState = { candles, chart, scaleX, scaleY, left, right, priceAreaTop, bottom, candleWidth };
-  bindChartHover();
-  drawAxisLabels(ctx, candles, left, right, bottom, axisLow, axisHigh, scaleX, scaleY, priceAreaTop, right);
-  drawLegend(ctx);
-}
-
-function drawGrid(ctx, left, right, top, bottom, rows, color) {
-  ctx.strokeStyle = color;
-  ctx.lineWidth = 1;
-  for (let i = 0; i <= rows; i += 1) {
-    const y = top + ((bottom - top) / rows) * i;
-    ctx.beginPath();
-    ctx.moveTo(left, y);
-    ctx.lineTo(right, y);
-    ctx.stroke();
-  }
-}
-
-function drawLine(ctx, candles, key, color, scaleX, scaleY) {
-  const points = candles
-    .map((item, index) => ({ x: scaleX(index), y: item[key] }))
-    .filter((item) => Number.isFinite(item.y));
-  if (points.length < 2) {
-    return;
-  }
-  ctx.strokeStyle = color;
-  ctx.lineWidth = 1.5;
-  ctx.beginPath();
-  points.forEach((point, index) => {
-    const y = scaleY(point.y);
-    if (index === 0) {
-      ctx.moveTo(point.x, y);
-    } else {
-      ctx.lineTo(point.x, y);
-    }
-  });
-  ctx.stroke();
-}
-
-function drawHorizontalLine(ctx, value, scaleY, left, right, color, dash, label) {
-  if (!Number.isFinite(value)) {
-    return;
-  }
-  const y = scaleY(value);
-  ctx.save();
-  ctx.strokeStyle = color;
-  ctx.fillStyle = color;
-  ctx.lineWidth = 1.2;
-  ctx.setLineDash(dash);
-  ctx.beginPath();
-  ctx.moveTo(left, y);
-  ctx.lineTo(right, y);
-  ctx.stroke();
-  ctx.setLineDash([]);
-  ctx.font = '12px Microsoft YaHei';
-  ctx.fillText(`${label} ${value.toFixed(2)}`, right + 10, y + 4);
-  ctx.restore();
-}
-
-// ── 续涨箱体边界绘制 ──
-function drawBoxBands(ctx, chart, candles, scaleX, scaleY, left, right) {
-  const boxUpper = chart.box_upper;
-  const boxLower = chart.box_lower;
-  if (!boxUpper || !boxLower || !boxUpper.length) return;
-
-  // Find valid range of box data
-  let firstValid = null, lastValid = null;
-  for (let i = 0; i < boxUpper.length; i++) {
-    if (Number.isFinite(boxUpper[i]) && Number.isFinite(boxLower[i])) {
-      if (firstValid === null) firstValid = i;
-      lastValid = i;
-    }
-  }
-  if (firstValid === null) return;
-
-  // Draw upper boundary
-  ctx.save();
-  ctx.strokeStyle = '#0891b2';
-  ctx.lineWidth = 2;
-  ctx.setLineDash([]);
-  ctx.beginPath();
-  let started = false;
-  for (let i = firstValid; i <= lastValid; i++) {
-    if (Number.isFinite(boxUpper[i])) {
-      const x = scaleX(i);
-      const y = scaleY(boxUpper[i]);
-      if (!started) { ctx.moveTo(x, y); started = true; }
-      else ctx.lineTo(x, y);
-    }
-  }
-  ctx.stroke();
-
-  // Draw lower boundary
-  ctx.strokeStyle = '#0891b2';
-  ctx.setLineDash([6, 4]);
-  ctx.beginPath();
-  started = false;
-  for (let i = firstValid; i <= lastValid; i++) {
-    if (Number.isFinite(boxLower[i])) {
-      const x = scaleX(i);
-      const y = scaleY(boxLower[i]);
-      if (!started) { ctx.moveTo(x, y); started = true; }
-      else ctx.lineTo(x, y);
-    }
-  }
-  ctx.stroke();
-  ctx.setLineDash([]);
-
-  // Fill box area with light tint
-  ctx.fillStyle = 'rgba(8, 145, 178, 0.08)';
-  ctx.beginPath();
-  started = false;
-  for (let i = firstValid; i <= lastValid; i++) {
-    if (Number.isFinite(boxUpper[i])) {
-      const x = scaleX(i);
-      if (!started) { ctx.moveTo(x, scaleY(boxUpper[i])); started = true; }
-      else ctx.lineTo(x, scaleY(boxUpper[i]));
-    }
-  }
-  for (let i = lastValid; i >= firstValid; i--) {
-    if (Number.isFinite(boxLower[i])) {
-      ctx.lineTo(scaleX(i), scaleY(boxLower[i]));
-    }
-  }
-  ctx.closePath();
-  ctx.fill();
-
-  // Label
-  if (Number.isFinite(boxUpper[lastValid])) {
-    ctx.fillStyle = '#0891b2';
-    ctx.font = 'bold 11px Microsoft YaHei';
-    ctx.fillText('箱体', right + 10, scaleY(boxUpper[lastValid]) + 4);
-  }
-
-  ctx.restore();
-}
-
-function drawAxisLabels(ctx, candles, left, right, bottom, minLow, maxHigh, scaleX, scaleY, top) {
-  ctx.fillStyle = '#64748b';
-  ctx.font = '12px Microsoft YaHei';
-
-  const priceTicks = 6;
-  for (let i = 0; i <= priceTicks; i += 1) {
-    const value = minLow + ((maxHigh - minLow) / priceTicks) * i;
+  ctx.fillStyle = "#64748b";
+  ctx.font = "12px Noto Sans SC";
+  for (let i = 0; i <= 6; i += 1) {
+    const value = axisLow + ((axisHigh - axisLow) / 6) * i;
     const y = scaleY(value);
     ctx.fillText(value.toFixed(2), 16, y + 4);
   }
-
-  const labelCount = 5;
-  for (let i = 0; i < labelCount; i += 1) {
-    const index = Math.floor((candles.length - 1) * (i / Math.max(labelCount - 1, 1)));
-    const x = scaleX(index);
-    const text = candles[index]?.date || '';
-    ctx.fillText(text, x - 24, bottom + 24);
+  for (let i = 0; i < 5; i += 1) {
+    const index = Math.floor((candles.length - 1) * (i / 4));
+    ctx.fillText(candles[index]?.date || "", scaleX(index) - 24, bottom + 24);
+  }
+  ctx.fillText("价格", 18, priceAreaTop - 10);
+  ctx.fillText("成交量", 18, bottom + 56);
+  ctx.fillStyle = "#334155";
+  ctx.font = "12px Space Grotesk";
+  if (isDaily) {
+    ctx.fillText("EMA144", 74, 20);
+    ctx.fillText("EMA169", 164, 20);
+  } else {
+    ctx.fillText("EMA30W", 74, 20);
+  }
+  ctx.fillStyle = "#2563eb";
+  ctx.fillRect(40, 10, 20, 3);
+  if (isDaily) {
+    ctx.fillStyle = "#d97706";
+    ctx.fillRect(130, 10, 20, 3);
   }
 
-  ctx.fillText('价格', 18, top - 10);
-  ctx.fillText('成交量', 18, bottom + 56);
-}
+  stateRef.current = { candles, chart, scaleX, scaleY, left, right, priceAreaTop, bottom };
 
-function drawLegend(ctx) {
-  ctx.fillStyle = '#334155';
-  ctx.font = '12px Microsoft YaHei';
-  ctx.fillText('MA144', 74, 20);
-  ctx.fillText('MA169', 154, 20);
-  ctx.fillStyle = '#2563eb';
-  ctx.fillRect(40, 10, 20, 3);
-  ctx.fillStyle = '#d97706';
-  ctx.fillRect(120, 10, 20, 3);
-}
-
-function bindChartHover() {
-  chartCanvas.onmousemove = handleChartHover;
-  chartCanvas.onmouseleave = () => {
-    hideTooltip();
-    if (currentChartState) {
-      drawCandles(chartCanvas, currentChartState.chart);
+  canvas.onmousemove = (event) => {
+    if (!stateRef.current || !tooltipEl) return;
+    const rect = canvas.getBoundingClientRect();
+    const x = (event.clientX - rect.left) * (canvas.width / rect.width);
+    if (x < left || x > right) {
+      tooltipEl.classList.add("hidden");
+      drawChart(canvas, chart, tooltipEl, stateRef);
+      return;
     }
+    let closestIndex = 0;
+    let smallestDistance = Number.POSITIVE_INFINITY;
+    candles.forEach((item, index) => {
+      const distance = Math.abs(scaleX(index) - x);
+      if (distance < smallestDistance) {
+        smallestDistance = distance;
+        closestIndex = index;
+      }
+    });
+    drawChart(canvas, chart, tooltipEl, stateRef);
+    const candle = candles[closestIndex];
+    const highlightX = scaleX(closestIndex);
+    const highlightY = scaleY(candle.close);
+    ctx.save();
+    ctx.strokeStyle = "rgba(37, 99, 235, 0.55)";
+    ctx.lineWidth = 1;
+    ctx.setLineDash([5, 4]);
+    ctx.beginPath();
+    ctx.moveTo(highlightX, priceAreaTop);
+    ctx.lineTo(highlightX, bottom);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = "#2563eb";
+    ctx.beginPath();
+    ctx.arc(highlightX, highlightY, 4, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+
+    const change = Number.isFinite(candle.open) && Number.isFinite(candle.close)
+      ? (((candle.close - candle.open) / Math.max(candle.open, 0.0001)) * 100).toFixed(2)
+      : "--";
+    tooltipEl.innerHTML = [
+      `<div><strong>日期</strong>${escapeHtml(candle.date || "--")}</div>`,
+      `<div><strong>开盘</strong>${formatNumber(candle.open, 2)}</div>`,
+      `<div><strong>最高</strong>${formatNumber(candle.high, 2)}</div>`,
+      `<div><strong>最低</strong>${formatNumber(candle.low, 2)}</div>`,
+      `<div><strong>收盘</strong>${formatNumber(candle.close, 2)}</div>`,
+      `<div><strong>涨跌</strong>${change === "--" ? "--" : `${change}%`}</div>`,
+      `<div><strong>成交量</strong>${formatVolume(candle.volume)}</div>`,
+      ...(isDaily
+        ? [
+            `<div><strong>EMA144</strong>${formatNumber(candle.ema144, 2)}</div>`,
+            `<div><strong>EMA169</strong>${formatNumber(candle.ema169, 2)}</div>`,
+          ]
+        : [
+            `<div><strong>EMA30W</strong>${formatNumber(candle.ema30w, 2)}</div>`,
+          ]),
+    ].join("");
+    tooltipEl.classList.remove("hidden");
+    const leftPx = Math.min(event.clientX - rect.left + 18, rect.width - 220);
+    const topPx = Math.min(event.clientY - rect.top + 18, rect.height - 210);
+    tooltipEl.style.left = `${Math.max(12, leftPx)}px`;
+    tooltipEl.style.top = `${Math.max(12, topPx)}px`;
+  };
+
+  canvas.onmouseleave = () => {
+    if (tooltipEl) tooltipEl.classList.add("hidden");
+    drawChart(canvas, chart, tooltipEl, stateRef);
   };
 }
 
-function handleChartHover(event) {
-  if (!currentChartState) {
-    hideTooltip();
-    return;
-  }
-
-  const rect = chartCanvas.getBoundingClientRect();
-  const scaleXFactor = chartCanvas.width / rect.width;
-  const scaleYFactor = chartCanvas.height / rect.height;
-  const x = (event.clientX - rect.left) * scaleXFactor;
-  const { candles, left, right, scaleX, chart } = currentChartState;
-
-  if (x < left || x > right) {
-    hideTooltip();
-    drawCandles(chartCanvas, chart);
-    return;
-  }
-
-  let closestIndex = 0;
-  let smallestDistance = Number.POSITIVE_INFINITY;
-  candles.forEach((item, index) => {
-    const distance = Math.abs(scaleX(index) - x);
-    if (distance < smallestDistance) {
-      smallestDistance = distance;
-      closestIndex = index;
-    }
-  });
-
-  drawCandles(chartCanvas, chart);
-  highlightCandle(closestIndex);
-  showTooltip(
-    candles[closestIndex],
-    event.clientX - rect.left,
-    event.clientY - rect.top,
-    rect.width,
-    rect.height,
-    chartCanvas.parentElement,
-  );
-}
-
-function highlightCandle(index) {
-  if (!currentChartState) {
-    return;
-  }
-  const { scaleX, candles, priceAreaTop, bottom } = currentChartState;
-  const ctx = chartCanvas.getContext('2d');
-  const x = scaleX(index);
-  ctx.save();
-  ctx.strokeStyle = 'rgba(37, 99, 235, 0.55)';
-  ctx.lineWidth = 1;
-  ctx.setLineDash([5, 4]);
-  ctx.beginPath();
-  ctx.moveTo(x, priceAreaTop);
-  ctx.lineTo(x, bottom);
-  ctx.stroke();
-  ctx.setLineDash([]);
-  const candle = candles[index];
-  const priceY = currentChartState.scaleY(candle.close);
-  ctx.fillStyle = '#2563eb';
-  ctx.beginPath();
-  ctx.arc(x, priceY, 4, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.restore();
-}
-
-function showTooltip(candle, x, y, width, height, container) {
-  const change = Number.isFinite(candle.open) && Number.isFinite(candle.close)
-    ? (((candle.close - candle.open) / Math.max(candle.open, 0.0001)) * 100).toFixed(2)
-    : '--';
-  chartTooltip.innerHTML = [
-    `<div><strong>日期</strong>${escapeHtml(candle.date || '--')}</div>`,
-    `<div><strong>开盘</strong>${formatChartNumber(candle.open)}</div>`,
-    `<div><strong>最高</strong>${formatChartNumber(candle.high)}</div>`,
-    `<div><strong>最低</strong>${formatChartNumber(candle.low)}</div>`,
-    `<div><strong>收盘</strong>${formatChartNumber(candle.close)}</div>`,
-    `<div><strong>涨跌</strong>${change === '--' ? '--' : `${change}%`}</div>`,
-    `<div><strong>成交量</strong>${formatChartVolume(candle.volume)}</div>`,
-    `<div><strong>MA30w</strong>${formatChartNumber(candle.ma30w)}</div>`,
-    `<div><strong>MA10w</strong>${formatChartNumber(candle.ma10w)}</div>`,
-  ].join('');
-
-  chartTooltip.classList.remove('hidden');
-  const tooltipWidth = 220;
-  const tooltipHeight = 210;
-  const offsetLeft = container ? chartCanvas.offsetLeft : 0;
-  const offsetTop = container ? chartCanvas.offsetTop : 0;
-  const left = Math.min(x + offsetLeft + 18, offsetLeft + width - tooltipWidth);
-  const top = Math.min(y + offsetTop + 18, offsetTop + height - tooltipHeight);
-  chartTooltip.style.left = `${Math.max(offsetLeft + 12, left)}px`;
-  chartTooltip.style.top = `${Math.max(offsetTop + 12, top)}px`;
-}
-
-function hideTooltip() {
-  chartTooltip.classList.add('hidden');
-}
-
-function formatChartNumber(value) {
-  return Number.isFinite(value) ? value.toFixed(2) : '--';
-}
-
-function formatChartVolume(value) {
-  if (!Number.isFinite(value)) {
-    return '--';
-  }
-  if (value >= 100000000) {
-    return `${(value / 100000000).toFixed(2)}亿`;
-  }
-  if (value >= 10000) {
-    return `${(value / 10000).toFixed(2)}万`;
-  }
+function formatVolume(value) {
+  if (!Number.isFinite(value)) return "--";
+  if (value >= 100000000) return `${(value / 100000000).toFixed(2)}亿`;
+  if (value >= 10000) return `${(value / 10000).toFixed(2)}万`;
   return value.toFixed(0);
 }
 
-function escapeHtml(value) {
-  return String(value)
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;')
-    .replaceAll("'", '&#39;');
+function scoreClassName(value) {
+  if (!Number.isFinite(Number(value))) return "fundamental-score neu";
+  if (Number(value) > 0) return "fundamental-score pos";
+  if (Number(value) < 0) return "fundamental-score neg";
+  return "fundamental-score neu";
 }
 
-// ── 回测 ──
-async function runBacktest() {
-  const btn = document.getElementById('backtestRunBtn');
-  const symbolsEl = document.getElementById('backtestSymbols');
-  const dateEl = document.getElementById('backtestDate');
-  const statusEl = document.getElementById('backtestStatus');
-  const tbody = document.getElementById('backtestTbody');
+function buildFundamentalCards(fundamental) {
+  if (!fundamental) return [];
+  const hasData = [
+    fundamental.holder_score,
+    fundamental.nb_score,
+    fundamental.moneyflow_confirm,
+  ].some((value) => value !== null && value !== undefined && !Number.isNaN(value));
+  if (!hasData) return [];
 
-  const symbols = symbolsEl.value.trim();
-  const date = dateEl.value;
-  if (!date) {
-    statusEl.textContent = '请至少输入目标日期';
-    return;
+  const holderDetail = Number.isFinite(fundamental.holder_change_pct)
+    ? `环比 ${formatNumber(fundamental.holder_change_pct, 2)}%`
+    : "暂无数据";
+  const nbDetail = Number.isFinite(fundamental.nb_ratio)
+    ? `持仓占比 ${formatNumber(fundamental.nb_ratio, 2)}%`
+    : "暂无数据";
+  let mfDetail = "暂无数据";
+  if (Number.isFinite(fundamental.net_mf_amount)) {
+    const absAmt = Math.abs(fundamental.net_mf_amount);
+    if (absAmt >= 100000000) mfDetail = `净流向 ${(absAmt / 100000000).toFixed(2)} 亿`;
+    else if (absAmt >= 10000) mfDetail = `净流向 ${(absAmt / 10000).toFixed(2)} 万`;
+    else mfDetail = `净流向 ${absAmt.toFixed(0)}`;
   }
 
-  const isScan = !symbols;
-  btn.disabled = true;
-  btn.textContent = isScan ? '⏳ 全市场扫描中...' : '⏳ 回测中...';
-  statusEl.textContent = isScan ? '全市场扫描已启动（后台4线程, 约20分钟, 页面上保持轮询直到完成）...' : '计算中...';
-  tbody.innerHTML = '<tr><td colspan="12" style="text-align:center;color:#64748b;">计算中...</td></tr>';
-
-  try {
-    const resp = await fetch('/api/backtest', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ symbols, date }),
-    });
-    const payload0 = await resp.json();
-
-    // 扫描模式：异步轮询
-    if (isScan && payload0.job_id) {
-      const jobId = payload0.job_id;
-      statusEl.textContent = '扫描中... (job=' + jobId + ')';
-      let attempts = 0;
-      const poll = async () => {
-        try {
-          const r = await fetch('/api/backtest?job_id=' + jobId, { method: 'POST' });
-          const p = await r.json();
-          if (p.status === 'running' || p.status === 'started') {
-            attempts++;
-            statusEl.textContent = '扫描中... (job=' + jobId + ', ' + (attempts * 5) + '秒)';
-            if (attempts < 360) setTimeout(poll, 5000); // 最多等30分钟
-            else { statusEl.textContent = '扫描超时, 请稍后刷新'; btn.disabled = false; btn.textContent = '运行回测'; }
-          } else {
-            renderBacktestResults(p, statusEl, tbody);
-            btn.disabled = false;
-            btn.textContent = '运行回测';
-          }
-        } catch(e) { statusEl.textContent = '轮询失败'; btn.disabled = false; btn.textContent = '运行回测'; }
-      };
-      setTimeout(poll, 3000);
-      return;
-    }
-
-    renderBacktestResults(payload0, statusEl, tbody);
-  } catch (e) {
-    statusEl.textContent = '请求失败: ' + e.message;
-    tbody.innerHTML = '<tr><td colspan="12" style="text-align:center;color:#ef4444;">请求失败</td></tr>';
-  } finally {
-    if (!isScan) { btn.disabled = false; btn.textContent = '运行回测'; }
-  }
+  return [
+    { label: "股东人数", score: fundamental.holder_score, detail: holderDetail },
+    { label: "北向资金", score: fundamental.nb_score, detail: nbDetail },
+    { label: "资金流向", score: fundamental.moneyflow_confirm, detail: mfDetail },
+  ];
 }
 
-function renderBacktestResults(payload, statusEl, tbody) {
-    const items = payload.items || [];
-    setSymbolList('backtest', items);  // 支持弹窗内上一个/下一个切换
-    const scanInfo = payload.mode === 'scan'
-      ? ` | 全市场扫描: ${payload.scanned || '?'}只, ${payload.elapsed || '?'}秒, 共${payload.candidates_total || '?'}候选`
-      : '';
-    statusEl.textContent = `${items.length} 只, 目标日期: ${payload.target_date || date}${scanInfo}`;
+function DetailModal({
+  open,
+  onClose,
+  symbol,
+  symbolList,
+  onNavigate,
+}) {
+  const [loading, setLoading] = useState(false);
+  const [analysisLoading, setAnalysisLoading] = useState(false);
+  const [chartType, setChartType] = useState("weekly");
+  const [detail, setDetail] = useState(null);
+  const [analysisHtml, setAnalysisHtml] = useState("<p>点击“开始 AI 分析”获取个股解读。</p>");
+  const [showAnalysisButton, setShowAnalysisButton] = useState(false);
+  const canvasRef = useRef(null);
+  const tooltipRef = useRef(null);
+  const chartStateRef = useRef(null);
+  const requestIdRef = useRef(0);
 
-    if (!items.length) {
-      tbody.innerHTML = '<tr><td colspan="12" style="text-align:center;color:#64748b;">无结果</td></tr>';
-      return;
-    }
+  useEffect(() => {
+    if (!open || !symbol) return;
+    const requestId = ++requestIdRef.current;
+    setLoading(true);
+    setDetail(null);
+    setShowAnalysisButton(false);
+    setAnalysisLoading(false);
+    setAnalysisHtml("<p>点击“开始 AI 分析”获取个股解读。</p>");
 
-    // 条件提示说明
-    const ruleTips = {
-      applicable: 'Pool A: 长期下跌后筑底\n• 300周内EMA144峰→谷跌幅>20%\n• 当前EMA仍在谷底20%以内(未大幅反弹)\n• EMA144斜率在-1.5%~4%(走平)\n\nPool B: 趋势中继\n• EMA144比52周前更高(长期向上)\n• EMA144斜率在0%~8%(缓升整理)',
-      prior: '前期下跌确认(Pool A):\n• 300周(≥200周)内EMA144峰→谷跌幅>20%\n• 100周(≥120周)内峰→谷跌幅>15%\n• 当前EMA距离谷底<20%(仍在筑底)\n\n趋势中继(Pool B):\n• EMA144长期向上 + 斜率0~8%',
-      volume: '三段式量能(已改为评分制):\n• 中段/前段<0.4: +12\n• <0.55: +10  <0.7: +8\n• <0.85: +6  <1.0: +3  <1.2: +1\n• 后段放量>1.5倍: +2~3',
-      box: '箱体结构分(0-25):\n• 平整度40%: 振幅≤35%接受,趋势≤8%\n• 收敛度20%: 10/30w差距≤15%\n• 收缩20%: 箱内量能偏低\n• 无趋势20%: 涨幅≤15%不扣分',
-      quality: '综合质量分(0-100):\n趋势(0-25)+回踩(0-25)+箱体(0-25)\n+量能(0-15)+波动(0-10)+基底(±5)',
-      grade: '等级: S>85, A>70, B>50, C<50\n排名=质量×0.4+RS×0.3+量能×0.2+突破×0.1',
-    };
-    const tip = (key, text) => `<span class="tip-hint" title="${ruleTips[key] || ''}">${text}</span>`;
-
-    tbody.innerHTML = items.map(item => {
-      const box = item.cont_score_box != null ? item.cont_score_box.toFixed(0) : '--';
-      const qual = item.cont_quality_score != null ? item.cont_quality_score.toFixed(0) : '--';
-      const grade = item.cont_quality_grade || '--';
-      const app = item.cont_is_applicable ? '✅' : '❌';
-      const poolLabel = item.cont_prior_trend_ok ? '<span class="positive tip-hint" title="Pool A: 长期下跌后筑底">A</span>'
-        : (item.cont_pool_b ? '<span class="tip-hint" title="Pool B: 趋势中继(EMA缓升+整理)">B</span>'
-        : '<span class="tip-hint" title="不满足Pool A或B条件">--</span>');
-      const vol = item.cont_volume_trend_ok ? '✅' : '❌';
-      const range = item.cont_box_range_pct != null ? item.cont_box_range_pct.toFixed(1) + '%' : '--';
-      const dur = item.cont_box_duration_weeks || '--';
-      const weeks = item.available_weeks || '--';
-      const reason = item.cont_quality_reason || item.error || '';
-      // 结构分明细
-      const f_val = item.cont_box_flatness != null ? (item.cont_box_flatness*100).toFixed(0) : '?';
-      const cv_val = item.cont_box_conv != null ? (item.cont_box_conv*100).toFixed(0) : '?';
-      const vl_val = item.cont_box_vol_low != null ? (item.cont_box_vol_low*100).toFixed(0) : '?';
-      const nt_val = item.cont_box_no_trend != null ? (item.cont_box_no_trend*100).toFixed(0) : '?';
-      const boxTipDetail = `箱体结构分 = (平整度×0.4 + 收敛度×0.2 + 收缩×0.2 + 趋势缺失×0.2) × 25\n\n平整度(40%): ${f_val}% — 振幅小+无趋势\n收敛度(20%): ${cv_val}% — 10/30w均线靠拢\n收缩(20%): ${vl_val}% — 箱内量能偏低\n趋势缺失(20%): ${nt_val}% — 价格无方向\n= ${box} (满分25)`;
-
-      const boxClass = parseFloat(box) > 10 ? 'positive' : (parseFloat(box) > 5 ? '' : 'negative');
-      return `<tr data-symbol="${escapeHtml(item.symbol)}" class="clickable-row" title="点击查看详情">
-        <td>${escapeHtml(item.symbol)}</td>
-        <td>${escapeHtml(item.name)}</td>
-        <td class="${boxClass}"><span class="tip-hint" title="${boxTipDetail.replace(/"/g, '&quot;')}">${box}</span></td>
-        <td>${tip('quality', qual)}</td>
-        <td>${tip('grade', grade)}</td>
-        <td>${tip('applicable', app)}</td>
-        <td>${poolLabel}</td>
-        <td>${tip('volume', vol)}</td>
-        <td>${range}</td>
-        <td>${dur}</td>
-        <td>${weeks}</td>
-        <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHtml(reason)}">${escapeHtml(reason)}</td>
-      </tr>`;
-    }).join('');
-
-    // Click to view stock detail
-    tbody.querySelectorAll('tr[data-symbol]').forEach(row => {
-      row.addEventListener('click', () => {
-        openStockDetail(row.dataset.symbol, 'backtest');
+    fetchJson(`/api/stock/${encodeURIComponent(symbol)}?chart=${chartType}`)
+      .then((payload) => {
+        if (requestId !== requestIdRef.current) return;
+        setDetail(payload);
+        if (payload.analysis) {
+          setAnalysisHtml(renderMarkdown(payload.analysis));
+          setShowAnalysisButton(false);
+        } else {
+          setShowAnalysisButton(true);
+        }
+      })
+      .catch((error) => {
+        if (requestId !== requestIdRef.current) return;
+        setAnalysisHtml(renderMarkdown(`> ${error.message || "加载失败"}`));
+      })
+      .finally(() => {
+        if (requestId === requestIdRef.current) {
+          setLoading(false);
+        }
       });
-    });
+  }, [open, symbol, chartType]);
+
+  useEffect(() => {
+    if (!detail?.chart || !canvasRef.current) return;
+    drawChart(canvasRef.current, detail.chart, tooltipRef.current, chartStateRef);
+  }, [detail]);
+
+  const canGoPrev = symbolList.indexOf(symbol) > 0;
+  const canGoNext = symbolList.indexOf(symbol) >= 0 && symbolList.indexOf(symbol) < symbolList.length - 1;
+
+  const startAnalysis = async () => {
+    if (!symbol) return;
+    setAnalysisLoading(true);
+    setShowAnalysisButton(false);
+    try {
+      const payload = await fetchJson(`/api/stock/${encodeURIComponent(symbol)}/analysis`);
+      setAnalysisHtml(renderMarkdown(payload.analysis || "--"));
+    } catch (error) {
+      setAnalysisHtml(renderMarkdown(`> ${error.message || "分析失败"}`));
+      setShowAnalysisButton(true);
+    } finally {
+      setAnalysisLoading(false);
+    }
+  };
+
+  const fundamentalCards = buildFundamentalCards(detail?.fundamental);
+
+  return html`
+    <${Modal}
+      open=${open}
+      onCancel=${onClose}
+      footer=${null}
+      width=${1320}
+      className="modal-shell"
+      destroyOnClose=${false}
+      title=${html`
+        <${Flex} vertical gap=${4}>
+          <${Text} type="secondary">${detail?.symbol || symbol || ""}<//>
+          <${Title} level=${3} style=${{ margin: 0 }}>
+            ${detail ? `${detail.name || ""} ${detail.symbol || ""}`.trim() : symbol || "个股详情"}
+          <//>
+        <//>
+      `}
+    >
+      <${Spin} spinning=${loading}>
+        <div className="detail-layout">
+          <div>
+            <${Flex} justify="space-between" align="center" style=${{ marginBottom: 14, flexWrap: "wrap", gap: 12 }}>
+              <${Space}>
+                <${Button} onClick=${() => onNavigate?.("prev")} disabled=${!canGoPrev}>上一个<//>
+                <${Button} onClick=${() => onNavigate?.("next")} disabled=${!canGoNext}>下一个<//>
+              <//>
+              <${Segmented}
+                value=${chartType}
+                onChange=${setChartType}
+                options=${[
+                  { label: "周线", value: "weekly" },
+                  { label: "日线", value: "daily" },
+                ]}
+              />
+            <//>
+
+            <div className="detail-stage-row">
+              <${Tag} color="blue">Stage1: ${detail?.stage1_rank ? `第 ${detail.stage1_rank} 名` : "未上榜"}<//>
+              <${Tag} color="cyan">Stage2: ${detail?.stage2_rank ? `第 ${detail.stage2_rank} 名` : "未上榜"}<//>
+            </div>
+
+            <div className="detail-chart-wrap">
+              <canvas ref=${canvasRef} className="detail-chart-canvas" width="980" height="560"></canvas>
+              <div ref=${tooltipRef} className="chart-tooltip hidden"></div>
+            </div>
+
+            <${Card} className="analysis-card" style=${{ marginTop: 18 }}>
+              <${Flex} justify="space-between" align="center" style=${{ marginBottom: 14, flexWrap: "wrap", gap: 12 }}>
+                <${Title} level=${4} style=${{ margin: 0 }}>个股分析<//>
+                <${Space}>
+                  ${showAnalysisButton ? html`<${Button} type="primary" ghost onClick=${startAnalysis}>开始 AI 分析<//>` : null}
+                  ${analysisLoading ? html`<${Spin} size="small" />` : null}
+                <//>
+              <//>
+              <div className="analysis-markdown" dangerouslySetInnerHTML=${{ __html: analysisHtml }}></div>
+            <//>
+          </div>
+
+          <div>
+            <${Card} className="panel-card">
+              <${Title} level=${4} style=${{ marginTop: 0 }}>关键指标<//>
+              <div className="detail-metric-grid">
+                ${(detail?.metrics || []).map(
+                  (item) => html`
+                    <div className="detail-metric-item" key=${item.label}>
+                      <div className="detail-metric-label">${item.label}</div>
+                      <div className="detail-metric-value">${item.value || "--"}</div>
+                    </div>
+                  `
+                )}
+              </div>
+            <//>
+
+            ${fundamentalCards.length
+              ? html`
+                  <${Card} className="panel-card" style=${{ marginTop: 18 }}>
+                    <${Title} level=${4} style=${{ marginTop: 0 }}>基本面补充<//>
+                    <div className="fundamental-grid">
+                      ${fundamentalCards.map(
+                        (item) => html`
+                          <div className="fundamental-card" key=${item.label}>
+                            <div className="fundamental-head">
+                              <div className="fundamental-label">${item.label}</div>
+                              <div className=${scoreClassName(item.score)}>${formatInt(item.score)}</div>
+                            </div>
+                            <div className="fundamental-detail">${item.detail}</div>
+                          </div>
+                        `
+                      )}
+                    </div>
+                  <//>
+                `
+              : null}
+          </div>
+        </div>
+      <//>
+    <//>
+  `;
 }
 
-boot();
+function OverviewPage({
+  loading,
+  data,
+  statusText,
+  onRefresh,
+  onOpenDetail,
+}) {
+  const items = data?.items || [];
+  const metrics = useMemo(() => {
+    const avgQuality = items.length
+      ? (items.reduce((sum, item) => sum + Number(item.cont_quality_score || 0), 0) / items.length)
+      : 0;
+    const avgBox = items.length
+      ? (items.reduce((sum, item) => sum + Number(item.cont_score_box || 0), 0) / items.length)
+      : 0;
+    return [
+      { label: "榜单数量", value: formatInt(data?.count || 0), extra: "展示今日前 50 名结构候选" },
+      { label: "扫描股票", value: formatInt(data?.scanned || 0), extra: "来自缓存周线数据池" },
+      { label: "平均质量", value: formatNumber(avgQuality, 1), extra: "续涨综合质量均值" },
+      { label: "平均箱体", value: formatNumber(avgBox, 1), extra: "结构纪律分均值" },
+    ];
+  }, [data, items]);
+
+  const columns = [
+    {
+      title: "排名",
+      key: "rank",
+      width: 84,
+      render: (_, __, index) => html`<span className="rank-chip">#${index + 1}</span>`,
+    },
+    {
+      title: "股票",
+      dataIndex: "symbol",
+      key: "symbol",
+      width: 160,
+      render: (_, row) => html`
+        <div className="symbol-cell">
+          <div className="symbol-code">${row.symbol}</div>
+          <div className="symbol-name">${row.name || "--"}</div>
+        </div>
+      `,
+    },
+    {
+      title: "结构分",
+      dataIndex: "cont_score_box",
+      key: "cont_score_box",
+      width: 110,
+      render: (value) => html`<span className=${Number(value) >= 10 ? "positive-text" : ""}>${formatNumber(value, 0)}</span>`,
+    },
+    {
+      title: "质量分",
+      dataIndex: "cont_quality_score",
+      key: "cont_quality_score",
+      width: 110,
+      render: (value) => formatNumber(value, 0),
+    },
+    {
+      title: "等级",
+      dataIndex: "cont_quality_grade",
+      key: "cont_quality_grade",
+      width: 90,
+      render: (value) => {
+        const colorMap = { S: "gold", A: "green", B: "blue", C: "default" };
+        return html`<${Tag} color=${colorMap[value] || "default"}>${value || "--"}<//>`;
+      },
+    },
+    {
+      title: "箱体振幅",
+      dataIndex: "cont_box_range_pct",
+      key: "cont_box_range_pct",
+      width: 110,
+      render: (value) => formatPercent(value, 1),
+    },
+    {
+      title: "箱体周数",
+      dataIndex: "cont_box_duration_weeks",
+      key: "cont_box_duration_weeks",
+      width: 100,
+      render: (value) => formatInt(value),
+    },
+    {
+      title: "缩量",
+      dataIndex: "cont_volume_trend_ok",
+      key: "cont_volume_trend_ok",
+      width: 90,
+      render: (value) => html`<${Tag} color=${value ? "green" : "default"}>${formatBoolean(value)}<//>`,
+    },
+    {
+      title: "最近日期",
+      dataIndex: "latest_date",
+      key: "latest_date",
+      width: 120,
+    },
+    {
+      title: "信号解读",
+      dataIndex: "cont_quality_reason",
+      key: "cont_quality_reason",
+      render: (value) => html`<span className="reason-text" title=${value || ""}>${value || "--"}</span>`,
+    },
+  ];
+
+  return html`
+    <div className="page-shell">
+      <div className="hero-grid">
+        <${Card} className="hero-card">
+          <div className="hero-panel">
+            <div className="hero-kicker">Overview</div>
+            <div className="hero-title">今日总览页</div>
+            <div className="hero-copy">
+              展示与“手动触发、日期为今天的全市场回测”一致的排行榜结果。页面默认复用当天扫描结果，
+              手动刷新时会强制重跑今日扫描，但不会改变原有回测计算逻辑。
+            </div>
+            <div className="hero-actions">
+              <${Button} type="primary" size="large" onClick=${onRefresh} loading=${loading}>刷新今日排行榜<//>
+              <${Tag} color="blue">目标日期 ${data?.target_date || TODAY}<//>
+              <${Tag} color="cyan">全市场续涨结构扫描<//>
+            </div>
+          </div>
+        <//>
+
+        <${Card} className="hero-card">
+          <div className="hero-meta">
+            <div className="meta-pill">
+              <div className="meta-pill-label">扫描模式</div>
+              <div className="meta-pill-value">TOP 50</div>
+            </div>
+            <div className="meta-pill">
+              <div className="meta-pill-label">返回机制</div>
+              <div className="meta-pill-value">Async</div>
+            </div>
+            <div className="meta-pill">
+              <div className="meta-pill-label">数据切片</div>
+              <div className="meta-pill-value">截至今日</div>
+            </div>
+            <div className="meta-pill">
+              <div className="meta-pill-label">详情联动</div>
+              <div className="meta-pill-value">保留</div>
+            </div>
+          </div>
+        <//>
+      </div>
+
+      <div className="page-grid">
+        <div className="cards-grid">
+          ${metrics.map(
+            (item) => html`
+              <${Card} className="metric-card" key=${item.label}>
+                <div className="metric-label">${item.label}</div>
+                <div className="metric-value">${item.value}</div>
+                <div className="metric-extra">${item.extra}</div>
+              <//>
+            `
+          )}
+        </div>
+
+        <${Card} className="status-card">
+          <div className="toolbar-row" style=${{ marginBottom: 18 }}>
+            <div>
+              <h2 className="section-title">运行状态</h2>
+              <div className="section-copy">总览页会自动复用今天的扫描任务；强制刷新时会重新启动同日扫描。</div>
+            </div>
+            <div className="toolbar-actions">
+              <${Tag} color=${loading ? "processing" : "success"}>${loading ? "扫描中" : "已就绪"}<//>
+            </div>
+          </div>
+          <div className="status-message">${statusText}</div>
+          <div className="status-grid" style=${{ marginTop: 18 }}>
+            <div className="status-block">
+              <div className="status-label">目标日期</div>
+              <div className="status-value">${data?.target_date || TODAY}</div>
+            </div>
+            <div className="status-block">
+              <div className="status-label">扫描用时</div>
+              <div className="status-value">${data?.elapsed ? `${data.elapsed}s` : "--"}</div>
+            </div>
+            <div className="status-block">
+              <div className="status-label">命中候选</div>
+              <div className="status-value">${formatInt(data?.candidates_total)}</div>
+            </div>
+            <div className="status-block">
+              <div className="status-label">可用结果</div>
+              <div className="status-value">${formatInt(data?.count)}</div>
+            </div>
+          </div>
+        <//>
+
+        <${Card} className="panel-card table-card">
+          <div className="toolbar-row" style=${{ marginBottom: 18 }}>
+            <div>
+              <h2 className="section-title">今日排行榜</h2>
+              <div className="toolbar-copy">点击任意行可以打开个股详情，K 线、AI 分析和指标弹窗行为保持不变。</div>
+            </div>
+          </div>
+          <${Table}
+            className="overview-table"
+            columns=${columns}
+            dataSource=${items}
+            rowKey=${(row) => row.symbol}
+            pagination=${false}
+            loading=${loading}
+            scroll=${{ x: 1280 }}
+            locale=${{
+              emptyText: html`<div className="empty-block">暂无今日排行榜数据</div>`,
+            }}
+            onRow=${(record) => ({
+              onClick: () => onOpenDetail(record.symbol, items),
+              style: { cursor: "pointer" },
+            })}
+          />
+        <//>
+      </div>
+    </div>
+  `;
+}
+
+function SearchPanel({ onOpenDetail }) {
+  const [query, setQuery] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [items, setItems] = useState([]);
+
+  const runSearch = async (value = query) => {
+    setLoading(true);
+    try {
+      const payload = await fetchJson(`/api/search?q=${encodeURIComponent(value || "")}`);
+      setItems(payload.items || []);
+    } catch (error) {
+      message.error(error.message || "查询失败");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    runSearch("");
+  }, []);
+
+  return html`
+    <${Card} className="panel-card">
+      <div className="toolbar-row" style=${{ marginBottom: 16 }}>
+        <div>
+          <h2 className="section-title">个股检索</h2>
+          <div className="toolbar-copy">保留原来搜索能力，支持从总览页直接跳转个股详情。</div>
+        </div>
+        <div className="toolbar-actions" style=${{ minWidth: "min(100%, 480px)" }}>
+          <${Input}
+            value=${query}
+            onChange=${(event) => setQuery(event.target.value)}
+            onPressEnter=${() => runSearch()}
+            placeholder="输入股票代码或名称"
+            size="large"
+          />
+          <${Button} type="primary" size="large" onClick=${() => runSearch()} loading=${loading}>查询<//>
+        </div>
+      </div>
+      <div className="search-result-grid">
+        ${(items || []).map(
+          (item) => html`
+            <div className="search-result-card" key=${item.symbol} onClick=${() => onOpenDetail(item.symbol, items)}>
+              <div className="symbol-code">${item.symbol}</div>
+              <div className="symbol-name" style=${{ marginTop: 6 }}>${item.name || "--"}</div>
+              <div className="muted-text" style=${{ marginTop: 10, fontSize: "13px" }}>
+                Stage1: ${formatBoolean(item.stage1)} / Stage2: ${formatBoolean(item.stage2)}
+              </div>
+            </div>
+          `
+        )}
+      </div>
+      ${!loading && !(items || []).length ? html`<${Empty} description="暂无匹配结果" style=${{ marginTop: 18 }} />` : null}
+    <//>
+  `;
+}
+
+function BacktestPage({
+  loading,
+  runningLabel,
+  statusText,
+  formState,
+  onChangeForm,
+  onRun,
+  onOpenDetail,
+  data,
+}) {
+  const items = data?.items || [];
+
+  const columns = [
+    {
+      title: "股票",
+      dataIndex: "symbol",
+      key: "symbol",
+      width: 170,
+      render: (_, row) => html`
+        <div className="symbol-cell">
+          <div className="symbol-code">${row.symbol}</div>
+          <div className="symbol-name">${row.name || "--"}</div>
+        </div>
+      `,
+    },
+    {
+      title: "结构分",
+      dataIndex: "cont_score_box",
+      key: "cont_score_box",
+      width: 96,
+      render: (value) => formatNumber(value, 0),
+    },
+    {
+      title: "质量分",
+      dataIndex: "cont_quality_score",
+      key: "cont_quality_score",
+      width: 96,
+      render: (value) => formatNumber(value, 0),
+    },
+    {
+      title: "等级",
+      dataIndex: "cont_quality_grade",
+      key: "cont_quality_grade",
+      width: 90,
+      render: (value) => {
+        const colorMap = { S: "gold", A: "green", B: "blue", C: "default" };
+        return html`<${Tag} color=${colorMap[value] || "default"}>${value || "--"}<//>`;
+      },
+    },
+    {
+      title: "适用",
+      dataIndex: "cont_is_applicable",
+      key: "cont_is_applicable",
+      width: 90,
+      render: (value) => html`<${Tag} color=${value ? "green" : "default"}>${formatBoolean(value)}<//>`,
+    },
+    {
+      title: "Pool",
+      key: "pool",
+      width: 90,
+      render: (_, row) => row.cont_prior_trend_ok
+        ? html`<${Tag} color="blue">A<//>`
+        : row.cont_pool_b
+          ? html`<${Tag} color="cyan">B<//>`
+          : html`<${Tag}>--<//>`,
+    },
+    {
+      title: "缩量",
+      dataIndex: "cont_volume_trend_ok",
+      key: "cont_volume_trend_ok",
+      width: 90,
+      render: (value) => html`<${Tag} color=${value ? "green" : "default"}>${formatBoolean(value)}<//>`,
+    },
+    {
+      title: "振幅",
+      dataIndex: "cont_box_range_pct",
+      key: "cont_box_range_pct",
+      width: 96,
+      render: (value) => formatPercent(value, 1),
+    },
+    {
+      title: "箱体周数",
+      dataIndex: "cont_box_duration_weeks",
+      key: "cont_box_duration_weeks",
+      width: 100,
+      render: (value) => formatInt(value),
+    },
+    {
+      title: "可用周数",
+      dataIndex: "available_weeks",
+      key: "available_weeks",
+      width: 100,
+      render: (value) => formatInt(value),
+    },
+    {
+      title: "原因",
+      dataIndex: "cont_quality_reason",
+      key: "cont_quality_reason",
+      render: (value, row) => html`
+        <span className="reason-text" title=${value || row.error || ""}>${value || row.error || "--"}</span>
+      `,
+    },
+  ];
+
+  return html`
+    <div className="page-shell">
+      <${Card} className="hero-card">
+        <div className="toolbar-row">
+          <div>
+            <div className="hero-kicker">Backtest</div>
+            <div className="hero-title" style=${{ fontSize: "34px", marginTop: 16 }}>回测页</div>
+            <div className="hero-copy">
+              保留原有两种模式：输入代码执行单股回测；不输入代码时按日期执行全市场扫描。
+              详情弹窗、轮询、排序展示与原逻辑一致。
+            </div>
+          </div>
+        </div>
+      <//>
+
+      <div className="page-grid">
+        <${Card} className="panel-card">
+          <div className="toolbar-row" style=${{ marginBottom: 16 }}>
+            <div>
+              <h2 className="section-title">运行参数</h2>
+              <div className="toolbar-copy">每行支持 code + date，或统一使用右侧日期输入框。留空代码即执行全市场扫描。</div>
+            </div>
+          </div>
+
+          <${Form} layout="vertical">
+            <${Row} gutter=${16}>
+              <${Col} xs=${24} lg=${16}>
+                <${Form.Item} label="股票代码和目标日期">
+                  <${TextArea}
+                    rows=${6}
+                    value=${formState.symbols}
+                    onChange=${(event) => onChangeForm("symbols", event.target.value)}
+                    placeholder=${"000831.SZ 2021-07-02\n601985.SH 2023-01-15\n600111.SH 2025-06-01"}
+                  />
+                  <div className="text-area-hint" style=${{ marginTop: 8 }}>
+                    示例：每行一只股票。只输入代码时，会默认使用统一目标日期。
+                  </div>
+                <//>
+              <//>
+              <${Col} xs=${24} lg=${8}>
+                <${Form.Item} label="统一目标日期">
+                  <${DatePicker}
+                    style=${{ width: "100%" }}
+                    value=${formState.date ? dayjs(formState.date) : null}
+                    onChange=${(value) => onChangeForm("date", value ? value.format("YYYY-MM-DD") : "")}
+                  />
+                <//>
+                <${Space} direction="vertical" size="middle" style=${{ width: "100%" }}>
+                  <${Button} type="primary" size="large" onClick=${onRun} loading=${loading} block>
+                    ${runningLabel}
+                  <//>
+                  <${Alert}
+                    className="floating-alert"
+                    type=${loading ? "info" : "success"}
+                    showIcon=${true}
+                    message=${loading ? "任务执行中" : "任务待运行"}
+                    description=${statusText || "输入参数后点击运行回测。"}
+                  />
+                <//>
+              <//>
+            <//>
+          <//>
+        <//>
+
+        <${Card} className="panel-card table-card">
+          <div className="toolbar-row" style=${{ marginBottom: 16 }}>
+            <div>
+              <h2 className="section-title">回测结果</h2>
+              <div className="toolbar-copy">点击行可查看个股详情。手动模式按结构分排序，扫描模式保留原有榜单输出。</div>
+            </div>
+            <div className="toolbar-actions">
+              <${Tag} color=${data?.mode === "scan" ? "cyan" : "blue"}>${data?.mode === "scan" ? "全市场扫描" : "单股回测"}<//>
+              <${Tag} color="default">目标日期 ${data?.target_date || formState.date || TODAY}<//>
+            </div>
+          </div>
+
+          <${Table}
+            className="backtest-table"
+            columns=${columns}
+            dataSource=${items}
+            rowKey=${(row) => `${row.symbol}-${row.latest_date || ""}`}
+            pagination=${false}
+            loading=${loading}
+            scroll=${{ x: 1320 }}
+            locale=${{
+              emptyText: html`<div className="empty-block">输入参数后运行回测</div>`,
+            }}
+            onRow=${(record) => ({
+              onClick: () => onOpenDetail(record.symbol, items),
+              style: { cursor: "pointer" },
+            })}
+          />
+        <//>
+      </div>
+    </div>
+  `;
+}
+
+function AppContent() {
+  const [activePage, setActivePage] = useState(PAGE_OVERVIEW);
+  const [overviewLoading, setOverviewLoading] = useState(false);
+  const [overviewStatus, setOverviewStatus] = useState("正在准备今日排行榜。");
+  const [overviewData, setOverviewData] = useState({ items: [], target_date: TODAY });
+  const [backtestLoading, setBacktestLoading] = useState(false);
+  const [backtestStatus, setBacktestStatus] = useState("输入股票代码和日期后点击运行回测。");
+  const [backtestData, setBacktestData] = useState({ items: [], target_date: TODAY });
+  const [formState, setFormState] = useState({ symbols: "", date: TODAY });
+  const [detailState, setDetailState] = useState({ open: false, symbol: "", symbols: [] });
+  const polling = usePollingBacktestJob();
+  const latestDetailListRef = useRef([]);
+
+  const openDetail = (symbol, sourceItems) => {
+    latestDetailListRef.current = (sourceItems || []).map((item) => item.symbol).filter(Boolean);
+    setDetailState({
+      open: true,
+      symbol,
+      symbols: latestDetailListRef.current,
+    });
+  };
+
+  const navigateDetail = (direction) => {
+    const list = detailState.symbols || [];
+    const currentIndex = list.indexOf(detailState.symbol);
+    if (currentIndex < 0) return;
+    const nextIndex = direction === "next" ? currentIndex + 1 : currentIndex - 1;
+    if (nextIndex < 0 || nextIndex >= list.length) return;
+    setDetailState((prev) => ({ ...prev, symbol: list[nextIndex] }));
+  };
+
+  const updateBacktestForm = (key, value) => {
+    setFormState((prev) => ({ ...prev, [key]: value }));
+  };
+
+  const runBacktestRequest = async ({
+    symbols,
+    date,
+    reuseScan = false,
+    forceRefresh = false,
+    target = "backtest",
+  }) => {
+    const setLoading = target === "overview" ? setOverviewLoading : setBacktestLoading;
+    const setStatus = target === "overview" ? setOverviewStatus : setBacktestStatus;
+    const setData = target === "overview" ? setOverviewData : setBacktestData;
+    const isScan = !symbols.trim();
+
+    if (!date) {
+      setStatus("请至少输入目标日期。");
+      return;
+    }
+
+    setLoading(true);
+    setStatus(isScan ? "全市场扫描已启动，正在等待结果..." : "正在计算回测结果...");
+
+    try {
+      const payload = await fetchJson("/api/backtest", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ symbols, date, reuse_scan: reuseScan, force_refresh: forceRefresh }),
+      });
+
+      if (isScan && payload.job_id) {
+        setStatus(`扫描中... (job=${payload.job_id})`);
+        polling.poll({
+          jobId: payload.job_id,
+          onProgress: (_attempts, pollPayload) => {
+            const processed = formatInt(pollPayload?.processed, "0");
+            const total = formatInt(pollPayload?.total, "?");
+            const candidates = formatInt(pollPayload?.candidates_total, "0");
+            const elapsed = formatElapsedSeconds(pollPayload?.elapsed_seconds);
+            setStatus(`扫描中... 已扫描 ${processed}/${total}，命中 ${candidates}，已运行 ${elapsed} (job=${payload.job_id})`);
+          },
+          onDone: (donePayload) => {
+            setData(donePayload);
+            setStatus(buildStatusText(donePayload));
+            setLoading(false);
+          },
+          onError: (error) => {
+            setStatus(error.message || "轮询失败");
+            setLoading(false);
+          },
+        });
+        return;
+        setStatus(`扫描中... (job=${payload.job_id})`);
+        polling.poll({
+          jobId: payload.job_id,
+          onProgress: (attempts, pollPayload) => {
+            const elapsed = Number.isFinite(Number(pollPayload?.elapsed_seconds))
+              ? Number(pollPayload.elapsed_seconds).toFixed(0)
+              : String(attempts * 5);
+            setStatus(`扫描中... (job=${payload.job_id}, 已运行 ${elapsed}s，通常约 60-100s)`);
+          },
+          onDone: (donePayload) => {
+            setData(donePayload);
+            setStatus(buildStatusText(donePayload));
+            setLoading(false);
+          },
+          onError: (error) => {
+            setStatus(error.message || "轮询失败");
+            setLoading(false);
+          },
+        });
+        return;
+      }
+
+      setData(payload);
+      setStatus(buildStatusText(payload));
+      if (isScan) {
+        setLoading(false);
+      }
+    } catch (error) {
+      setStatus(error.message || "请求失败");
+      message.error(error.message || "请求失败");
+    } finally {
+      if (!isScan) {
+        setLoading(false);
+      }
+    }
+  };
+
+  const buildStatusText = (payload) => {
+    const items = payload.items || [];
+    const modernScanInfo = payload.mode === "scan"
+      ? ` 全市场扫描 ${formatInt(payload.scanned, "?")} 只，用时 ${formatElapsedSeconds(payload.elapsed)}，共 ${formatInt(payload.candidates_total, "?")} 个候选。`
+      : "";
+    return `${formatInt(items.length, "0")} 条结果，目标日期 ${payload.target_date || TODAY}。${modernScanInfo}`.trim();
+    const scanInfo = payload.mode === "scan"
+      ? ` 全市场扫描 ${payload.scanned || "?"} 只，用时 ${payload.elapsed || "?"}s，共 ${payload.candidates_total || "?"} 个候选。`
+      : "";
+    return `${items.length} 条结果，目标日期 ${payload.target_date || TODAY}。${scanInfo}`.trim();
+  };
+
+  const loadOverview = (forceRefresh = false) => runBacktestRequest({
+    symbols: "",
+    date: TODAY,
+    reuseScan: true,
+    forceRefresh,
+    target: "overview",
+  });
+
+  const handleRunBacktest = () => runBacktestRequest({
+    symbols: formState.symbols || "",
+    date: formState.date || TODAY,
+    target: "backtest",
+  });
+
+  useEffect(() => {
+    loadOverview(false);
+  }, []);
+
+  const menuItems = [
+    { key: PAGE_OVERVIEW, label: "总览页" },
+    { key: PAGE_BACKTEST, label: "回测页" },
+  ];
+
+  const activeView = activePage === PAGE_OVERVIEW
+    ? html`
+        <${React.Fragment}>
+          <${OverviewPage}
+            loading=${overviewLoading}
+            data=${overviewData}
+            statusText=${overviewStatus}
+            onRefresh=${() => loadOverview(true)}
+            onOpenDetail=${openDetail}
+          />
+          <div className="page-shell" style=${{ paddingTop: 0 }}>
+            <${SearchPanel} onOpenDetail=${openDetail} />
+          </div>
+        <//>
+      `
+    : html`
+        <${BacktestPage}
+          loading=${backtestLoading}
+          runningLabel=${!formState.symbols.trim() ? "运行全市场扫描" : "运行回测"}
+          statusText=${backtestStatus}
+          formState=${formState}
+          onChangeForm=${updateBacktestForm}
+          onRun=${handleRunBacktest}
+          onOpenDetail=${openDetail}
+          data=${backtestData}
+        />
+      `;
+
+  return html`
+    <div className="app-shell">
+      <${Layout} className="app-frame">
+        <${Sider} width=${288} breakpoint="lg" collapsedWidth="0" className="sidebar-shell">
+          <div className="sidebar-inner">
+            <div>
+              <div className="brand-badge">Weinstein Console</div>
+              <div className="brand-title">温斯坦回测看板</div>
+              <div className="brand-copy">
+                只保留总览页和回测页两个入口。总览页等价于“今天的全市场回测排行榜”，回测页继续承载手动回测与扫描。
+              </div>
+            </div>
+
+            <${Menu}
+              className="menu-shell"
+              mode="inline"
+              selectedKeys=${[activePage]}
+              items=${menuItems}
+              onClick=${({ key }) => setActivePage(key)}
+            />
+
+            <div className="side-note">
+              <strong>UI 重构说明</strong>
+              保留现有接口与核心计算逻辑，只重构前端结构、交互入口与视觉表现，并接入 Ant Design 组件体系。
+            </div>
+          </div>
+        <//>
+
+        <${Layout}>
+          <${Content} className="content-shell">
+            ${activeView}
+          <//>
+        <//>
+      <//>
+
+      <${DetailModal}
+        open=${detailState.open}
+        symbol=${detailState.symbol}
+        symbolList=${detailState.symbols}
+        onClose=${() => setDetailState({ open: false, symbol: "", symbols: [] })}
+        onNavigate=${navigateDetail}
+      />
+    </div>
+  `;
+}
+
+function App() {
+  return html`
+    <${ConfigProvider}
+      theme=${{
+        token: {
+          colorPrimary: "#1d4ed8",
+          colorInfo: "#1d4ed8",
+          borderRadius: 18,
+          fontFamily: '"Noto Sans SC", "Microsoft YaHei", sans-serif',
+          colorText: "#10213d",
+          colorTextSecondary: "#5f7092",
+          colorBgLayout: "transparent",
+        },
+        components: {
+          Button: {
+            controlHeightLG: 48,
+            fontWeight: 700,
+          },
+          Card: {
+            bodyPadding: 22,
+          },
+          Table: {
+            headerBorderRadius: 16,
+          },
+          Modal: {
+            titleFontSize: 28,
+          },
+        },
+      }}
+    >
+      <${AntApp}>
+        <${AppContent} />
+      <//>
+    <//>
+  `;
+}
+
+const root = ReactDOM.createRoot(document.getElementById("root"));
+root.render(html`<${App} />`);

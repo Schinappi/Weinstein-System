@@ -9,7 +9,7 @@ def build_weekly_bars(daily_bars: pd.DataFrame) -> pd.DataFrame:
     if daily_bars.empty:
         return pd.DataFrame(columns=WEEKLY_COLUMNS)
 
-    required = {"symbol", "trade_date", "open", "high", "low", "close", "volume", "amount", "adj_factor", "source"}
+    required = {"symbol", "trade_date", "open", "high", "low", "close", "volume"}
     if not required.issubset(set(daily_bars.columns)):
         return pd.DataFrame(columns=WEEKLY_COLUMNS)
 
@@ -17,23 +17,26 @@ def build_weekly_bars(daily_bars: pd.DataFrame) -> pd.DataFrame:
     frame["trade_date"] = pd.to_datetime(frame["trade_date"])
     frame = frame.sort_values(["symbol", "trade_date"])
 
+    agg_map: dict[str, str] = {
+        "open": "first",
+        "high": "max",
+        "low": "min",
+        "close": "last",
+        "volume": "sum",
+    }
+    if "amount" in frame.columns:
+        agg_map["amount"] = "sum"
+    if "adj_factor" in frame.columns:
+        agg_map["adj_factor"] = "last"
+    if "source" in frame.columns:
+        agg_map["source"] = "last"
+
     weekly_frames: list[pd.DataFrame] = []
     for symbol, group in frame.groupby("symbol", sort=False):
         indexed = group.set_index("trade_date")
         weekly = (
             indexed.resample("W-FRI")
-            .agg(
-                {
-                    "open": "first",
-                    "high": "max",
-                    "low": "min",
-                    "close": "last",
-                    "volume": "sum",
-                    "amount": "sum",
-                    "adj_factor": "last",
-                    "source": "last",
-                }
-            )
+            .agg(agg_map)
             .dropna(subset=["open", "high", "low", "close"], how="any")
             .reset_index()
         )

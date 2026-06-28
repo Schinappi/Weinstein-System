@@ -967,14 +967,13 @@ class DashboardService:
     def _build_chart_payload(self, daily: pd.DataFrame, row: pd.Series, chart_type: str = "weekly") -> dict[str, object]:
         if chart_type == "daily":
             frame = daily.sort_values("trade_date").tail(240).copy()
-            frame["ma_30w"] = frame["close"].rolling(144).mean()  # 144日≈30周
-            frame["ma_10w"] = frame["close"].rolling(50).mean()   # 50日≈10周
+            frame["ema144"] = frame["close"].ewm(span=144, min_periods=1).mean()
+            frame["ema169"] = frame["close"].ewm(span=169, min_periods=1).mean()
         else:
             from winstan.resample.weekly_builder import build_weekly_bars
             weekly = build_weekly_bars(daily.sort_values("trade_date"))
             frame = weekly.tail(260).copy()
-            frame["ma_30w"] = frame["close"].rolling(30, min_periods=1).mean()
-            frame["ma_10w"] = frame["close"].rolling(10, min_periods=1).mean()
+            frame["ema30w"] = frame["close"].ewm(span=30, min_periods=1).mean()
         breakout_line = _to_float(row.get("breakout_level"))
         resistance_line = _to_float(row.get("nearest_resistance"))
         base_breakout_line = _to_float(row.get("base_breakout_price"))
@@ -1021,11 +1020,15 @@ class DashboardService:
                     "low": _to_float(row.get("low")),
                     "close": _to_float(row.get("close")),
                     "volume": _to_float(row.get("volume")),
+                    "ema30w": _to_float(row.get("ema30w")),
                     "ma144": _to_float(row.get("ma144")),
                     "ma169": _to_float(row.get("ma169")),
+                    "ema144": _to_float(row.get("ema144")),
+                    "ema169": _to_float(row.get("ema169")),
                 }
             )
         return {
+            "chart_type": chart_type,
             "candles": items,
             "breakout_line": breakout_line,
             "resistance_line": resistance_line,

@@ -103,15 +103,20 @@ def run_backtest_scan(store, config: AppConfig, target_date: str) -> dict:
     cutoff = pd.Timestamp(target_date)
     if pd.isna(cutoff):
         return {"items": [], "error": f"无效日期: {target_date}", "count": 0}
-    all_syms = store.list_cached_symbols("weekly_bars")
+    all_syms = store.list_cached_symbols("daily_bars")
     lock = threading.Lock()
     candidates = []
 
     def _check(sym):
         try:
-            w = clean_daily_bars(store.read_symbol_frame("weekly_bars", sym))
-            w["trade_date"] = pd.to_datetime(w["trade_date"]); t = w[w["trade_date"] <= cutoff].copy()
-            if len(t) < 30: return
+            d = clean_daily_bars(store.read_symbol_frame("daily_bars", sym))
+            d["trade_date"] = pd.to_datetime(d["trade_date"])
+            d = d[d["trade_date"] <= cutoff].copy()
+            if len(d) < 200:
+                return
+            from winstan.resample.weekly_builder import build_weekly_bars
+            w = build_weekly_bars(d)
+            t = w[w["trade_date"] <= cutoff].copy()
             r = compute_continuation_quality(t, config)  # 纯周线，跳过日线加速
             if not r["cont_is_applicable"] or r.get("cont_score_box", 0) <= 0: return
             fs = (float(r["cont_quality_score"]) * 0.4

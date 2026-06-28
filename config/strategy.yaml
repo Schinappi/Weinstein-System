@@ -14,7 +14,7 @@ data:
   tushare_retry_times: 3
   tushare_retry_sleep_seconds: 5
   tushare_timeout_seconds: 20
-  start_date: 2022-01-01
+  start_date: 2018-01-01
   end_date: null
   use_cache: true
   force_refresh: false

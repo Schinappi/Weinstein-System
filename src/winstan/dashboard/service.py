@@ -329,6 +329,7 @@ class DashboardService:
                     FROM screening_results
                     WHERE cont_is_applicable = TRUE
                       AND cont_score_box > 0
+                      AND cont_prior_trend_ok = TRUE
                     ORDER BY cont_quality_score DESC
                     LIMIT 50
                 """).fetchdf()
@@ -450,14 +451,14 @@ class DashboardService:
             )
         return items
 
-    def get_stock_detail(self, symbol: str) -> dict[str, object]:
+    def get_stock_detail(self, symbol: str, chart_type: str = "weekly") -> dict[str, object]:
         normalized = symbol.strip().upper()
         if not normalized:
             raise ValueError("股票代码不能为空")
 
         row = self._resolve_stock_row(normalized)
-
         name = _first_text(row.get("name"), self._lookup_stock_name(normalized))
+
         daily = self._ensure_daily_bars(normalized)
         if daily.empty:
             raise ValueError(f"未找到 {normalized} 的行情数据")
@@ -501,7 +502,7 @@ class DashboardService:
             "stage1_rank": self._lookup_rank(stage1, normalized, "top_n_rank"),
             "stage2_rank": self._lookup_rank(stage2, normalized, "stage2_top_n_rank"),
             "metrics": self._build_metrics(row, latest_trade_date=latest_trade_date),
-            "chart": self._build_chart_payload(daily, row),
+            "chart": self._build_chart_payload(daily, row, chart_type),
             "fundamental": self._get_fundamental_data(row, normalized),
         }
 
@@ -963,10 +964,17 @@ class DashboardService:
             {"label": "拒绝原因", "value": _first_text(row.get("reject_reason"), "无")},
         ]
 
-    def _build_chart_payload(self, daily: pd.DataFrame, row: pd.Series) -> dict[str, object]:
-        frame = daily.sort_values("trade_date").tail(240).copy()
-        frame["ma144"] = frame["close"].rolling(144).mean()
-        frame["ma169"] = frame["close"].rolling(169).mean()
+    def _build_chart_payload(self, daily: pd.DataFrame, row: pd.Series, chart_type: str = "weekly") -> dict[str, object]:
+        if chart_type == "daily":
+            frame = daily.sort_values("trade_date").tail(240).copy()
+            frame["ma_30w"] = frame["close"].rolling(144).mean()  # 144日≈30周
+            frame["ma_10w"] = frame["close"].rolling(50).mean()   # 50日≈10周
+        else:
+            from winstan.resample.weekly_builder import build_weekly_bars
+            weekly = build_weekly_bars(daily.sort_values("trade_date"))
+            frame = weekly.tail(260).copy()
+            frame["ma_30w"] = frame["close"].rolling(30, min_periods=1).mean()
+            frame["ma_10w"] = frame["close"].rolling(10, min_periods=1).mean()
         breakout_line = _to_float(row.get("breakout_level"))
         resistance_line = _to_float(row.get("nearest_resistance"))
         base_breakout_line = _to_float(row.get("base_breakout_price"))

@@ -72,12 +72,10 @@ def run_batched_screener():
 
     for batch_idx, batch in enumerate(_chunked(symbols, BATCH_SIZE)):
         print(f"[batch {batch_idx + 1}] Loading {len(batch)} stocks...")
-        daily_bars = clean_daily_bars(parquet_store.read_many("daily_bars", batch))
-        if daily_bars.empty:
-            print(f"[batch {batch_idx + 1}] No data, skipping")
+        weekly_bars = clean_daily_bars(parquet_store.read_many("weekly_bars", batch))
+        if weekly_bars.empty:
+            print(f"[batch {batch_idx + 1}] No weekly data, skipping")
             continue
-
-        weekly_bars = build_weekly_bars(daily_bars)
         weekly_bars = compute_weekly_indicators(weekly_bars, market_weekly, config)
         # Compute per-batch rs composite (raw value, not ranked)
         batch_rs = compute_rs_ranks(weekly_bars)
@@ -88,7 +86,7 @@ def run_batched_screener():
                 rs_composite_map[sym] = comp
         # Merge rs ranks (will be overridden by global ranks after all batches)
         weekly_bars = weekly_bars.merge(batch_rs, on="symbol", how="left")
-        del daily_bars, batch_rs
+        del batch_rs
         gc.collect()
 
         records: list[dict] = []

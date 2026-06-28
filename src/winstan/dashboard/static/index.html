@@ -22,6 +22,7 @@
         <button id="navShareholder" class="nav-btn" data-page="shareholder" type="button">股东人数</button>
         <button id="navTransition" class="nav-btn" data-page="transition" type="button">突破候选</button>
         <button id="navContinuation" class="nav-btn" data-page="continuation" type="button">续涨候选</button>
+        <button id="navBacktest" class="nav-btn" data-page="backtest" type="button">回测</button>
       </nav>
     </aside>
 
@@ -455,6 +456,44 @@
           </section>
         </main>
       </section>
+
+      <section class="page hidden" id="pageBacktest" data-page="backtest">
+        <header class="page-header">
+          <div>
+            <h2>回测</h2>
+            <p>输入股票代码和目标日期，系统仅使用该日期之前的K线数据计算续涨结构分</p>
+          </div>
+        </header>
+        <main class="content-grid">
+          <div class="backtest-controls" style="margin-bottom:16px;">
+            <div style="margin-bottom:8px;">
+              <label style="font-size:13px;color:#94a3b8;">股票代码和目标日期 — 每行一个：<code>代码 日期</code>，或统一日期用右边日期框</label>
+              <textarea id="backtestSymbols" placeholder="000831.SZ 2021-07-02&#10;601985.SH 2023-01-15&#10;600111.SH 2025-06-01" rows="4" style="width:100%;background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-radius:6px;padding:8px;font-size:14px;font-family:monospace;"></textarea>
+            </div>
+            <div style="display:flex;gap:12px;align-items:flex-end;">
+              <div style="min-width:160px;">
+                <label style="display:block;font-size:13px;color:#94a3b8;margin-bottom:4px;">统一日期（如不逐行指定）</label>
+                <input type="date" id="backtestDate" style="width:100%;background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-radius:6px;padding:8px;font-size:14px;">
+              </div>
+              <button id="backtestRunBtn" class="btn-primary" style="padding:8px 20px;height:fit-content;">运行回测</button>
+            </div>
+          </div>
+          <div id="backtestStatus" style="font-size:13px;color:#94a3b8;margin-bottom:8px;"></div>
+          <div class="table-container" style="max-height:60vh;overflow-y:auto;">
+            <table class="data-table" id="backtestTable">
+              <thead>
+                <tr>
+                  <th>股票</th><th>名称</th><th>结构分</th><th>质量分</th><th>等级</th><th>适用</th><th>池</th><th>量能</th><th>振幅%</th><th>周数</th><th>可用周</th><th>原因</th>
+                </tr>
+              </thead>
+              <tbody id="backtestTbody">
+                <tr><td colspan="12" style="text-align:center;color:#64748b;">输入股票代码和日期后点击"运行回测"</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </main>
+      </section>
+
     </div>
   </div>
 
@@ -469,6 +508,10 @@
             <h3 id="modalTitle">个股详情</h3>
           </div>
           <button class="detail-nav-btn" id="detailNextBtn" title="下一个 (→)">▶</button>
+        </div>
+        <div style="display:flex;gap:4px;margin-right:12px;">
+          <button class="chart-type-btn active" id="chartTypeWeekly" title="周线">周线</button>
+          <button class="chart-type-btn" id="chartTypeDaily" title="日线">日线</button>
         </div>
         <button class="close-btn" id="closeModal">关闭</button>
       </div>

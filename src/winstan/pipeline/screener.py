@@ -68,10 +68,9 @@ class WeinsteinScreener:
             batch_symbols = symbols[batch_idx:batch_idx + batch_size]
             with self.duckdb_store.connect() as conn:
                 placeholders = ",".join(f"'{s}'" for s in batch_symbols)
-                batch_daily = clean_daily_bars(
-                    conn.execute(f"SELECT * FROM daily_bars WHERE symbol IN ({placeholders})").fetchdf()
+                batch_weekly = clean_daily_bars(
+                    conn.execute(f"SELECT * FROM weekly_bars WHERE symbol IN ({placeholders})").fetchdf()
                 )
-            batch_weekly = build_weekly_bars(batch_daily)
             batch_weekly = compute_weekly_indicators(batch_weekly, market_weekly, self.config)
 
             # Collect rs_composite for ALL-STOCK ranking later
@@ -159,6 +158,7 @@ class WeinsteinScreener:
                 self.parquet_store.write_symbol_frame("daily_bars", symbol, group)
 
         self.duckdb_store.refresh_parquet_view("daily_bars", str(self.config.parquet_root / "daily_bars" / "*.parquet"))
+        self.duckdb_store.refresh_parquet_view("weekly_bars", str(self.config.parquet_root / "weekly_bars" / "*.parquet"))
 
     def _ensure_index_cache(self, symbol: str) -> None:
         cached = clean_daily_bars(self.parquet_store.read_symbol_frame("index_bars", symbol))

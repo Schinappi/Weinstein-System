@@ -89,9 +89,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
 
         if path.startswith("/api/stock/"):
-            symbol = unquote(path.removeprefix("/api/stock/"))
+            symbol = unquote(path.removeprefix("/api/stock/").rstrip("/"))
+            chart_type = parse_qs(parsed.query).get("chart", ["weekly"])[0]
             try:
-                self._send_json(self.service.get_stock_detail(symbol))
+                self._send_json(self.service.get_stock_detail(symbol, chart_type=chart_type))
             except Exception as exc:
                 self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
             return
@@ -123,6 +124,19 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if path == "/api/continuation/refresh":
             result = self.service.refresh_continuation()
             self._send_json(result)
+            return
+
+        if path == "/api/backtest":
+            symbols_str = str(payload.get("symbols", ""))
+            target_date = str(payload.get("date", ""))
+            from winstan.dashboard.backtest_handler import run_backtest_for_symbols, get_scan_status
+            # 轮询模式：?job_id=xxx
+            job_id = parse_qs(parsed.query).get("job_id", [""])[0]
+            if job_id:
+                self._send_json(get_scan_status(job_id))
+                return
+            self._send_json(run_backtest_for_symbols(
+                self.service.parquet_store, self.service.config, symbols_str, target_date))
             return
 
         self._send_json({"error": "Unsupported endpoint"}, status=HTTPStatus.NOT_FOUND)

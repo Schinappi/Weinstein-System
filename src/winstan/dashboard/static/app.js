@@ -5,6 +5,7 @@ const navQuasiStage2 = document.getElementById('navQuasiStage2');
 const navShareholder = document.getElementById('navShareholder');
 const navTransition = document.getElementById('navTransition');
 const navContinuation = document.getElementById('navContinuation');
+const navBacktest = document.getElementById('navBacktest');
 const pageDashboard = document.getElementById('pageDashboard');
 const pageStage1 = document.getElementById('pageStage1');
 const pageRecommendations = document.getElementById('pageRecommendations');
@@ -12,6 +13,7 @@ const pageQuasiStage2 = document.getElementById('pageQuasiStage2');
 const pageShareholder = document.getElementById('pageShareholder');
 const pageTransition = document.getElementById('pageTransition');
 const pageContinuation = document.getElementById('pageContinuation');
+const pageBacktest = document.getElementById('pageBacktest');
 const updateStatusTitle = document.getElementById('updateStatusTitle');
 const updateStatusMessage = document.getElementById('updateStatusMessage');
 const updateStatusLevel = document.getElementById('updateStatusLevel');
@@ -78,6 +80,14 @@ let quasiStage2DatePicker = document.getElementById('quasiStage2DatePicker');
 let symbolListMap = {};   // { mode: [symbols] }
 let currentDetailMode = null;
 let currentDetailSymbol = null;
+let currentChartType = 'weekly';
+
+function switchChartType(type) {
+  currentChartType = type;
+  document.getElementById('chartTypeWeekly').classList.toggle('active', type === 'weekly');
+  document.getElementById('chartTypeDaily').classList.toggle('active', type === 'daily');
+  if (currentDetailSymbol) openStockDetail(currentDetailSymbol, currentDetailMode);
+}
 
 function setSymbolList(mode, items) {
   if (!mode || !items) return;
@@ -123,7 +133,7 @@ async function boot() {
 }
 
 function bindEvents() {
-  [navDashboard, navStage1, navRecommendations, navQuasiStage2, navShareholder, navTransition, navContinuation].forEach((button) => {
+  [navDashboard, navStage1, navRecommendations, navQuasiStage2, navShareholder, navTransition, navContinuation, navBacktest].forEach((button) => {
     button.addEventListener('click', () => switchPage(button.dataset.page));
   });
   searchButton.addEventListener('click', () => runSearch(searchInput.value));
@@ -152,7 +162,14 @@ function bindEvents() {
   const refreshContinuationBtn = document.getElementById('refreshContinuationBtn');
   if (refreshContinuationBtn) refreshContinuationBtn.addEventListener('click', () => refreshContinuationData());
   startAnalysisBtn.addEventListener('click', () => startStockAnalysis());
+  document.getElementById('chartTypeWeekly').addEventListener('click', () => switchChartType('weekly'));
+  document.getElementById('chartTypeDaily').addEventListener('click', () => switchChartType('daily'));
   precloseRunBtn.addEventListener('click', runPreclose);
+  const backtestRunBtn = document.getElementById('backtestRunBtn');
+  if (backtestRunBtn) backtestRunBtn.addEventListener('click', runBacktest);
+  // Set default date to today
+  const backtestDateEl = document.getElementById('backtestDate');
+  if (backtestDateEl) backtestDateEl.value = new Date().toISOString().split('T')[0];
   quasiStage2DatePicker.addEventListener('change', () => {
     loadRankingsByDate('quasi-stage2', quasiStage2DatePicker.value);
   });
@@ -191,11 +208,12 @@ function switchPage(pageKey) {
     shareholder: pageShareholder,
     transition: pageTransition,
     continuation: pageContinuation,
+    backtest: pageBacktest,
   };
   Object.entries(pageMap).forEach(([key, node]) => {
     node.classList.toggle('hidden', key !== pageKey);
   });
-  [navDashboard, navStage1, navRecommendations, navQuasiStage2, navShareholder, navTransition, navContinuation].forEach((button) => {
+  [navDashboard, navStage1, navRecommendations, navQuasiStage2, navShareholder, navTransition, navContinuation, navBacktest].forEach((button) => {
     button.classList.toggle('active', button.dataset.page === pageKey);
   });
 
@@ -566,7 +584,9 @@ async function loadContinuationRanking() {
       const boxRange = item.cont_box_range_pct != null ? item.cont_box_range_pct.toFixed(0) + '%' : '--';
       const boxWeeks = item.cont_box_duration_weeks || 0;
       const boxWeeksText = boxWeeks >= 8 ? '<span class="positive">' + boxWeeks + '周</span>' : boxWeeks + '周';
-      const volOk = item.cont_volume_trend_ok ? '<span class="positive">是</span>' : '否';
+      const volOk = item.cont_volume_trend_ok
+        ? '<span class="positive tip-hint" title="三段式量能确认: 箱体中段量能 < 前段×0.85">是</span>'
+        : '<span class="tip-hint" title="三段式量能: 中段缩量不达标\n箱体中段量能 > 前段×0.85">否</span>';
       const reason = escapeHtml(item.cont_quality_reason || '');
       return `<tr class="clickable-row" data-symbol="${symbol}">
         <td>${i + 1}</td>
@@ -986,7 +1006,7 @@ async function openStockDetail(symbol, mode) {
   detailModal.querySelector('.analysis-panel').scrollTop = 0;
 
   try {
-    const response = await fetch(`/api/stock/${encodeURIComponent(symbol)}`);
+    const response = await fetch(`/api/stock/${encodeURIComponent(symbol)}?chart=${currentChartType}`);
     const payload = await response.json();
     if (!response.ok || payload.error) {
       throw new Error(payload.error || '加载失败');
@@ -1287,7 +1307,7 @@ function drawCandles(canvas, chart) {
   const volumeBottom = volumeAreaTop + volumeAreaHeight;
   const candleWidth = Math.max(3, (right - left) / candles.length * 0.6);
 
-  const priceSeries = candles.flatMap((item) => [item.high, item.low, item.ma144, item.ma169]).filter((value) => Number.isFinite(value));
+  const priceSeries = candles.flatMap((item) => [item.high, item.low, item.ma30w, item.ma10w]).filter((value) => Number.isFinite(value));
   if (Number.isFinite(chart.breakout_line)) {
     priceSeries.push(chart.breakout_line);
   }
@@ -1321,8 +1341,8 @@ function drawCandles(canvas, chart) {
   drawHorizontalLine(ctx, chart.breakout_line, scaleY, left, right, '#7c3aed', [6, 5], '动态压力');        // 原突破线→动态压力线
   drawHorizontalLine(ctx, chart.resistance_line, scaleY, left, right, '#ea580c', [10, 6], '压力线');
   drawHorizontalLine(ctx, chart.base_stop_line, scaleY, left, right, '#dc2626', [4, 3], '止损线');          // 基底底
-  drawLine(ctx, candles, 'ma144', '#2563eb', scaleX, scaleY);
-  drawLine(ctx, candles, 'ma169', '#d97706', scaleX, scaleY);
+  drawLine(ctx, candles, 'ma30w', '#2563eb', scaleX, scaleY);
+  drawLine(ctx, candles, 'ma10w', '#d97706', scaleX, scaleY);
 
   candles.forEach((item, index) => {
     const x = scaleX(index);
@@ -1608,8 +1628,8 @@ function showTooltip(candle, x, y, width, height, container) {
     `<div><strong>收盘</strong>${formatChartNumber(candle.close)}</div>`,
     `<div><strong>涨跌</strong>${change === '--' ? '--' : `${change}%`}</div>`,
     `<div><strong>成交量</strong>${formatChartVolume(candle.volume)}</div>`,
-    `<div><strong>MA144</strong>${formatChartNumber(candle.ma144)}</div>`,
-    `<div><strong>MA169</strong>${formatChartNumber(candle.ma169)}</div>`,
+    `<div><strong>MA30w</strong>${formatChartNumber(candle.ma30w)}</div>`,
+    `<div><strong>MA10w</strong>${formatChartNumber(candle.ma10w)}</div>`,
   ].join('');
 
   chartTooltip.classList.remove('hidden');
@@ -1651,6 +1671,138 @@ function escapeHtml(value) {
     .replaceAll('>', '&gt;')
     .replaceAll('"', '&quot;')
     .replaceAll("'", '&#39;');
+}
+
+// ── 回测 ──
+async function runBacktest() {
+  const btn = document.getElementById('backtestRunBtn');
+  const symbolsEl = document.getElementById('backtestSymbols');
+  const dateEl = document.getElementById('backtestDate');
+  const statusEl = document.getElementById('backtestStatus');
+  const tbody = document.getElementById('backtestTbody');
+
+  const symbols = symbolsEl.value.trim();
+  const date = dateEl.value;
+  if (!date) {
+    statusEl.textContent = '请至少输入目标日期';
+    return;
+  }
+
+  const isScan = !symbols;
+  btn.disabled = true;
+  btn.textContent = isScan ? '⏳ 全市场扫描中...' : '⏳ 回测中...';
+  statusEl.textContent = isScan ? '全市场扫描已启动（后台4线程, 约20分钟, 页面上保持轮询直到完成）...' : '计算中...';
+  tbody.innerHTML = '<tr><td colspan="12" style="text-align:center;color:#64748b;">计算中...</td></tr>';
+
+  try {
+    const resp = await fetch('/api/backtest', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ symbols, date }),
+    });
+    const payload0 = await resp.json();
+
+    // 扫描模式：异步轮询
+    if (isScan && payload0.job_id) {
+      const jobId = payload0.job_id;
+      statusEl.textContent = '扫描中... (job=' + jobId + ')';
+      let attempts = 0;
+      const poll = async () => {
+        try {
+          const r = await fetch('/api/backtest?job_id=' + jobId, { method: 'POST' });
+          const p = await r.json();
+          if (p.status === 'running' || p.status === 'started') {
+            attempts++;
+            statusEl.textContent = '扫描中... (job=' + jobId + ', ' + (attempts * 5) + '秒)';
+            if (attempts < 360) setTimeout(poll, 5000); // 最多等30分钟
+            else { statusEl.textContent = '扫描超时, 请稍后刷新'; btn.disabled = false; btn.textContent = '运行回测'; }
+          } else {
+            renderBacktestResults(p, statusEl, tbody);
+            btn.disabled = false;
+            btn.textContent = '运行回测';
+          }
+        } catch(e) { statusEl.textContent = '轮询失败'; btn.disabled = false; btn.textContent = '运行回测'; }
+      };
+      setTimeout(poll, 3000);
+      return;
+    }
+
+    renderBacktestResults(payload0, statusEl, tbody);
+  } catch (e) {
+    statusEl.textContent = '请求失败: ' + e.message;
+    tbody.innerHTML = '<tr><td colspan="12" style="text-align:center;color:#ef4444;">请求失败</td></tr>';
+  } finally {
+    if (!isScan) { btn.disabled = false; btn.textContent = '运行回测'; }
+  }
+}
+
+function renderBacktestResults(payload, statusEl, tbody) {
+    const items = payload.items || [];
+    setSymbolList('backtest', items);  // 支持弹窗内上一个/下一个切换
+    const scanInfo = payload.mode === 'scan'
+      ? ` | 全市场扫描: ${payload.scanned || '?'}只, ${payload.elapsed || '?'}秒, 共${payload.candidates_total || '?'}候选`
+      : '';
+    statusEl.textContent = `${items.length} 只, 目标日期: ${payload.target_date || date}${scanInfo}`;
+
+    if (!items.length) {
+      tbody.innerHTML = '<tr><td colspan="12" style="text-align:center;color:#64748b;">无结果</td></tr>';
+      return;
+    }
+
+    // 条件提示说明
+    const ruleTips = {
+      applicable: 'Pool A: 长期下跌后筑底\n• 300周内EMA144峰→谷跌幅>20%\n• 当前EMA仍在谷底20%以内(未大幅反弹)\n• EMA144斜率在-1.5%~4%(走平)\n\nPool B: 趋势中继\n• EMA144比52周前更高(长期向上)\n• EMA144斜率在0%~8%(缓升整理)',
+      prior: '前期下跌确认(Pool A):\n• 300周(≥200周)内EMA144峰→谷跌幅>20%\n• 100周(≥120周)内峰→谷跌幅>15%\n• 当前EMA距离谷底<20%(仍在筑底)\n\n趋势中继(Pool B):\n• EMA144长期向上 + 斜率0~8%',
+      volume: '三段式量能(已改为评分制):\n• 中段/前段<0.4: +12\n• <0.55: +10  <0.7: +8\n• <0.85: +6  <1.0: +3  <1.2: +1\n• 后段放量>1.5倍: +2~3',
+      box: '箱体结构分(0-25):\n• 平整度40%: 振幅≤35%接受,趋势≤8%\n• 收敛度20%: 10/30w差距≤15%\n• 收缩20%: 箱内量能偏低\n• 无趋势20%: 涨幅≤15%不扣分',
+      quality: '综合质量分(0-100):\n趋势(0-25)+回踩(0-25)+箱体(0-25)\n+量能(0-15)+波动(0-10)+基底(±5)',
+      grade: '等级: S>85, A>70, B>50, C<50\n排名=质量×0.4+RS×0.3+量能×0.2+突破×0.1',
+    };
+    const tip = (key, text) => `<span class="tip-hint" title="${ruleTips[key] || ''}">${text}</span>`;
+
+    tbody.innerHTML = items.map(item => {
+      const box = item.cont_score_box != null ? item.cont_score_box.toFixed(0) : '--';
+      const qual = item.cont_quality_score != null ? item.cont_quality_score.toFixed(0) : '--';
+      const grade = item.cont_quality_grade || '--';
+      const app = item.cont_is_applicable ? '✅' : '❌';
+      const poolLabel = item.cont_prior_trend_ok ? '<span class="positive tip-hint" title="Pool A: 长期下跌后筑底">A</span>'
+        : (item.cont_pool_b ? '<span class="tip-hint" title="Pool B: 趋势中继(EMA缓升+整理)">B</span>'
+        : '<span class="tip-hint" title="不满足Pool A或B条件">--</span>');
+      const vol = item.cont_volume_trend_ok ? '✅' : '❌';
+      const range = item.cont_box_range_pct != null ? item.cont_box_range_pct.toFixed(1) + '%' : '--';
+      const dur = item.cont_box_duration_weeks || '--';
+      const weeks = item.available_weeks || '--';
+      const reason = item.cont_quality_reason || item.error || '';
+      // 结构分明细
+      const f_val = item.cont_box_flatness != null ? (item.cont_box_flatness*100).toFixed(0) : '?';
+      const cv_val = item.cont_box_conv != null ? (item.cont_box_conv*100).toFixed(0) : '?';
+      const vl_val = item.cont_box_vol_low != null ? (item.cont_box_vol_low*100).toFixed(0) : '?';
+      const nt_val = item.cont_box_no_trend != null ? (item.cont_box_no_trend*100).toFixed(0) : '?';
+      const boxTipDetail = `箱体结构分 = (平整度×0.4 + 收敛度×0.2 + 收缩×0.2 + 趋势缺失×0.2) × 25\n\n平整度(40%): ${f_val}% — 振幅小+无趋势\n收敛度(20%): ${cv_val}% — 10/30w均线靠拢\n收缩(20%): ${vl_val}% — 箱内量能偏低\n趋势缺失(20%): ${nt_val}% — 价格无方向\n= ${box} (满分25)`;
+
+      const boxClass = parseFloat(box) > 10 ? 'positive' : (parseFloat(box) > 5 ? '' : 'negative');
+      return `<tr data-symbol="${escapeHtml(item.symbol)}" class="clickable-row" title="点击查看详情">
+        <td>${escapeHtml(item.symbol)}</td>
+        <td>${escapeHtml(item.name)}</td>
+        <td class="${boxClass}"><span class="tip-hint" title="${boxTipDetail.replace(/"/g, '&quot;')}">${box}</span></td>
+        <td>${tip('quality', qual)}</td>
+        <td>${tip('grade', grade)}</td>
+        <td>${tip('applicable', app)}</td>
+        <td>${poolLabel}</td>
+        <td>${tip('volume', vol)}</td>
+        <td>${range}</td>
+        <td>${dur}</td>
+        <td>${weeks}</td>
+        <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHtml(reason)}">${escapeHtml(reason)}</td>
+      </tr>`;
+    }).join('');
+
+    // Click to view stock detail
+    tbody.querySelectorAll('tr[data-symbol]').forEach(row => {
+      row.addEventListener('click', () => {
+        openStockDetail(row.dataset.symbol, 'backtest');
+      });
+    });
 }
 
 boot();

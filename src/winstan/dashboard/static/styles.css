@@ -962,3 +962,32 @@ tr.triggered-row:hover {
   0%, 100% { opacity: 0.6; }
   50% { opacity: 1; }
 }
+
+/* ── 悬停提示 ── */
+.tip-hint {
+  cursor: help;
+  border-bottom: 1px dashed #64748b;
+}
+.tip-hint:hover {
+  border-bottom-color: #93c5fd;
+}
+
+/* ── 日线/周线切换按钮 ── */
+.chart-type-btn {
+  background: #1e293b;
+  border: 1px solid #334155;
+  color: #94a3b8;
+  padding: 3px 10px;
+  border-radius: 4px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.chart-type-btn.active {
+  background: #2563eb;
+  border-color: #2563eb;
+  color: #fff;
+}
+.chart-type-btn:hover:not(.active) {
+  border-color: #475569;
+  color: #e2e8f0;
+}

@@ -1,4 +1,4 @@
-const { useEffect, useMemo, useRef, useState } = React;
+﻿const { useEffect, useMemo, useRef, useState } = React;
 const html = htm.bind(React.createElement);
 const {
   App: AntApp,
@@ -655,8 +655,8 @@ function DetailModal({
           <div>
             <${Flex} justify="space-between" align="center" style=${{ marginBottom: 14, flexWrap: "wrap", gap: 12 }}>
               <${Space}>
-                <${Button} onClick=${() => onNavigate?.("prev")} disabled=${!canGoPrev}>上一个<//>
-                <${Button} onClick=${() => onNavigate?.("next")} disabled=${!canGoNext}>下一个<//>
+                <${Button} onClick=${() => onNavigate?.("prev")} disabled=${!canGoPrev}>上一只<//>
+                <${Button} onClick=${() => onNavigate?.("next")} disabled=${!canGoNext}>下一只<//>
               <//>
               <${Space}>
                 <${Button}
@@ -749,7 +749,7 @@ function OverviewPage({
   onRefresh,
   onOpenDetail,
 }) {
-  const items = data?.items || [];
+  const items = (data?.items || []).slice(0, 50);
   const metrics = useMemo(() => {
     const avgQuality = items.length
       ? (items.reduce((sum, item) => sum + Number(item.cont_quality_score || 0), 0) / items.length)
@@ -758,7 +758,7 @@ function OverviewPage({
       ? (items.reduce((sum, item) => sum + Number(item.cont_score_box || 0), 0) / items.length)
       : 0;
     return [
-      { label: "榜单数量", value: formatInt(data?.count || 0), extra: "展示今日前 50 名结构候选" },
+      { label: "榜单数量", value: formatInt(items.length || 0), extra: "展示今日前 50 名结果候选" },
       { label: "扫描股票", value: formatInt(data?.scanned || 0), extra: "来自缓存周线数据池" },
       { label: "平均质量", value: formatNumber(avgQuality, 1), extra: "续涨综合质量均值" },
       { label: "平均箱体", value: formatNumber(avgBox, 1), extra: "结构纪律分均值" },
@@ -830,7 +830,7 @@ function OverviewPage({
       render: (value) => html`<${Tag} color=${value ? "green" : "default"}>${formatBoolean(value)}<//>`,
     },
     {
-      title: "最近日期",
+      title: "最新日期",
       dataIndex: "latest_date",
       key: "latest_date",
       width: 120,
@@ -851,8 +851,8 @@ function OverviewPage({
             <div className="hero-kicker">Overview</div>
             <div className="hero-title">今日总览页</div>
             <div className="hero-copy">
-              展示与“手动触发、日期为今天的全市场回测”一致的排行榜结果。页面默认复用当天扫描结果，
-              手动刷新时会强制重跑今日扫描，但不会改变原有回测计算逻辑。
+              展示与“手动触发、目标日期为今天的全市场回测”一致的排行榜结果。页面默认复用当天已缓存结果，
+              手动刷新时会重新触发今日扫描，但不会改变原有回测逻辑。
             </div>
             <div className="hero-actions">
               <${Button} type="primary" size="large" onClick=${onRefresh} loading=${loading}>刷新今日排行榜<//>
@@ -901,7 +901,7 @@ function OverviewPage({
           <div className="toolbar-row" style=${{ marginBottom: 18 }}>
             <div>
               <h2 className="section-title">运行状态</h2>
-              <div className="section-copy">总览页会自动复用今天的扫描任务；强制刷新时会重新启动同日扫描。</div>
+              <div className="section-copy">总览页会优先复用今天的扫描结果；手动刷新时才会重新启动同日扫描。</div>
             </div>
             <div className="toolbar-actions">
               <${Tag} color=${loading ? "processing" : "success"}>${loading ? "扫描中" : "已就绪"}<//>
@@ -923,7 +923,7 @@ function OverviewPage({
             </div>
             <div className="status-block">
               <div className="status-label">可用结果</div>
-              <div className="status-value">${formatInt(data?.count)}</div>
+              <div className="status-value">${formatInt(items.length)}</div>
             </div>
           </div>
         <//>
@@ -932,7 +932,7 @@ function OverviewPage({
           <div className="toolbar-row" style=${{ marginBottom: 18 }}>
             <div>
               <h2 className="section-title">今日排行榜</h2>
-              <div className="toolbar-copy">点击任意行可以打开个股详情，K 线、AI 分析和指标弹窗行为保持不变。</div>
+              <div className="toolbar-copy">点击任意一行即可打开个股详情，K 线、AI 分析和指标交互保持不变。</div>
             </div>
           </div>
           <${Table}
@@ -982,8 +982,8 @@ function SearchPanel({ onOpenDetail }) {
     <${Card} className="panel-card">
       <div className="toolbar-row" style=${{ marginBottom: 16 }}>
         <div>
-          <h2 className="section-title">个股检索</h2>
-          <div className="toolbar-copy">保留原来搜索能力，支持从总览页直接跳转个股详情。</div>
+          <h2 className="section-title">个股搜索</h2>
+          <div className="toolbar-copy">保留原有搜索能力，支持从总览页直接跳转到个股详情。</div>
         </div>
         <div className="toolbar-actions" style=${{ minWidth: "min(100%, 480px)" }}>
           <${Input}
@@ -1153,6 +1153,21 @@ function BacktestPage({
   data,
 }) {
   const items = data?.items || [];
+  const isScanMode = data?.mode === "scan";
+  const [symbolFilter, setSymbolFilter] = useState("");
+  const normalizedFilter = symbolFilter.trim().toUpperCase();
+  const filteredItems = useMemo(() => {
+    if (!normalizedFilter) return items;
+    return items.filter((item) => {
+      const symbol = String(item.symbol || "").toUpperCase();
+      const name = String(item.name || "").toUpperCase();
+      return symbol.includes(normalizedFilter) || name.includes(normalizedFilter);
+    });
+  }, [items, normalizedFilter]);
+
+  useEffect(() => {
+    setSymbolFilter("");
+  }, [data?.target_date, data?.mode, items.length]);
 
   const columns = [
     {
@@ -1172,7 +1187,7 @@ function BacktestPage({
       dataIndex: "cont_score_box",
       key: "cont_score_box",
       width: 96,
-      render: (value) => formatNumber(value, 0),
+      render: (value) => formatNumber(value, 1),
     },
     {
       title: "质量分",
@@ -1255,7 +1270,7 @@ function BacktestPage({
             <div className="hero-title" style=${{ fontSize: "34px", marginTop: 16 }}>回测页</div>
             <div className="hero-copy">
               保留原有两种模式：输入代码执行单股回测；不输入代码时按日期执行全市场扫描。
-              详情弹窗、轮询、排序展示与原逻辑一致。
+              详情弹窗、轮播切换和排序展示与原有逻辑保持一致。
             </div>
           </div>
         </div>
@@ -1266,7 +1281,7 @@ function BacktestPage({
           <div className="toolbar-row" style=${{ marginBottom: 16 }}>
             <div>
               <h2 className="section-title">运行参数</h2>
-              <div className="toolbar-copy">每行支持 code + date，或统一使用右侧日期输入框。留空代码即执行全市场扫描。</div>
+              <div className="toolbar-copy">每行支持 code + date，也可以统一使用右侧日期输入框。留空代码即可执行全市场扫描。</div>
             </div>
           </div>
 
@@ -1301,7 +1316,7 @@ function BacktestPage({
                     className="floating-alert"
                     type=${loading ? "info" : "success"}
                     showIcon=${true}
-                    message=${loading ? "任务执行中" : "任务待运行"}
+                    message=${loading ? "任务执行中" : "任务等待运行"}
                     description=${statusText || "输入参数后点击运行回测。"}
                   />
                 <//>
@@ -1314,27 +1329,46 @@ function BacktestPage({
           <div className="toolbar-row" style=${{ marginBottom: 16 }}>
             <div>
               <h2 className="section-title">回测结果</h2>
-              <div className="toolbar-copy">点击行可查看个股详情。手动模式按结构分排序，扫描模式保留原有榜单输出。</div>
+              <div className="toolbar-copy">
+                ${isScanMode
+                  ? "点击行可查看个股详情。全市场扫描仅显示结构分 16 分及以上的标的，并支持分页浏览。"
+                  : "点击行可查看个股详情。手动模式按结构分排序，保留原有单股回测输出。"}
+              </div>
             </div>
             <div className="toolbar-actions">
-              <${Tag} color=${data?.mode === "scan" ? "cyan" : "blue"}>${data?.mode === "scan" ? "全市场扫描" : "单股回测"}<//>
+              <${Tag} color=${isScanMode ? "cyan" : "blue"}>${isScanMode ? "全市场扫描" : "单股回测"}<//>
               <${Tag} color="default">目标日期 ${data?.target_date || formState.date || TODAY}<//>
+              ${isScanMode ? html`<${Tag} color="purple">结构分 >= 16<//>` : null}
+            </div>
+          </div>
+          <div className="toolbar-row" style=${{ marginBottom: 16, gap: 12 }}>
+            <div className="toolbar-copy">
+              ${normalizedFilter ? `当前筛选后 ${filteredItems.length} 条结果` : `当前共 ${items.length} 条结果`}
+            </div>
+            <div className="toolbar-actions" style=${{ minWidth: "min(100%, 360px)" }}>
+              <${Input}
+                allowClear=${true}
+                value=${symbolFilter}
+                onChange=${(event) => setSymbolFilter(event.target.value)}
+                placeholder="按股票代码或名称筛选结果"
+                size="large"
+              />
             </div>
           </div>
 
           <${Table}
             className="backtest-table"
             columns=${columns}
-            dataSource=${items}
+            dataSource=${filteredItems}
             rowKey=${(row) => `${row.symbol}-${row.latest_date || ""}`}
-            pagination=${false}
+            pagination=${isScanMode ? { pageSize: 20, showSizeChanger: false, hideOnSinglePage: true } : false}
             loading=${loading}
             scroll=${{ x: 1320 }}
             locale=${{
-              emptyText: html`<div className="empty-block">输入参数后运行回测</div>`,
+              emptyText: html`<div className="empty-block">${normalizedFilter ? "没有匹配的股票结果" : "输入参数后运行回测"}</div>`,
             }}
             onRow=${(record) => ({
-              onClick: () => onOpenDetail(record.symbol, items),
+              onClick: () => onOpenDetail(record.symbol, filteredItems),
               style: { cursor: "pointer" },
             })}
           />
@@ -1352,6 +1386,9 @@ function AppContent() {
   const [monitorLoading, setMonitorLoading] = useState(false);
   const [monitorStatus, setMonitorStatus] = useState("请从个股详情中添加价格监控。");
   const [monitorData, setMonitorData] = useState({ items: [], count: 0 });
+  const [monitorModalOpen, setMonitorModalOpen] = useState(false);
+  const [monitorSubmitting, setMonitorSubmitting] = useState(false);
+  const [monitorDraft, setMonitorDraft] = useState({ symbol: "", latestClose: null, targetPrice: "" });
   const [backtestLoading, setBacktestLoading] = useState(false);
   const [backtestStatus, setBacktestStatus] = useState("输入股票代码和日期后点击运行回测。");
   const [backtestData, setBacktestData] = useState({ items: [], target_date: TODAY });
@@ -1392,28 +1429,37 @@ function AppContent() {
     }
   };
 
-  const handleAddMonitor = async (symbol, latestClose) => {
-    const promptLabel = latestClose ? `请输入 ${symbol} 的目标价格（现价 ${formatNumber(latestClose, 2)}）` : `请输入 ${symbol} 的目标价格`;
-    const value = window.prompt(promptLabel, latestClose ? String(Number(latestClose).toFixed(2)) : "");
-    if (value === null) return;
-    const targetPrice = Number(value);
+  const submitMonitor = async () => {
+    const targetPrice = Number(monitorDraft.targetPrice);
     if (!Number.isFinite(targetPrice) || targetPrice <= 0) {
       message.error("目标价格必须是大于 0 的数字");
       return;
     }
+    setMonitorSubmitting(true);
     try {
       await fetchJson("/api/price-monitors", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ symbol, target_price: targetPrice }),
+        body: JSON.stringify({ symbol: monitorDraft.symbol, target_price: targetPrice }),
       });
-      message.success(`${symbol} 已加入价格监控`);
+      message.success(`${monitorDraft.symbol} 已加入价格监控`);
+      setMonitorModalOpen(false);
       loadMonitors();
     } catch (error) {
       message.error(error.message || "添加监控失败");
+    } finally {
+      setMonitorSubmitting(false);
     }
   };
 
+  const handleAddMonitor = async (symbol, latestClose) => {
+    setMonitorDraft({
+      symbol: symbol || "",
+      latestClose: Number.isFinite(Number(latestClose)) ? Number(latestClose) : null,
+      targetPrice: Number.isFinite(Number(latestClose)) ? Number(latestClose).toFixed(2) : "",
+    });
+    setMonitorModalOpen(true);
+  };
   const handleDeleteMonitor = async (row) => {
     if (!row?.id) return;
     const confirmed = window.confirm(`确认删除 ${row.symbol || ""} 的价格监控吗？`);
@@ -1480,26 +1526,6 @@ function AppContent() {
           },
         });
         return;
-        setStatus(`扫描中... (job=${payload.job_id})`);
-        polling.poll({
-          jobId: payload.job_id,
-          onProgress: (attempts, pollPayload) => {
-            const elapsed = Number.isFinite(Number(pollPayload?.elapsed_seconds))
-              ? Number(pollPayload.elapsed_seconds).toFixed(0)
-              : String(attempts * 5);
-            setStatus(`扫描中... (job=${payload.job_id}, 已运行 ${elapsed}s，通常约 60-100s)`);
-          },
-          onDone: (donePayload) => {
-            setData(donePayload);
-            setStatus(buildStatusText(donePayload));
-            setLoading(false);
-          },
-          onError: (error) => {
-            setStatus(error.message || "轮询失败");
-            setLoading(false);
-          },
-        });
-        return;
       }
 
       setData(payload);
@@ -1520,13 +1546,9 @@ function AppContent() {
   const buildStatusText = (payload) => {
     const items = payload.items || [];
     const modernScanInfo = payload.mode === "scan"
-      ? ` 全市场扫描 ${formatInt(payload.scanned, "?")} 只，用时 ${formatElapsedSeconds(payload.elapsed)}，共 ${formatInt(payload.candidates_total, "?")} 个候选。`
+      ? ` 全市场扫描 ${formatInt(payload.scanned, "?")} 只，用时 ${formatElapsedSeconds(payload.elapsed)}，结构分 16 分及以上共 ${formatInt(payload.candidates_total, "?")} 个候选。`
       : "";
     return `${formatInt(items.length, "0")} 条结果，目标日期 ${payload.target_date || TODAY}。${modernScanInfo}`.trim();
-    const scanInfo = payload.mode === "scan"
-      ? ` 全市场扫描 ${payload.scanned || "?"} 只，用时 ${payload.elapsed || "?"}s，共 ${payload.candidates_total || "?"} 个候选。`
-      : "";
-    return `${items.length} 条结果，目标日期 ${payload.target_date || TODAY}。${scanInfo}`.trim();
   };
 
   const loadOverview = (forceRefresh = false) => runBacktestRequest({
@@ -1603,7 +1625,7 @@ function AppContent() {
               <div className="brand-badge">Weinstein Console</div>
               <div className="brand-title">温斯坦回测看板</div>
               <div className="brand-copy">
-                只保留总览页和回测页两个入口。总览页等价于“今天的全市场回测排行榜”，回测页继续承载手动回测与扫描。
+                当前只保留总览页和回测页两个入口。总览页等价于“今天的全市场回测排行榜”，回测页继续承载手动回测与扫描。
               </div>
             </div>
 
@@ -1637,6 +1659,39 @@ function AppContent() {
         onNavigate=${navigateDetail}
         onAddMonitor=${handleAddMonitor}
       />
+
+      <${Modal}
+        open=${monitorModalOpen}
+        title="添加价格监控"
+        onCancel=${() => {
+          if (!monitorSubmitting) setMonitorModalOpen(false);
+        }}
+        onOk=${submitMonitor}
+        okText="保存"
+        cancelText="取消"
+        confirmLoading=${monitorSubmitting}
+        destroyOnClose=${false}
+      >
+        <${Form} layout="vertical">
+          <${Form.Item} label="股票代码">
+            <${Input} value=${monitorDraft.symbol} disabled=${true} />
+          <//>
+          <${Form.Item} label="现价">
+            <${Input}
+              value=${monitorDraft.latestClose !== null ? formatNumber(monitorDraft.latestClose, 2) : "--"}
+              disabled=${true}
+            />
+          <//>
+          <${Form.Item} label="目标价格" required=${true}>
+            <${Input}
+              inputMode="decimal"
+              value=${monitorDraft.targetPrice}
+              onChange=${(event) => setMonitorDraft((prev) => ({ ...prev, targetPrice: event.target.value }))}
+              placeholder="请输入目标价格"
+            />
+          <//>
+        <//>
+      <//>
     </div>
   `;
 }
@@ -1680,3 +1735,4 @@ function App() {
 
 const root = ReactDOM.createRoot(document.getElementById("root"));
 root.render(html`<${App} />`);
+

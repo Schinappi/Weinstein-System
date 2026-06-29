@@ -15,6 +15,7 @@ _scan_jobs: dict[str, dict] = {}
 _scan_jobs_by_date: dict[str, str] = {}
 _scan_result_cache: dict[str, dict] = {}
 _scan_lock = threading.Lock()
+SCAN_MIN_BOX_SCORE = 16.0
 
 
 def run_backtest_for_symbols(
@@ -53,6 +54,8 @@ def run_backtest_for_symbols(
             else:
                 symbol += ".BJ"
         sym_date_pairs.append((symbol, dt))
+
+    resolved_target_date = _resolve_display_target_date(sym_date_pairs, fallback=target_date)
 
     if not sym_date_pairs:
         if target_date:
@@ -144,7 +147,7 @@ def run_backtest_for_symbols(
             items.append({"symbol": symbol, "error": str(exc)[:120]})
 
     items.sort(key=lambda item: item.get("cont_score_box") or 0, reverse=True)
-    return {"items": items, "count": len(items), "target_date": target_date, "error": ""}
+    return {"items": items, "count": len(items), "target_date": resolved_target_date, "error": ""}
 
 
 def run_backtest_scan(
@@ -154,7 +157,7 @@ def run_backtest_scan(
     name_lookup=None,
     job_id: str | None = None,
 ) -> dict:
-    """Run a full-market continuation scan and return top 50 candidates."""
+    """Run a full-market continuation scan and return candidates with cont_score_box >= 16."""
     from winstan.resample.weekly_builder import build_weekly_bars
     from winstan.rules.stage2_continuation import compute_continuation_quality
 
@@ -183,7 +186,8 @@ def run_backtest_scan(
                 return
 
             result = compute_continuation_quality(weekly_cut, config)
-            if not result.get("cont_is_applicable") or float(result.get("cont_score_box") or 0) <= 0:
+            box_score = float(result.get("cont_score_box") or 0)
+            if not result.get("cont_is_applicable") or box_score < SCAN_MIN_BOX_SCORE:
                 return
 
             final_score = (
@@ -198,7 +202,7 @@ def run_backtest_scan(
                     {
                         "symbol": symbol,
                         "name": _lookup_name(symbol, name_lookup=name_lookup),
-                        "cont_score_box": float(result.get("cont_score_box") or 0),
+                        "cont_score_box": box_score,
                         "cont_quality_score": float(result.get("cont_quality_score") or 0),
                         "cont_quality_grade": str(result.get("cont_quality_grade") or "C"),
                         "cont_is_applicable": True,
@@ -245,8 +249,8 @@ def run_backtest_scan(
 
     candidates.sort(key=lambda item: item.get("cont_score_box", 0), reverse=True)
     return {
-        "items": candidates[:50],
-        "count": min(len(candidates), 50),
+        "items": candidates,
+        "count": len(candidates),
         "target_date": target_date,
         "scanned": len(all_symbols),
         "mode": "scan",
@@ -421,6 +425,18 @@ def _optional_float(value: object) -> float | None:
         return float(value)
     except Exception:
         return None
+
+
+def _resolve_display_target_date(sym_date_pairs: list[tuple[str, str]], fallback: str) -> str:
+    if not sym_date_pairs:
+        return fallback
+    dates = [str(item[1] or "").strip() for item in sym_date_pairs if str(item[1] or "").strip()]
+    if not dates:
+        return fallback
+    unique_dates = list(dict.fromkeys(dates))
+    if len(unique_dates) == 1:
+        return unique_dates[0]
+    return "多日期"
 
 
 def _update_scan_job_progress(

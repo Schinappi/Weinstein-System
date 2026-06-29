@@ -34,6 +34,7 @@ const { Title, Paragraph, Text } = Typography;
 const TODAY = dayjs().format("YYYY-MM-DD");
 const PAGE_OVERVIEW = "overview";
 const PAGE_BACKTEST = "backtest";
+const PAGE_MONITOR = "monitor";
 
 function formatNumber(value, digits = 1, fallback = "--") {
   return Number.isFinite(Number(value)) ? Number(value).toFixed(digits) : fallback;
@@ -563,6 +564,7 @@ function DetailModal({
   symbol,
   symbolList,
   onNavigate,
+  onAddMonitor,
 }) {
   const [loading, setLoading] = useState(false);
   const [analysisLoading, setAnalysisLoading] = useState(false);
@@ -655,6 +657,16 @@ function DetailModal({
               <${Space}>
                 <${Button} onClick=${() => onNavigate?.("prev")} disabled=${!canGoPrev}>上一个<//>
                 <${Button} onClick=${() => onNavigate?.("next")} disabled=${!canGoNext}>下一个<//>
+              <//>
+              <${Space}>
+                <${Button}
+                  type="primary"
+                  ghost=${true}
+                  onClick=${() => onAddMonitor?.(detail?.symbol || symbol, detail?.latest_close)}
+                  disabled=${loading || !(detail?.symbol || symbol)}
+                >
+                  添加监控
+                <//>
               <//>
               <${Segmented}
                 value=${chartType}
@@ -1002,6 +1014,134 @@ function SearchPanel({ onOpenDetail }) {
   `;
 }
 
+function MonitorPage({ loading, statusText, data, onRefresh, onDelete, onOpenDetail }) {
+  const items = data?.items || [];
+
+  const columns = [
+    {
+      title: "股票",
+      dataIndex: "symbol",
+      key: "symbol",
+      width: 180,
+      render: (_, row) => html`
+        <div className="symbol-cell">
+          <div className="symbol-code">${row.symbol}</div>
+          <div className="symbol-name">${row.name || "--"}</div>
+        </div>
+      `,
+    },
+    {
+      title: "现价",
+      dataIndex: "latest_close",
+      key: "latest_close",
+      width: 110,
+    },
+    {
+      title: "目标价",
+      dataIndex: "target_price",
+      key: "target_price",
+      width: 110,
+    },
+    {
+      title: "价差",
+      dataIndex: "distance_amount",
+      key: "distance_amount",
+      width: 120,
+      render: (value) => html`<span className=${String(value).startsWith("-") ? "negative-text" : "positive-text"}>${value || "--"}</span>`,
+    },
+    {
+      title: "差距%",
+      dataIndex: "distance_pct",
+      key: "distance_pct",
+      width: 120,
+      render: (value) => html`<span className=${String(value).startsWith("-") ? "negative-text" : "positive-text"}>${value || "--"}</span>`,
+    },
+    {
+      title: "最新日期",
+      dataIndex: "latest_trade_date",
+      key: "latest_trade_date",
+      width: 130,
+    },
+    {
+      title: "操作",
+      key: "actions",
+      width: 110,
+      render: (_, row) => html`
+        <${Button}
+          danger=${true}
+          size="small"
+          onClick=${(event) => {
+            event.stopPropagation();
+            onDelete?.(row);
+          }}
+        >
+          删除
+        <//>
+      `,
+    },
+  ];
+
+  return html`
+    <div className="page-shell">
+      <${Card} className="hero-card">
+        <div className="toolbar-row">
+          <div>
+            <div className="hero-kicker">Monitor</div>
+            <div className="hero-title" style=${{ fontSize: "34px", marginTop: 16 }}>价格监控</div>
+            <div className="hero-copy">
+              在个股详情弹窗中填写目标价格后，个股会出现在这里。监控页会展示现价、目标价以及当前差距。
+            </div>
+          </div>
+          <div className="toolbar-actions">
+            <${Button} type="primary" size="large" onClick=${onRefresh} loading=${loading}>刷新监控<//>
+          </div>
+        </div>
+      <//>
+
+      <div className="page-grid">
+        <${Card} className="status-card">
+          <div className="status-message">${statusText}</div>
+          <div className="status-grid" style=${{ marginTop: 18 }}>
+            <div className="status-block">
+              <div className="status-label">监控数量</div>
+              <div className="status-value">${formatInt(data?.count || 0)}</div>
+            </div>
+            <div className="status-block">
+              <div className="status-label">更新日期</div>
+              <div className="status-value">${TODAY}</div>
+            </div>
+          </div>
+        <//>
+
+        <${Card} className="panel-card table-card">
+          <div className="toolbar-row" style=${{ marginBottom: 16 }}>
+            <div>
+              <h2 className="section-title">监控列表</h2>
+              <div className="toolbar-copy">点击股票行可直接打开个股详情。</div>
+            </div>
+          </div>
+
+          <${Table}
+            columns=${columns}
+            dataSource=${items}
+            rowKey=${(row) => row.id}
+            pagination=${false}
+            loading=${loading}
+            scroll=${{ x: 980 }}
+            locale=${{
+              emptyText: html`<div className="empty-block">还没有添加任何价格监控</div>`,
+            }}
+            onRow=${(record) => ({
+              onClick: () => onOpenDetail(record.symbol, items),
+              style: { cursor: "pointer" },
+            })}
+          />
+        <//>
+      </div>
+    </div>
+  `;
+}
+
 function BacktestPage({
   loading,
   runningLabel,
@@ -1209,6 +1349,9 @@ function AppContent() {
   const [overviewLoading, setOverviewLoading] = useState(false);
   const [overviewStatus, setOverviewStatus] = useState("正在准备今日排行榜。");
   const [overviewData, setOverviewData] = useState({ items: [], target_date: TODAY });
+  const [monitorLoading, setMonitorLoading] = useState(false);
+  const [monitorStatus, setMonitorStatus] = useState("请从个股详情中添加价格监控。");
+  const [monitorData, setMonitorData] = useState({ items: [], count: 0 });
   const [backtestLoading, setBacktestLoading] = useState(false);
   const [backtestStatus, setBacktestStatus] = useState("输入股票代码和日期后点击运行回测。");
   const [backtestData, setBacktestData] = useState({ items: [], target_date: TODAY });
@@ -1233,6 +1376,55 @@ function AppContent() {
     const nextIndex = direction === "next" ? currentIndex + 1 : currentIndex - 1;
     if (nextIndex < 0 || nextIndex >= list.length) return;
     setDetailState((prev) => ({ ...prev, symbol: list[nextIndex] }));
+  };
+
+  const loadMonitors = async () => {
+    setMonitorLoading(true);
+    try {
+      const payload = await fetchJson("/api/price-monitors");
+      setMonitorData(payload);
+      setMonitorStatus(payload.count ? `当前共有 ${payload.count} 条价格监控。` : "还没有添加任何价格监控。");
+    } catch (error) {
+      setMonitorStatus(error.message || "加载监控失败");
+      message.error(error.message || "加载监控失败");
+    } finally {
+      setMonitorLoading(false);
+    }
+  };
+
+  const handleAddMonitor = async (symbol, latestClose) => {
+    const promptLabel = latestClose ? `请输入 ${symbol} 的目标价格（现价 ${formatNumber(latestClose, 2)}）` : `请输入 ${symbol} 的目标价格`;
+    const value = window.prompt(promptLabel, latestClose ? String(Number(latestClose).toFixed(2)) : "");
+    if (value === null) return;
+    const targetPrice = Number(value);
+    if (!Number.isFinite(targetPrice) || targetPrice <= 0) {
+      message.error("目标价格必须是大于 0 的数字");
+      return;
+    }
+    try {
+      await fetchJson("/api/price-monitors", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ symbol, target_price: targetPrice }),
+      });
+      message.success(`${symbol} 已加入价格监控`);
+      loadMonitors();
+    } catch (error) {
+      message.error(error.message || "添加监控失败");
+    }
+  };
+
+  const handleDeleteMonitor = async (row) => {
+    if (!row?.id) return;
+    const confirmed = window.confirm(`确认删除 ${row.symbol || ""} 的价格监控吗？`);
+    if (!confirmed) return;
+    try {
+      await fetchJson(`/api/price-monitors/${encodeURIComponent(row.id)}`, { method: "DELETE" });
+      message.success("监控已删除");
+      loadMonitors();
+    } catch (error) {
+      message.error(error.message || "删除监控失败");
+    }
   };
 
   const updateBacktestForm = (key, value) => {
@@ -1353,12 +1545,15 @@ function AppContent() {
 
   useEffect(() => {
     loadOverview(false);
+    loadMonitors();
   }, []);
 
   const menuItems = [
     { key: PAGE_OVERVIEW, label: "总览页" },
     { key: PAGE_BACKTEST, label: "回测页" },
   ];
+
+  menuItems.push({ key: PAGE_MONITOR, label: "监控" });
 
   const activeView = activePage === PAGE_OVERVIEW
     ? html`
@@ -1375,6 +1570,17 @@ function AppContent() {
           </div>
         <//>
       `
+    : activePage === PAGE_MONITOR
+      ? html`
+          <${MonitorPage}
+            loading=${monitorLoading}
+            statusText=${monitorStatus}
+            data=${monitorData}
+            onRefresh=${loadMonitors}
+            onDelete=${handleDeleteMonitor}
+            onOpenDetail=${openDetail}
+          />
+        `
     : html`
         <${BacktestPage}
           loading=${backtestLoading}
@@ -1429,6 +1635,7 @@ function AppContent() {
         symbolList=${detailState.symbols}
         onClose=${() => setDetailState({ open: false, symbol: "", symbols: [] })}
         onNavigate=${navigateDetail}
+        onAddMonitor=${handleAddMonitor}
       />
     </div>
   `;

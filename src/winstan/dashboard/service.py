@@ -27,6 +27,7 @@ from winstan.rules.volume_confirmation import evaluate_volume
 from winstan.scoring.ranker import build_quasi_stage2_top_n, build_stage2_top_n, score_and_rank
 from winstan.storage.duckdb_store import DuckDBStore
 from winstan.storage.parquet_store import ParquetStore
+from winstan.storage.price_monitor_store import PriceMonitorStore
 from winstan.storage.watchlist_store import WatchlistStore
 from winstan.signals.trade_watch import (
     build_trade_watch_signal,
@@ -34,6 +35,7 @@ from winstan.signals.trade_watch import (
     _resolve_stop_loss_reference,
 )
 from winstan.scoring.fundamental import get_fundamental_for_symbol
+from winstan.dashboard.overview_store import OverviewStore
 
 STAGE_LABELS = {
     "I": "阶段I",
@@ -58,6 +60,8 @@ class DashboardService:
         self.parquet_store = ParquetStore(self.config.parquet_root)
         self.duckdb_store = DuckDBStore(self.config.duckdb_path)
         self.watchlist_store = WatchlistStore(self.config.duckdb_path)
+        self.price_monitor_store = PriceMonitorStore(self.config.duckdb_path)
+        self.overview_store = OverviewStore(self.config.logs_dir / "overview_rankings")
         self._router: DataSourceRouter | None = None
         self._results: pd.DataFrame | None = None
         self._stage1: pd.DataFrame | None = None
@@ -499,12 +503,87 @@ class DashboardService:
         return {
             "symbol": normalized,
             "name": name,
+            "latest_close": _to_float(daily.sort_values("trade_date").iloc[-1].get("close")),
             "stage1_rank": self._lookup_rank(stage1, normalized, "top_n_rank"),
             "stage2_rank": self._lookup_rank(stage2, normalized, "stage2_top_n_rank"),
             "metrics": self._build_metrics(row, latest_trade_date=latest_trade_date),
             "chart": self._build_chart_payload(daily, row, chart_type),
             "fundamental": self._get_fundamental_data(row, normalized),
         }
+
+    def load_overview_snapshot(self, target_date: str) -> dict[str, object] | None:
+        payload = self.overview_store.load(target_date)
+        if not isinstance(payload, dict):
+            return None
+        items = payload.get("items")
+        if not isinstance(items, list):
+            return None
+        return payload
+
+    def save_overview_snapshot(self, target_date: str, payload: dict[str, object]) -> None:
+        if not isinstance(payload, dict) or not isinstance(payload.get("items"), list):
+            return
+        self.overview_store.save(target_date, payload)
+
+    def get_price_monitor_payload(self) -> dict[str, object]:
+        frame = self.price_monitor_store.list_items()
+        if frame.empty:
+            return {"items": [], "count": 0}
+
+        refreshed_rows: list[dict[str, object]] = []
+        for _, row in frame.iterrows():
+            item = row.to_dict()
+            symbol = _to_text(item.get("symbol")).upper()
+            if symbol:
+                daily = self._ensure_daily_bars(symbol)
+                if not daily.empty:
+                    latest = daily.sort_values("trade_date").iloc[-1]
+                    latest_close = _to_float(latest.get("close"))
+                    target_price = _to_float(item.get("target_price"))
+                    item["latest_trade_date"] = latest.get("trade_date")
+                    item["latest_close"] = latest_close
+                    if latest_close is not None and target_price is not None:
+                        item["distance_amount"] = target_price - latest_close
+                        item["distance_pct"] = (target_price / latest_close - 1.0) * 100.0 if latest_close else None
+                    self.price_monitor_store.update_item(_to_text(item.get("id")), item)
+            refreshed_rows.append(item)
+
+        refreshed = pd.DataFrame(refreshed_rows)
+        return {
+            "count": int(len(refreshed)),
+            "items": self._serialize_price_monitors(refreshed),
+        }
+
+    def add_price_monitor(self, symbol: str, target_price: float) -> dict[str, object]:
+        normalized = symbol.strip().upper()
+        if not normalized:
+            raise ValueError("股票代码不能为空")
+        if target_price <= 0:
+            raise ValueError("目标价格必须大于 0")
+
+        daily = self._ensure_daily_bars(normalized)
+        if daily.empty:
+            raise ValueError(f"未找到 {normalized} 的行情数据")
+
+        latest = daily.sort_values("trade_date").iloc[-1]
+        latest_close = _to_float(latest.get("close"))
+        payload = {
+            "symbol": normalized,
+            "name": self._lookup_stock_name(normalized),
+            "target_price": float(target_price),
+            "latest_trade_date": latest.get("trade_date"),
+            "latest_close": latest_close,
+            "distance_amount": (float(target_price) - latest_close) if latest_close is not None else None,
+            "distance_pct": ((float(target_price) / latest_close) - 1.0) * 100.0 if latest_close not in {None, 0.0} else None,
+        }
+        item = self.price_monitor_store.add_item(payload)
+        return {"item": self._serialize_price_monitors(pd.DataFrame([item]))[0]}
+
+    def delete_price_monitor(self, item_id: str) -> dict[str, object]:
+        ok = self.price_monitor_store.delete_item(item_id)
+        if not ok:
+            raise ValueError(f"未找到监控记录: {item_id}")
+        return {"deleted": True, "id": item_id}
 
     def _get_fundamental_data(self, row: pd.Series, symbol: str) -> dict[str, object]:
         """Return fundamental data from row cache, or fetch live from Tushare if missing.
@@ -1154,6 +1233,25 @@ class DashboardService:
             )
         return rows
 
+    def _serialize_price_monitors(self, frame: pd.DataFrame) -> list[dict[str, object]]:
+        if frame.empty:
+            return []
+        rows: list[dict[str, object]] = []
+        for _, row in frame.iterrows():
+            rows.append(
+                {
+                    "id": _to_text(row.get("id")),
+                    "symbol": _to_text(row.get("symbol")),
+                    "name": _to_text(row.get("name")),
+                    "target_price": _format_number(row.get("target_price")),
+                    "latest_trade_date": _format_date(row.get("latest_trade_date")),
+                    "latest_close": _format_number(row.get("latest_close")),
+                    "distance_amount": _format_signed_number(row.get("distance_amount")),
+                    "distance_pct": _format_signed_percent(row.get("distance_pct")),
+                }
+            )
+        return rows
+
     def _sync_auto_watch_candidates(self) -> None:
         candidates = self._default_stage2_watch_pool()
         if candidates.empty:
@@ -1538,6 +1636,16 @@ def _format_number(value: object, format_spec: str = ".2f", fallback: str = "--"
 def _format_percent(value: object) -> str:
     numeric = _to_float(value)
     return "--" if numeric is None else f"{numeric:.2f}%"
+
+
+def _format_signed_number(value: object) -> str:
+    numeric = _to_float(value)
+    return "--" if numeric is None else f"{numeric:+.2f}"
+
+
+def _format_signed_percent(value: object) -> str:
+    numeric = _to_float(value)
+    return "--" if numeric is None else f"{numeric:+.2f}%"
 
 
 def _format_percent_rank(value: object) -> str:

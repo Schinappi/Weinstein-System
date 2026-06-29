@@ -80,6 +80,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._send_json({"items": self.service.search_stocks(query)})
             return
 
+        if path == "/api/price-monitors":
+            self._send_json(self.service.get_price_monitor_payload())
+            return
+
         if path.startswith("/api/stock/") and path.endswith("/analysis"):
             symbol = unquote(path.removeprefix("/api/stock/").removesuffix("/analysis").rstrip("/"))
             try:
@@ -140,7 +144,18 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._send_json(run_backtest_for_symbols(
                 self.service.parquet_store, self.service.config, symbols_str, target_date,
                 reuse_scan=reuse_scan, force_refresh=force_refresh,
-                name_lookup=self.service._lookup_stock_name))
+                name_lookup=self.service._lookup_stock_name,
+                snapshot_loader=self.service.load_overview_snapshot,
+                snapshot_saver=self.service.save_overview_snapshot))
+            return
+
+        if path == "/api/price-monitors":
+            try:
+                symbol = str(payload.get("symbol", ""))
+                target_price = float(payload.get("target_price") or 0)
+                self._send_json(self.service.add_price_monitor(symbol, target_price))
+            except Exception as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
             return
 
         self._send_json({"error": "Unsupported endpoint"}, status=HTTPStatus.NOT_FOUND)
@@ -161,6 +176,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
             holding_id = unquote(path.removeprefix("/api/stage2/holdings/").rstrip("/"))
             try:
                 self._send_json(self.service.delete_holding_item(holding_id))
+            except Exception as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            return
+
+        if path.startswith("/api/price-monitors/"):
+            item_id = unquote(path.removeprefix("/api/price-monitors/").rstrip("/"))
+            try:
+                self._send_json(self.service.delete_price_monitor(item_id))
             except Exception as exc:
                 self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
             return

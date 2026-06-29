@@ -25,6 +25,8 @@ def run_backtest_for_symbols(
     reuse_scan: bool = False,
     force_refresh: bool = False,
     name_lookup=None,
+    snapshot_loader=None,
+    snapshot_saver=None,
 ) -> dict:
     """Run backtest for explicit symbols, or start/reuse a scan for a target date."""
     from winstan.rules.stage2_continuation import compute_continuation_quality
@@ -56,9 +58,21 @@ def run_backtest_for_symbols(
         if target_date:
             if reuse_scan:
                 return _get_or_start_scan_job(
-                    store, config, target_date, force_refresh=force_refresh, name_lookup=name_lookup
+                    store,
+                    config,
+                    target_date,
+                    force_refresh=force_refresh,
+                    name_lookup=name_lookup,
+                    snapshot_loader=snapshot_loader,
+                    snapshot_saver=snapshot_saver,
                 )
-            return _start_scan_job(store, config, target_date, name_lookup=name_lookup)
+            return _start_scan_job(
+                store,
+                config,
+                target_date,
+                name_lookup=name_lookup,
+                snapshot_saver=snapshot_saver,
+            )
         return {"items": [], "error": "请输入代码和日期", "count": 0}
 
     items: list[dict[str, object]] = []
@@ -118,31 +132,11 @@ def run_backtest_for_symbols(
                     ),
                     "cont_box_duration_weeks": int(result.get("cont_box_duration_weeks") or 0),
                     "cont_quality_reason": str(result.get("cont_quality_reason") or ""),
-                    "cont_ma30w_slope_10w": (
-                        float(result.get("cont_ma30w_slope_10w") or 0)
-                        if result.get("cont_ma30w_slope_10w") is not None
-                        else None
-                    ),
-                    "cont_box_flatness": (
-                        float(result.get("cont_box_flatness") or 0)
-                        if result.get("cont_box_flatness") is not None
-                        else None
-                    ),
-                    "cont_box_conv": (
-                        float(result.get("cont_box_conv") or 0)
-                        if result.get("cont_box_conv") is not None
-                        else None
-                    ),
-                    "cont_box_vol_low": (
-                        float(result.get("cont_box_vol_low") or 0)
-                        if result.get("cont_box_vol_low") is not None
-                        else None
-                    ),
-                    "cont_box_no_trend": (
-                        float(result.get("cont_box_no_trend") or 0)
-                        if result.get("cont_box_no_trend") is not None
-                        else None
-                    ),
+                    "cont_ma30w_slope_10w": _optional_float(result.get("cont_ma30w_slope_10w")),
+                    "cont_box_flatness": _optional_float(result.get("cont_box_flatness")),
+                    "cont_box_conv": _optional_float(result.get("cont_box_conv")),
+                    "cont_box_vol_low": _optional_float(result.get("cont_box_vol_low")),
+                    "cont_box_no_trend": _optional_float(result.get("cont_box_no_trend")),
                     "error": "",
                 }
             )
@@ -161,8 +155,8 @@ def run_backtest_scan(
     job_id: str | None = None,
 ) -> dict:
     """Run a full-market continuation scan and return top 50 candidates."""
-    from winstan.rules.stage2_continuation import compute_continuation_quality
     from winstan.resample.weekly_builder import build_weekly_bars
+    from winstan.rules.stage2_continuation import compute_continuation_quality
 
     cutoff = pd.Timestamp(target_date)
     if pd.isna(cutoff):
@@ -264,9 +258,7 @@ def run_backtest_scan(
 
 def run_backtest_scan_with_names(store, config: AppConfig, target_date: str, name_lookup=None) -> dict:
     result = run_backtest_scan(store, config, target_date, name_lookup=name_lookup)
-    items = result.get("items", [])
-    for item in items:
-        item["name"] = _lookup_name(str(item.get("symbol") or ""), name_lookup=name_lookup)
+    _fill_names(result.get("items", []), name_lookup=name_lookup)
     return result
 
 
@@ -298,7 +290,7 @@ def get_scan_status(job_id: str) -> dict:
     }
 
 
-def _start_scan_job(store, config: AppConfig, target_date: str, name_lookup=None) -> dict:
+def _start_scan_job(store, config: AppConfig, target_date: str, name_lookup=None, snapshot_saver=None) -> dict:
     job_id = str(uuid.uuid4())[:8]
     with _scan_lock:
         _scan_jobs[job_id] = {
@@ -307,6 +299,7 @@ def _start_scan_job(store, config: AppConfig, target_date: str, name_lookup=None
             "result": None,
             "target_date": target_date,
             "name_lookup": name_lookup,
+            "snapshot_saver": snapshot_saver,
             "processed": 0,
             "total": 0,
             "candidates_total": 0,
@@ -316,7 +309,15 @@ def _start_scan_job(store, config: AppConfig, target_date: str, name_lookup=None
     return {"mode": "scan", "job_id": job_id, "status": "started", "count": 0, "target_date": target_date, "error": ""}
 
 
-def _get_or_start_scan_job(store, config: AppConfig, target_date: str, force_refresh: bool = False, name_lookup=None) -> dict:
+def _get_or_start_scan_job(
+    store,
+    config: AppConfig,
+    target_date: str,
+    force_refresh: bool = False,
+    name_lookup=None,
+    snapshot_loader=None,
+    snapshot_saver=None,
+) -> dict:
     with _scan_lock:
         if not force_refresh:
             cached = _scan_result_cache.get(target_date)
@@ -345,6 +346,13 @@ def _get_or_start_scan_job(store, config: AppConfig, target_date: str, force_ref
                     _fill_names(existing_job["result"].get("items", []), name_lookup=name_lookup)
                     return existing_job["result"]
 
+        if not force_refresh and callable(snapshot_loader):
+            persisted = snapshot_loader(target_date)
+            if isinstance(persisted, dict) and persisted.get("items"):
+                _fill_names(persisted.get("items", []), name_lookup=name_lookup)
+                _scan_result_cache[target_date] = persisted
+                return persisted
+
         job_id = str(uuid.uuid4())[:8]
         _scan_jobs[job_id] = {
             "status": "running",
@@ -352,6 +360,7 @@ def _get_or_start_scan_job(store, config: AppConfig, target_date: str, force_ref
             "result": None,
             "target_date": target_date,
             "name_lookup": name_lookup,
+            "snapshot_saver": snapshot_saver,
             "processed": 0,
             "total": 0,
             "candidates_total": 0,
@@ -366,9 +375,12 @@ def _get_or_start_scan_job(store, config: AppConfig, target_date: str, force_ref
 def _run_scan_async(job_id: str, store, config: AppConfig, target_date: str) -> None:
     try:
         name_lookup = None
+        snapshot_saver = None
         with _scan_lock:
             job = _scan_jobs.get(job_id, {})
             name_lookup = job.get("name_lookup")
+            snapshot_saver = job.get("snapshot_saver")
+
         result = run_backtest_scan(
             store,
             config,
@@ -377,6 +389,11 @@ def _run_scan_async(job_id: str, store, config: AppConfig, target_date: str) -> 
             job_id=job_id,
         )
         _fill_names(result.get("items", []), name_lookup=name_lookup)
+        if callable(snapshot_saver):
+            try:
+                snapshot_saver(target_date, result)
+            except Exception:
+                pass
         with _scan_lock:
             _scan_jobs[job_id] = {"status": "done", "result": result, "elapsed": result.get("elapsed", 0)}
             _scan_jobs_by_date[target_date] = job_id
@@ -395,6 +412,15 @@ def _lookup_name(symbol: str, name_lookup=None) -> str:
     except Exception:
         pass
     return ""
+
+
+def _optional_float(value: object) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except Exception:
+        return None
 
 
 def _update_scan_job_progress(

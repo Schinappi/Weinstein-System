@@ -54,6 +54,9 @@ QUASI_GATE_LABELS = {
 }
 
 
+OVERVIEW_SNAPSHOT_VERSION = 7
+
+
 class DashboardService:
     def __init__(self, config_path: str | Path) -> None:
         self.config = load_config(Path(config_path))
@@ -515,6 +518,8 @@ class DashboardService:
         payload = self.overview_store.load(target_date)
         if not isinstance(payload, dict):
             return None
+        if int(payload.get("snapshot_version") or 0) != OVERVIEW_SNAPSHOT_VERSION:
+            return None
         items = payload.get("items")
         if not isinstance(items, list):
             return None
@@ -523,7 +528,7 @@ class DashboardService:
     def save_overview_snapshot(self, target_date: str, payload: dict[str, object]) -> None:
         if not isinstance(payload, dict) or not isinstance(payload.get("items"), list):
             return
-        self.overview_store.save(target_date, payload)
+        self.overview_store.save(target_date, {**payload, "snapshot_version": OVERVIEW_SNAPSHOT_VERSION})
 
     def get_price_monitor_payload(self) -> dict[str, object]:
         frame = self.price_monitor_store.list_items()

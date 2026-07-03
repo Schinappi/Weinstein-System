@@ -4,7 +4,6 @@ from __future__ import annotations
 import threading
 import time
 import uuid
-from concurrent.futures import ThreadPoolExecutor
 
 import pandas as pd
 
@@ -15,7 +14,12 @@ _scan_jobs: dict[str, dict] = {}
 _scan_jobs_by_date: dict[str, str] = {}
 _scan_result_cache: dict[str, dict] = {}
 _scan_lock = threading.Lock()
-SCAN_MIN_BOX_SCORE = 16.0
+SCAN_TOP_N = 100
+SCAN_RESULT_VERSION = 2
+
+
+def _is_current_scan_result(payload: dict | None) -> bool:
+    return isinstance(payload, dict) and int(payload.get("scan_result_version") or 0) == SCAN_RESULT_VERSION
 
 
 def run_backtest_for_symbols(
@@ -86,21 +90,23 @@ def run_backtest_for_symbols(
                 items.append({"symbol": symbol, "error": f"无效日期: {dt_str}"})
                 continue
 
-            weekly = clean_daily_bars(store.read_symbol_frame("weekly_bars", symbol))
-            if weekly.empty:
-                items.append({"symbol": symbol, "error": "无数据"})
-                continue
-
-            weekly["trade_date"] = pd.to_datetime(weekly["trade_date"])
-            weekly_cut = weekly[weekly["trade_date"] <= cutoff].copy()
-            if len(weekly_cut) < 30:
-                daily_seed = clean_daily_bars(store.read_symbol_frame("daily_bars", symbol))
-                if not daily_seed.empty:
-                    daily_seed["trade_date"] = pd.to_datetime(daily_seed["trade_date"])
+            daily = clean_daily_bars(store.read_symbol_frame("daily_bars", symbol))
+            weekly_cut = pd.DataFrame()
+            if not daily.empty:
+                daily["trade_date"] = pd.to_datetime(daily["trade_date"])
+                daily = daily[daily["trade_date"] <= cutoff].copy()
+                if not daily.empty:
                     from winstan.resample.weekly_builder import build_weekly_bars
 
-                    rebuilt = build_weekly_bars(daily_seed)
-                    weekly_cut = rebuilt[rebuilt["trade_date"] <= cutoff].copy()
+                    weekly_cut = build_weekly_bars(daily)
+
+            if weekly_cut.empty:
+                weekly = clean_daily_bars(store.read_symbol_frame("weekly_bars", symbol))
+                if weekly.empty:
+                    items.append({"symbol": symbol, "error": "无数据"})
+                    continue
+                weekly["trade_date"] = pd.to_datetime(weekly["trade_date"])
+                weekly_cut = weekly[weekly["trade_date"] <= cutoff].copy()
 
             if weekly_cut.empty:
                 items.append({"symbol": symbol, "error": "无数据"})
@@ -108,11 +114,6 @@ def run_backtest_for_symbols(
             if len(weekly_cut) < 30:
                 items.append({"symbol": symbol, "error": f"仅{len(weekly_cut)}周", "available_weeks": len(weekly_cut)})
                 continue
-
-            daily = clean_daily_bars(store.read_symbol_frame("daily_bars", symbol))
-            if not daily.empty:
-                daily["trade_date"] = pd.to_datetime(daily["trade_date"])
-                daily = daily[daily["trade_date"] <= cutoff].copy()
 
             result = compute_continuation_quality(weekly_cut, config, daily=daily if not daily.empty else None)
             items.append(
@@ -140,6 +141,17 @@ def run_backtest_for_symbols(
                     "cont_box_conv": _optional_float(result.get("cont_box_conv")),
                     "cont_box_vol_low": _optional_float(result.get("cont_box_vol_low")),
                     "cont_box_no_trend": _optional_float(result.get("cont_box_no_trend")),
+                    "cont_flatten_duration_weeks": int(result.get("cont_flatten_duration_weeks") or 0),
+                    "cont_flatten_score": _optional_float(result.get("cont_flatten_score")),
+                    "cont_lifecycle_phase": str(result.get("cont_lifecycle_phase") or ""),
+                    "cont_ema_weekly_change_pct": _optional_float(result.get("cont_ema_weekly_change_pct")),
+                    "cont_ema_weekly_change_4w_avg": _optional_float(result.get("cont_ema_weekly_change_4w_avg")),
+                    "cont_ema_weekly_change_8w_avg": _optional_float(result.get("cont_ema_weekly_change_8w_avg")),
+                    "cont_flatten_shrink_ratio": _optional_float(result.get("cont_flatten_shrink_ratio")),
+                    "cont_base_duration_weeks": int(result.get("cont_base_duration_weeks") or 0),
+                    "cont_base_maturity_score": _optional_float(result.get("cont_base_maturity_score")),
+                    "cont_base_range_stability_score": _optional_float(result.get("cont_base_range_stability_score")),
+                    "cont_base_center_drift_pct": _optional_float(result.get("cont_base_center_drift_pct")),
                     "error": "",
                 }
             )
@@ -147,7 +159,13 @@ def run_backtest_for_symbols(
             items.append({"symbol": symbol, "error": str(exc)[:120]})
 
     items.sort(key=lambda item: item.get("cont_score_box") or 0, reverse=True)
-    return {"items": items, "count": len(items), "target_date": resolved_target_date, "error": ""}
+    return {
+        "items": items,
+        "count": len(items),
+        "target_date": resolved_target_date,
+        "error": "",
+        "scan_result_version": SCAN_RESULT_VERSION,
+    }
 
 
 def run_backtest_scan(
@@ -157,7 +175,7 @@ def run_backtest_scan(
     name_lookup=None,
     job_id: str | None = None,
 ) -> dict:
-    """Run a full-market continuation scan and return candidates with cont_score_box >= 16."""
+    """Run a full-market continuation scan and return the top continuation candidates."""
     from winstan.resample.weekly_builder import build_weekly_bars
     from winstan.rules.stage2_continuation import compute_continuation_quality
 
@@ -185,9 +203,9 @@ def run_backtest_scan(
             if len(weekly_cut) < 30:
                 return
 
-            result = compute_continuation_quality(weekly_cut, config)
+            result = compute_continuation_quality(weekly_cut, config, daily=daily)
             box_score = float(result.get("cont_score_box") or 0)
-            if not result.get("cont_is_applicable") or box_score < SCAN_MIN_BOX_SCORE:
+            if not result.get("cont_is_applicable"):
                 return
 
             final_score = (
@@ -216,6 +234,16 @@ def run_backtest_scan(
                         ),
                         "cont_box_duration_weeks": int(result.get("cont_box_duration_weeks") or 0),
                         "cont_quality_reason": str(result.get("cont_quality_reason") or ""),
+                        "cont_box_flatness": _optional_float(result.get("cont_box_flatness")),
+                        "cont_flatten_duration_weeks": int(result.get("cont_flatten_duration_weeks") or 0),
+                        "cont_flatten_score": _optional_float(result.get("cont_flatten_score")),
+                        "cont_lifecycle_phase": str(result.get("cont_lifecycle_phase") or ""),
+                        "cont_ema_weekly_change_pct": _optional_float(result.get("cont_ema_weekly_change_pct")),
+                        "cont_ema_weekly_change_4w_avg": _optional_float(result.get("cont_ema_weekly_change_4w_avg")),
+                        "cont_ema_weekly_change_8w_avg": _optional_float(result.get("cont_ema_weekly_change_8w_avg")),
+                        "cont_flatten_shrink_ratio": _optional_float(result.get("cont_flatten_shrink_ratio")),
+                        "cont_base_duration_weeks": int(result.get("cont_base_duration_weeks") or 0),
+                        "cont_base_maturity_score": _optional_float(result.get("cont_base_maturity_score")),
                         "final_score": round(final_score, 1),
                         "latest_date": str(weekly_cut["trade_date"].max().date()),
                         "available_weeks": len(weekly_cut),
@@ -244,19 +272,21 @@ def run_backtest_scan(
             )
 
     started_at = time.perf_counter()
-    with ThreadPoolExecutor(max_workers=12) as executor:
-        list(executor.map(_check, all_symbols))
+    for symbol in all_symbols:
+        _check(symbol)
 
     candidates.sort(key=lambda item: item.get("cont_score_box", 0), reverse=True)
+    top_candidates = candidates[:SCAN_TOP_N]
     return {
-        "items": candidates,
-        "count": len(candidates),
+        "items": top_candidates,
+        "count": len(top_candidates),
         "target_date": target_date,
         "scanned": len(all_symbols),
         "mode": "scan",
         "elapsed": round(time.perf_counter() - started_at, 1),
         "candidates_total": len(candidates),
         "error": "",
+        "scan_result_version": SCAN_RESULT_VERSION,
     }
 
 
@@ -325,9 +355,11 @@ def _get_or_start_scan_job(
     with _scan_lock:
         if not force_refresh:
             cached = _scan_result_cache.get(target_date)
-            if cached:
+            if _is_current_scan_result(cached):
                 _fill_names(cached.get("items", []), name_lookup=name_lookup)
                 return cached
+            if cached is not None:
+                _scan_result_cache.pop(target_date, None)
 
             existing_job_id = _scan_jobs_by_date.get(target_date)
             if existing_job_id:
@@ -346,13 +378,13 @@ def _get_or_start_scan_job(
                         "candidates_total": int(existing_job.get("candidates_total") or 0),
                         "error": "",
                     }
-                if existing_job.get("status") == "done" and existing_job.get("result"):
+                if existing_job.get("status") == "done" and _is_current_scan_result(existing_job.get("result")):
                     _fill_names(existing_job["result"].get("items", []), name_lookup=name_lookup)
                     return existing_job["result"]
 
         if not force_refresh and callable(snapshot_loader):
             persisted = snapshot_loader(target_date)
-            if isinstance(persisted, dict) and persisted.get("items"):
+            if _is_current_scan_result(persisted) and persisted.get("items"):
                 _fill_names(persisted.get("items", []), name_lookup=name_lookup)
                 _scan_result_cache[target_date] = persisted
                 return persisted

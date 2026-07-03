@@ -16,6 +16,7 @@ def build_weekly_bars(daily_bars: pd.DataFrame) -> pd.DataFrame:
     frame = daily_bars.copy()
     frame["trade_date"] = pd.to_datetime(frame["trade_date"])
     frame = frame.sort_values(["symbol", "trade_date"])
+    unique_symbols = frame["symbol"].dropna().unique()
 
     agg_map: dict[str, str] = {
         "open": "first",
@@ -30,6 +31,21 @@ def build_weekly_bars(daily_bars: pd.DataFrame) -> pd.DataFrame:
         agg_map["adj_factor"] = "last"
     if "source" in frame.columns:
         agg_map["source"] = "last"
+
+    if len(unique_symbols) == 1:
+        indexed = frame.set_index("trade_date")
+        weekly = (
+            indexed.resample("W-FRI")
+            .agg(agg_map)
+            .dropna(subset=["open", "high", "low", "close"], how="any")
+            .reset_index()
+        )
+        weekly["symbol"] = unique_symbols[0]
+        result = weekly
+        for column in WEEKLY_COLUMNS:
+            if column not in result.columns:
+                result[column] = None
+        return result[WEEKLY_COLUMNS]
 
     weekly_frames: list[pd.DataFrame] = []
     for symbol, group in frame.groupby("symbol", sort=False):

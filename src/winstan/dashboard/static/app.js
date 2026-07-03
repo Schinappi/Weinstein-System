@@ -35,6 +35,7 @@ const TODAY = dayjs().format("YYYY-MM-DD");
 const PAGE_OVERVIEW = "overview";
 const PAGE_BACKTEST = "backtest";
 const PAGE_MONITOR = "monitor";
+const SCAN_RULE_LABEL = "通过生命周期/减速/成熟度门槛后，按结构分排序显示前100个";
 
 function formatNumber(value, digits = 1, fallback = "--") {
   return Number.isFinite(Number(value)) ? Number(value).toFixed(digits) : fallback;
@@ -1245,6 +1246,27 @@ function BacktestPage({
       render: (value) => formatInt(value),
     },
     {
+      title: "走平周数",
+      dataIndex: "cont_flatten_duration_weeks",
+      key: "cont_flatten_duration_weeks",
+      width: 100,
+      render: (value) => formatInt(value),
+    },
+    {
+      title: "基底周数",
+      dataIndex: "cont_base_duration_weeks",
+      key: "cont_base_duration_weeks",
+      width: 100,
+      render: (value) => formatInt(value),
+    },
+    {
+      title: "成熟度",
+      dataIndex: "cont_base_maturity_score",
+      key: "cont_base_maturity_score",
+      width: 96,
+      render: (value) => formatNumber(value, 0),
+    },
+    {
       title: "可用周数",
       dataIndex: "available_weeks",
       key: "available_weeks",
@@ -1331,14 +1353,14 @@ function BacktestPage({
               <h2 className="section-title">回测结果</h2>
               <div className="toolbar-copy">
                 ${isScanMode
-                  ? "点击行可查看个股详情。全市场扫描仅显示结构分 16 分及以上的标的，并支持分页浏览。"
+                  ? `点击行可查看个股详情。全市场扫描${SCAN_RULE_LABEL}，并支持分页浏览。`
                   : "点击行可查看个股详情。手动模式按结构分排序，保留原有单股回测输出。"}
               </div>
             </div>
             <div className="toolbar-actions">
               <${Tag} color=${isScanMode ? "cyan" : "blue"}>${isScanMode ? "全市场扫描" : "单股回测"}<//>
               <${Tag} color="default">目标日期 ${data?.target_date || formState.date || TODAY}<//>
-              ${isScanMode ? html`<${Tag} color="purple">结构分 >= 16<//>` : null}
+              ${isScanMode ? html`<${Tag} color="purple">${SCAN_RULE_LABEL}<//>` : null}
             </div>
           </div>
           <div className="toolbar-row" style=${{ marginBottom: 16, gap: 12 }}>
@@ -1546,7 +1568,7 @@ function AppContent() {
   const buildStatusText = (payload) => {
     const items = payload.items || [];
     const modernScanInfo = payload.mode === "scan"
-      ? ` 全市场扫描 ${formatInt(payload.scanned, "?")} 只，用时 ${formatElapsedSeconds(payload.elapsed)}，结构分 16 分及以上共 ${formatInt(payload.candidates_total, "?")} 个候选。`
+      ? ` 全市场扫描 ${formatInt(payload.scanned, "?")} 只，用时 ${formatElapsedSeconds(payload.elapsed)}，共命中 ${formatInt(payload.candidates_total, "?")} 个候选，当前显示前 ${formatInt(payload.items?.length, "0")} 个。`
       : "";
     return `${formatInt(items.length, "0")} 条结果，目标日期 ${payload.target_date || TODAY}。${modernScanInfo}`.trim();
   };

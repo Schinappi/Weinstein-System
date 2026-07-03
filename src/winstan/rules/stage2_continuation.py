@@ -33,6 +33,521 @@ GRADE_THRESHOLDS = [
 ]
 
 
+MIN_BASE_MATURITY_SCORE = 60.0
+FLATTEN_DETECTION_MODE = "legacy"
+MIN_DECELERATED_SLOPE_8W_PCT = -0.25
+MIN_DECELERATION_IMPROVEMENT_RATIO = 0.5
+BASE_SEARCH_WEEKS = 52
+MIN_BASE_RANGE_PCT = 4.0
+MAX_BASE_RANGE_PCT = 38.0
+MAX_BASE_CENTER_DRIFT_PCT = 22.0
+MAX_FLAT_WEEKLY_CHANGE_PCT = 0.12
+MAX_FLATTEN_WEEKLY_CHANGE_PCT = 0.35
+FLATTEN_SHRINK_TOLERANCE = 0.12
+STRICT_FLAT_LATEST_ABS_PCT = 0.10
+STRICT_FLATTEN_LATEST_ABS_PCT = 0.25
+STRICT_CHAIN_STEP_ALLOWANCE = 0.28
+STRICT_CHAIN_MAX_ABS_PCT = 1.00
+STRICT_CHAIN_TIGHTEN_TOLERANCE = 0.05
+STRICT_FLAT_RECENT_ABS_MAX_PCT = 0.25
+
+
+def _pct_change(current: float, previous: float) -> float | None:
+    if previous == 0:
+        return None
+    return (current / previous - 1.0) * 100.0
+
+
+def _window_pct_change(series: pd.Series, weeks: int, end_offset: int = 0) -> float | None:
+    values = series.dropna().reset_index(drop=True)
+    end_idx = len(values) - 1 - end_offset
+    start_idx = end_idx - weeks
+    if start_idx < 0 or end_idx < 0:
+        return None
+    return _pct_change(float(values.iloc[end_idx]), float(values.iloc[start_idx]))
+
+
+def _detect_ema_deceleration(
+    ema_vals: pd.Series,
+    flatten_info: dict[str, object],
+) -> dict[str, object]:
+    recent_8w_slope = flatten_info.get("slope_8w")
+    if recent_8w_slope is None:
+        recent_8w_slope = _window_pct_change(ema_vals, 8)
+    prev_8w_slope = _window_pct_change(ema_vals, 8, end_offset=8)
+
+    decelerating = recent_8w_slope is not None and recent_8w_slope >= MIN_DECELERATED_SLOPE_8W_PCT
+    improving = False
+    if recent_8w_slope is not None and prev_8w_slope is not None and prev_8w_slope < 0:
+        improving = (
+            recent_8w_slope > prev_8w_slope
+            and abs(recent_8w_slope) <= abs(prev_8w_slope) * MIN_DECELERATION_IMPROVEMENT_RATIO
+        )
+        decelerating = decelerating or improving
+
+    reason = ""
+    if decelerating and recent_8w_slope is not None:
+        if improving and prev_8w_slope is not None:
+            reason = f"8w {prev_8w_slope:.2f}% -> {recent_8w_slope:.2f}%"
+        else:
+            reason = f"8w {recent_8w_slope:.2f}%"
+    elif recent_8w_slope is not None:
+        reason = f"8w {recent_8w_slope:.2f}%"
+
+    return {
+        "decelerating": bool(decelerating),
+        "recent_8w_slope": round(float(recent_8w_slope), 2) if recent_8w_slope is not None else None,
+        "prev_8w_slope": round(float(prev_8w_slope), 2) if prev_8w_slope is not None else None,
+        "improving": bool(improving),
+        "reason": reason,
+    }
+
+
+def _score_flatten_weeks(flatten_weeks: int) -> float:
+    if flatten_weeks >= 10:
+        return 1.0
+    if flatten_weeks >= 6:
+        return 0.75
+    if flatten_weeks >= 4:
+        return 0.5
+    if flatten_weeks >= 2:
+        return 0.25
+    return 0.0
+
+
+def _score_base_weeks(base_weeks: int) -> float:
+    if base_weeks < 4:
+        return 0.0
+    return max(0.0, min(1.0, (base_weeks - 4) / 4.0))
+
+
+def _evaluate_base_candidate(
+    segment: pd.DataFrame,
+    box_info: dict[str, object],
+) -> dict[str, object] | None:
+    if len(segment) < 4:
+        return None
+
+    segment_high = float(segment["high"].max())
+    segment_low = float(segment["low"].min())
+    if segment_low <= 0 or segment_high <= segment_low:
+        return None
+
+    segment_range_pct = (segment_high / segment_low - 1.0) * 100.0
+    if segment_range_pct < MIN_BASE_RANGE_PCT or segment_range_pct > MAX_BASE_RANGE_PCT:
+        return None
+
+    duration_weeks = len(segment)
+    third = max(duration_weeks // 3, 1)
+    first_slice = segment.iloc[: max(duration_weeks // 2, 2)]
+    last_slice = segment.iloc[-max(duration_weeks // 2, 2):]
+    first_range = (float(first_slice["high"].max()) / float(first_slice["low"].min()) - 1.0) * 100.0
+    last_range = (float(last_slice["high"].max()) / float(last_slice["low"].min()) - 1.0) * 100.0
+    range_stability = 1.0 - max(last_range - first_range, 0.0) / max(first_range, 0.1)
+    range_stability = max(0.0, min(range_stability, 1.0))
+
+    start_center = float(segment["close"].iloc[:third].mean())
+    end_center = float(segment["close"].iloc[-third:].mean())
+    center_drift_pct = _pct_change(end_center, start_center) if start_center else None
+    if center_drift_pct is not None and abs(center_drift_pct) > MAX_BASE_CENTER_DRIFT_PCT:
+        return None
+
+    drift_score = 1.0
+    if center_drift_pct is not None:
+        drift_score = max(0.0, 1.0 - abs(center_drift_pct) / 15.0)
+
+    duration_score = min(duration_weeks / 16.0, 1.0)
+    range_score = max(0.0, 1.0 - max(segment_range_pct - 10.0, 0.0) / 28.0)
+
+    mean_close = float(segment["close"].mean())
+    trend_score = 0.0
+    if mean_close > 0:
+        x = np.arange(duration_weeks, dtype=float)
+        slope, _ = np.polyfit(x, segment["close"].to_numpy(dtype=float), 1)
+        trend_pct = abs(slope * duration_weeks) / mean_close * 100.0
+        trend_score = max(0.0, 1.0 - trend_pct / 12.0)
+
+    local_box_quality = np.mean(
+        [
+            float(box_info.get("box_flatness") or range_score),
+            float(box_info.get("box_conv") or range_score),
+            float(box_info.get("box_no_trend") or trend_score),
+        ]
+    )
+    clarity_score = np.mean([local_box_quality, range_score, trend_score])
+    maturity_score = duration_score * 0.30 + range_stability * 0.20 + drift_score * 0.20 + clarity_score * 0.30
+    selection_score = maturity_score + min(duration_weeks / 30.0, 1.0) * 0.25
+
+    return {
+        "base_duration_weeks": int(duration_weeks),
+        "base_maturity_score": round(float(maturity_score) * 100.0, 1),
+        "base_range_stability_score": round(float(range_stability), 3),
+        "base_center_drift_pct": round(center_drift_pct, 2) if center_drift_pct is not None else None,
+        "selection_score": float(selection_score),
+    }
+
+
+def _score_stage1_structure(
+    box_score: float,
+    base_info: dict[str, object],
+    flatten_info: dict[str, object],
+) -> float:
+    box_component = max(0.0, min(box_score / 25.0, 1.0))
+    maturity_component = max(0.0, min(float(base_info.get("base_maturity_score") or 0.0) / 100.0, 1.0))
+    base_component = _score_base_weeks(int(base_info.get("base_duration_weeks") or 0))
+    flatten_component = _score_flatten_weeks(int(flatten_info.get("flatten_duration_weeks") or 0))
+
+    total = (
+        box_component * 0.35
+        + maturity_component * 0.35
+        + base_component * 0.20
+        + flatten_component * 0.10
+    )
+    return min(round(total * 25.0, 1), 25.0)
+
+
+def _detect_flatten_phase_legacy(ema_vals: pd.Series) -> dict[str, object]:
+    default = {
+        "flatten_duration_weeks": 0,
+        "flatten_start_idx": max(len(ema_vals) - 1, 0),
+        "flatten_score": 0.0,
+        "lifecycle_phase": "unknown",
+        "latest_weekly_change_pct": None,
+        "avg_weekly_change_4w": None,
+        "avg_weekly_change_8w": None,
+        "flatten_shrink_ratio": None,
+        "slope_4w": None,
+        "slope_8w": None,
+        "slope_12w": None,
+    }
+    series = ema_vals.dropna().reset_index(drop=True)
+    if len(series) < 6:
+        return default
+
+    def _window_slope(weeks: int) -> float | None:
+        if len(series) <= weeks:
+            return None
+        return _pct_change(float(series.iloc[-1]), float(series.iloc[-1 - weeks]))
+
+    slope_4w = _window_slope(4)
+    slope_8w = _window_slope(8)
+    slope_12w = _window_slope(12)
+
+    weekly_changes = (series / series.shift(1) - 1.0) * 100.0
+    weekly_changes = weekly_changes.dropna().reset_index(drop=True)
+    if weekly_changes.empty:
+        return {
+            **default,
+            "slope_4w": round(slope_4w, 2) if slope_4w is not None else None,
+            "slope_8w": round(slope_8w, 2) if slope_8w is not None else None,
+            "slope_12w": round(slope_12w, 2) if slope_12w is not None else None,
+        }
+
+    latest_weekly_change = float(weekly_changes.iloc[-1])
+    avg_weekly_change_4w = float(weekly_changes.iloc[-4:].mean()) if len(weekly_changes) >= 4 else latest_weekly_change
+    avg_weekly_change_8w = (
+        float(weekly_changes.iloc[-8:].mean()) if len(weekly_changes) >= 8 else avg_weekly_change_4w
+    )
+    recent_abs_max = float(weekly_changes.iloc[-min(3, len(weekly_changes)):].abs().max())
+
+    flatten_duration = 0
+    flatten_change_start_idx = len(weekly_changes) - 1
+    if abs(latest_weekly_change) <= MAX_FLATTEN_WEEKLY_CHANGE_PCT:
+        newer_abs = abs(latest_weekly_change)
+        flatten_duration = 1
+        flatten_change_start_idx = len(weekly_changes) - 1
+        for idx in range(len(weekly_changes) - 2, -1, -1):
+            change_val = float(weekly_changes.iloc[idx])
+            current_abs = abs(change_val)
+            if change_val <= 0.15 and current_abs >= newer_abs - FLATTEN_SHRINK_TOLERANCE:
+                flatten_duration += 1
+                flatten_change_start_idx = idx
+                newer_abs = current_abs
+                continue
+            break
+
+    flat_duration = 0
+    flat_change_start_idx = len(weekly_changes) - 1
+    if abs(latest_weekly_change) <= 0.45:
+        flat_duration = 1
+        flat_change_start_idx = len(weekly_changes) - 1
+        for idx in range(len(weekly_changes) - 2, -1, -1):
+            change_val = float(weekly_changes.iloc[idx])
+            if abs(change_val) <= 0.45:
+                flat_duration += 1
+                flat_change_start_idx = idx
+                continue
+            break
+
+    flatten_start_idx = max(flatten_change_start_idx, 0) if flatten_duration else max(len(series) - 1, 0)
+    first_abs = abs(float(weekly_changes.iloc[flatten_change_start_idx])) if flatten_duration else None
+    flatten_shrink_ratio = (
+        abs(latest_weekly_change) / first_abs if first_abs and first_abs > 0 else None
+    )
+
+    is_flat = (
+        abs(avg_weekly_change_4w) <= 0.15
+        and abs(latest_weekly_change) <= 0.25
+        and recent_abs_max <= 0.45
+        and (slope_8w is None or abs(slope_8w) <= 1.4)
+    )
+    is_rising = avg_weekly_change_4w >= 0.18 and latest_weekly_change > 0.0
+    is_flattening = (
+        flatten_duration >= 4
+        and latest_weekly_change <= 0.15
+        and abs(latest_weekly_change) <= MAX_FLATTEN_WEEKLY_CHANGE_PCT
+        and avg_weekly_change_4w <= 0.05
+        and (
+            (flatten_shrink_ratio is not None and flatten_shrink_ratio <= 0.65)
+            or avg_weekly_change_4w >= avg_weekly_change_8w + 0.15
+        )
+    )
+
+    lifecycle_phase = "still_falling"
+    if is_flat:
+        lifecycle_phase = "flat"
+    elif is_flattening:
+        lifecycle_phase = "flattening"
+    elif is_rising:
+        lifecycle_phase = "rising"
+
+    if lifecycle_phase == "flat" and flat_duration > flatten_duration:
+        flatten_duration = flat_duration
+        flatten_change_start_idx = flat_change_start_idx
+
+    flatten_start_idx = max(flatten_change_start_idx, 0) if flatten_duration else max(len(series) - 1, 0)
+    first_abs = abs(float(weekly_changes.iloc[flatten_change_start_idx])) if flatten_duration else None
+    flatten_shrink_ratio = (
+        abs(latest_weekly_change) / first_abs if first_abs and first_abs > 0 else None
+    )
+
+    duration_score = min(flatten_duration / 8.0, 1.0) if flatten_duration else 0.0
+    shrink_score = 0.0
+    if flatten_shrink_ratio is not None:
+        shrink_score = max(0.0, min(1.0, 1.0 - flatten_shrink_ratio))
+    terminal_score = max(0.0, 1.0 - abs(latest_weekly_change) / max(MAX_FLATTEN_WEEKLY_CHANGE_PCT, 0.01))
+    phase_bonus = 1.0 if lifecycle_phase == "flat" else 0.8 if lifecycle_phase == "flattening" else 0.2 if lifecycle_phase == "rising" else 0.0
+    flatten_score = duration_score * 0.35 + shrink_score * 0.25 + terminal_score * 0.20 + phase_bonus * 0.20
+
+    return {
+        "flatten_duration_weeks": int(flatten_duration),
+        "flatten_start_idx": int(flatten_start_idx),
+        "flatten_score": round(flatten_score, 3),
+        "lifecycle_phase": lifecycle_phase,
+        "latest_weekly_change_pct": round(latest_weekly_change, 3),
+        "avg_weekly_change_4w": round(avg_weekly_change_4w, 3),
+        "avg_weekly_change_8w": round(avg_weekly_change_8w, 3),
+        "flatten_shrink_ratio": round(flatten_shrink_ratio, 3) if flatten_shrink_ratio is not None else None,
+        "slope_4w": round(slope_4w, 2) if slope_4w is not None else None,
+        "slope_8w": round(slope_8w, 2) if slope_8w is not None else None,
+        "slope_12w": round(slope_12w, 2) if slope_12w is not None else None,
+    }
+
+
+def _detect_flatten_phase_strict(ema_vals: pd.Series) -> dict[str, object]:
+    default = {
+        "flatten_duration_weeks": 0,
+        "flatten_start_idx": max(len(ema_vals) - 1, 0),
+        "flatten_score": 0.0,
+        "lifecycle_phase": "unknown",
+        "latest_weekly_change_pct": None,
+        "avg_weekly_change_4w": None,
+        "avg_weekly_change_8w": None,
+        "flatten_shrink_ratio": None,
+        "slope_4w": None,
+        "slope_8w": None,
+        "slope_12w": None,
+    }
+    series = ema_vals.dropna().reset_index(drop=True)
+    if len(series) < 6:
+        return default
+
+    def _window_slope(weeks: int) -> float | None:
+        if len(series) <= weeks:
+            return None
+        return _pct_change(float(series.iloc[-1]), float(series.iloc[-1 - weeks]))
+
+    slope_4w = _window_slope(4)
+    slope_8w = _window_slope(8)
+    slope_12w = _window_slope(12)
+
+    weekly_changes = (series / series.shift(1) - 1.0) * 100.0
+    weekly_changes = weekly_changes.dropna().reset_index(drop=True)
+    if weekly_changes.empty:
+        return {
+            **default,
+            "slope_4w": round(slope_4w, 2) if slope_4w is not None else None,
+            "slope_8w": round(slope_8w, 2) if slope_8w is not None else None,
+            "slope_12w": round(slope_12w, 2) if slope_12w is not None else None,
+        }
+
+    abs_changes = weekly_changes.abs()
+    latest_weekly_change = float(weekly_changes.iloc[-1])
+    latest_abs_change = float(abs_changes.iloc[-1])
+    avg_weekly_change_4w = float(weekly_changes.iloc[-4:].mean()) if len(weekly_changes) >= 4 else latest_weekly_change
+    avg_weekly_change_8w = (
+        float(weekly_changes.iloc[-8:].mean()) if len(weekly_changes) >= 8 else avg_weekly_change_4w
+    )
+    avg_abs_change_4w = float(abs_changes.iloc[-4:].mean()) if len(abs_changes) >= 4 else latest_abs_change
+    avg_abs_change_8w = float(abs_changes.iloc[-8:].mean()) if len(abs_changes) >= 8 else avg_abs_change_4w
+    recent_abs_max = float(abs_changes.iloc[-min(3, len(abs_changes)):].max())
+
+    flatten_duration = 0
+    flatten_change_start_idx = len(weekly_changes) - 1
+    if latest_abs_change <= STRICT_FLATTEN_LATEST_ABS_PCT:
+        newer_abs = latest_abs_change
+        flatten_duration = 1
+        flatten_change_start_idx = len(weekly_changes) - 1
+        for idx in range(len(weekly_changes) - 2, -1, -1):
+            current_change = float(weekly_changes.iloc[idx])
+            current_abs = abs(current_change)
+            if current_abs > STRICT_CHAIN_MAX_ABS_PCT:
+                break
+            if current_abs + STRICT_CHAIN_TIGHTEN_TOLERANCE < newer_abs:
+                break
+            if current_abs > newer_abs + STRICT_CHAIN_STEP_ALLOWANCE:
+                break
+            if current_change > 0.25 and current_abs > 0.12:
+                break
+            flatten_duration += 1
+            flatten_change_start_idx = idx
+            newer_abs = current_abs
+
+    flat_duration = 0
+    flat_change_start_idx = len(weekly_changes) - 1
+    if latest_abs_change <= STRICT_FLAT_RECENT_ABS_MAX_PCT:
+        flat_duration = 1
+        flat_change_start_idx = len(weekly_changes) - 1
+        for idx in range(len(weekly_changes) - 2, -1, -1):
+            current_abs = abs(float(weekly_changes.iloc[idx]))
+            if current_abs <= STRICT_FLAT_RECENT_ABS_MAX_PCT:
+                flat_duration += 1
+                flat_change_start_idx = idx
+                continue
+            break
+
+    if flat_duration > flatten_duration:
+        flatten_duration = flat_duration
+        flatten_change_start_idx = flat_change_start_idx
+
+    flatten_start_idx = max(flatten_change_start_idx, 0) if flatten_duration else max(len(series) - 1, 0)
+    first_abs = abs(float(weekly_changes.iloc[flatten_change_start_idx])) if flatten_duration else None
+    flatten_shrink_ratio = (
+        latest_abs_change / first_abs if first_abs and first_abs > 0 else None
+    )
+
+    is_flat = (
+        flatten_duration >= 6
+        and latest_abs_change <= STRICT_FLAT_LATEST_ABS_PCT
+        and avg_abs_change_4w <= 0.18
+        and recent_abs_max <= STRICT_FLAT_RECENT_ABS_MAX_PCT
+        and abs(avg_weekly_change_4w) <= 0.12
+        and (slope_8w is None or abs(slope_8w) <= 1.2)
+    )
+    is_flattening = (
+        flatten_duration >= 4
+        and latest_abs_change <= STRICT_FLATTEN_LATEST_ABS_PCT
+        and avg_abs_change_4w <= 0.38
+        and avg_weekly_change_4w <= 0.02
+        and (
+            (flatten_shrink_ratio is not None and flatten_shrink_ratio <= 0.45)
+            or avg_abs_change_4w <= max(avg_abs_change_8w - 0.08, 0.0)
+        )
+    )
+    is_rising = avg_weekly_change_4w >= 0.18 and latest_weekly_change > 0.0
+
+    lifecycle_phase = "still_falling"
+    if is_flat:
+        lifecycle_phase = "flat"
+    elif is_flattening:
+        lifecycle_phase = "flattening"
+    elif is_rising:
+        lifecycle_phase = "rising"
+
+    duration_score = min(flatten_duration / 8.0, 1.0) if flatten_duration else 0.0
+    shrink_score = 0.0
+    if flatten_shrink_ratio is not None:
+        shrink_score = max(0.0, min(1.0, 1.0 - flatten_shrink_ratio))
+    terminal_score = max(0.0, 1.0 - latest_abs_change / max(STRICT_FLATTEN_LATEST_ABS_PCT, 0.01))
+    phase_bonus = 1.0 if lifecycle_phase == "flat" else 0.8 if lifecycle_phase == "flattening" else 0.2 if lifecycle_phase == "rising" else 0.0
+    flatten_score = duration_score * 0.35 + shrink_score * 0.25 + terminal_score * 0.20 + phase_bonus * 0.20
+
+    return {
+        "flatten_duration_weeks": int(flatten_duration),
+        "flatten_start_idx": int(flatten_start_idx),
+        "flatten_score": round(flatten_score, 3),
+        "lifecycle_phase": lifecycle_phase,
+        "latest_weekly_change_pct": round(latest_weekly_change, 3),
+        "avg_weekly_change_4w": round(avg_weekly_change_4w, 3),
+        "avg_weekly_change_8w": round(avg_weekly_change_8w, 3),
+        "flatten_shrink_ratio": round(flatten_shrink_ratio, 3) if flatten_shrink_ratio is not None else None,
+        "slope_4w": round(slope_4w, 2) if slope_4w is not None else None,
+        "slope_8w": round(slope_8w, 2) if slope_8w is not None else None,
+        "slope_12w": round(slope_12w, 2) if slope_12w is not None else None,
+    }
+
+
+def _detect_flatten_phase(ema_vals: pd.Series) -> dict[str, object]:
+    if FLATTEN_DETECTION_MODE == "legacy":
+        return _detect_flatten_phase_legacy(ema_vals)
+    return _detect_flatten_phase_strict(ema_vals)
+
+
+def _detect_base_region(
+    weekly: pd.DataFrame,
+    box_info: dict[str, object],
+    flatten_info: dict[str, object],
+) -> dict[str, object]:
+    default = {
+        "base_start_idx": max(len(weekly) - 1, 0),
+        "base_duration_weeks": 0,
+        "base_maturity_score": 0.0,
+        "base_range_stability_score": None,
+        "base_center_drift_pct": None,
+    }
+    if weekly.empty or len(weekly) < 6:
+        return default
+
+    n = len(weekly)
+    flatten_start_idx = int(flatten_info.get("flatten_start_idx", n - 1) or (n - 1))
+    search_floor = max(0, n - BASE_SEARCH_WEEKS)
+    preferred_start = flatten_start_idx
+    if box_info.get("box_valid"):
+        preferred_start = min(preferred_start, int(box_info.get("box_start_idx", n - 1) or (n - 1)))
+
+    best_info: dict[str, object] | None = None
+    best_start_idx = preferred_start
+    best_selection = -1.0
+
+    for candidate_idx in range(search_floor, n - 3):
+        if candidate_idx > preferred_start:
+            continue
+        candidate = _evaluate_base_candidate(weekly.iloc[candidate_idx:].copy(), box_info)
+        if candidate is None:
+            continue
+
+        selection_score = float(candidate.get("selection_score") or 0.0)
+        duration_weeks = int(candidate.get("base_duration_weeks") or 0)
+        if selection_score > best_selection or (
+            abs(selection_score - best_selection) < 1e-9 and duration_weeks > int((best_info or {}).get("base_duration_weeks") or 0)
+        ):
+            best_selection = selection_score
+            best_start_idx = candidate_idx
+            best_info = candidate
+
+    if best_info is None:
+        fallback_start_idx = max(0, min(preferred_start, n - 1))
+        return {**default, "base_start_idx": fallback_start_idx, "base_duration_weeks": len(weekly.iloc[fallback_start_idx:])}
+
+    return {
+        "base_start_idx": int(best_start_idx),
+        "base_duration_weeks": int(best_info.get("base_duration_weeks") or 0),
+        "base_maturity_score": float(best_info.get("base_maturity_score") or 0.0),
+        "base_range_stability_score": best_info.get("base_range_stability_score"),
+        "base_center_drift_pct": best_info.get("base_center_drift_pct"),
+    }
+
+
 def compute_continuation_quality(
     weekly: pd.DataFrame,
     config: AppConfig,
@@ -64,6 +579,23 @@ def compute_continuation_quality(
         "cont_box_drift_monthly": None,
         "cont_box_center_drift_pct": None,
         "cont_box_tilt_ratio": None,
+        "cont_flatten_duration_weeks": 0,
+        "cont_flatten_score": 0.0,
+        "cont_lifecycle_phase": "unknown",
+        "cont_ema_weekly_change_pct": None,
+        "cont_ema_weekly_change_4w_avg": None,
+        "cont_ema_weekly_change_8w_avg": None,
+        "cont_flatten_shrink_ratio": None,
+        "cont_ema_slope_4w": None,
+        "cont_ema_slope_8w": None,
+        "cont_ema_slope_12w": None,
+        "cont_ema_prev_slope_8w": None,
+        "cont_ema_decelerating": False,
+        "cont_base_start_idx": 0,
+        "cont_base_duration_weeks": 0,
+        "cont_base_maturity_score": 0.0,
+        "cont_base_range_stability_score": None,
+        "cont_base_center_drift_pct": None,
         "cont_stage1_box_type": None,
         "cont_stage1_box_detail": None,
         "cont_score_stage1": 0.0,
@@ -79,16 +611,16 @@ def compute_continuation_quality(
     ema144_vals = None
     if daily is not None and not daily.empty and "close" in daily.columns:
         daily_sorted = daily.sort_values("trade_date").copy()
-        daily_sorted["ema144"] = daily_sorted["close"].ewm(span=144, min_periods=1).mean()
         daily_sorted["trade_date"] = pd.to_datetime(daily_sorted["trade_date"])
+        daily_sorted["ema144"] = daily_sorted["close"].ewm(span=144, min_periods=1).mean()
         working["_d"] = pd.to_datetime(working["trade_date"])
-        ema_map = {}
-        for _, wr in working.iterrows():
-            wd = wr["_d"]
-            mask = daily_sorted["trade_date"] <= wd
-            if mask.any():
-                ema_map[wd] = float(daily_sorted.loc[mask, "ema144"].iloc[-1])
-        working["ema144"] = working["_d"].map(ema_map)
+        ema_aligned = pd.merge_asof(
+            working[["_d"]].rename(columns={"_d": "trade_date"}).sort_values("trade_date"),
+            daily_sorted[["trade_date", "ema144"]].sort_values("trade_date"),
+            on="trade_date",
+            direction="backward",
+        )
+        working["ema144"] = ema_aligned["ema144"].to_numpy()
         ema144_vals = working["ema144"].dropna()
         working.drop(columns=["_d"], inplace=True)
 
@@ -102,8 +634,36 @@ def compute_continuation_quality(
     slope_10w = (float(ema144_vals.iloc[-1]) / float(ema144_vals.iloc[-10]) - 1.0) * 100.0
     # 5周斜率：捕捉近期走平（10周可能包含早期急跌）
     slope_5w = (float(ema144_vals.iloc[-1]) / float(ema144_vals.iloc[-5]) - 1.0) * 100.0 if len(ema144_vals) >= 5 else slope_10w
-    # 取较好的（更接近0的那个），避免10周早期急跌掩盖近期走平
-    slope_best = slope_5w if abs(slope_5w) < abs(slope_10w) else slope_10w
+    flatten_info = _detect_flatten_phase(ema144_vals)
+    lifecycle_phase = str(flatten_info.get("lifecycle_phase") or "unknown")
+    ema_deceleration = _detect_ema_deceleration(ema144_vals, flatten_info)
+
+    if lifecycle_phase == "still_falling":
+        reason_parts = ["EMA仍在下降阶段"]
+        avg_change_4w = flatten_info.get("avg_weekly_change_4w")
+        latest_change = flatten_info.get("latest_weekly_change_pct")
+        if avg_change_4w is not None:
+            reason_parts.append(f"近4周均变动{float(avg_change_4w):.2f}%")
+        if latest_change is not None:
+            reason_parts.append(f"最近1周{float(latest_change):.2f}%")
+        return {
+            **default,
+            "cont_quality_reason": " / ".join(reason_parts),
+            "cont_ma30w_slope_10w": round(slope_10w, 2),
+            "cont_prior_trend_ok": False,
+            "cont_flatten_duration_weeks": int(flatten_info.get("flatten_duration_weeks", 0)),
+            "cont_flatten_score": round(float(flatten_info.get("flatten_score", 0.0)) * 100.0, 1),
+            "cont_lifecycle_phase": lifecycle_phase,
+            "cont_ema_weekly_change_pct": flatten_info.get("latest_weekly_change_pct"),
+            "cont_ema_weekly_change_4w_avg": flatten_info.get("avg_weekly_change_4w"),
+            "cont_ema_weekly_change_8w_avg": flatten_info.get("avg_weekly_change_8w"),
+            "cont_flatten_shrink_ratio": flatten_info.get("flatten_shrink_ratio"),
+            "cont_ema_slope_4w": flatten_info.get("slope_4w"),
+            "cont_ema_slope_8w": flatten_info.get("slope_8w"),
+            "cont_ema_slope_12w": flatten_info.get("slope_12w"),
+            "cont_ema_prev_slope_8w": ema_deceleration.get("prev_8w_slope"),
+            "cont_ema_decelerating": bool(ema_deceleration.get("decelerating")),
+        }
 
     # ── 前期下跌确认：Stage I = 下跌结束 + EMA走平 ──
     # 用全历史做峰→谷对比，不限制谷值距今时间
@@ -137,25 +697,41 @@ def compute_continuation_quality(
         long_term_decline = enough_decline and in_lower_half and still_near_trough
     else:
         long_term_decline = False
-    ma_flattening = -2.0 <= slope_best <= 4.0
-    prior_trend_ok = long_term_decline and ma_flattening
+    prior_trend_ok = long_term_decline and bool(ema_deceleration.get("decelerating"))
 
     if not prior_trend_ok:
         reason_parts = []
         if not long_term_decline:
             reason_parts.append("无前期下跌" if len(ema144_vals) >= 30 else "数据不足")
-        if not ma_flattening:
-            reason_parts.append(f"EMA斜率10w={slope_10w:.1f}% 5w={slope_5w:.1f}%（需-2%~4%）")
+        if not ema_deceleration.get("decelerating"):
+            if ema_deceleration.get("reason"):
+                reason_parts.append(f"EMA下降未明显减速 {ema_deceleration['reason']}")
+            else:
+                reason_parts.append(f"EMA下降未明显减速 8w={float(flatten_info.get('slope_8w') or 0.0):.2f}%")
         return {
             **default,
             "cont_quality_reason": "；".join(reason_parts),
             "cont_ma30w_slope_10w": round(slope_10w, 2),
             "cont_prior_trend_ok": False,
+            "cont_flatten_duration_weeks": int(flatten_info.get("flatten_duration_weeks", 0)),
+            "cont_flatten_score": round(float(flatten_info.get("flatten_score", 0.0)) * 100.0, 1),
+            "cont_lifecycle_phase": lifecycle_phase,
+            "cont_ema_weekly_change_pct": flatten_info.get("latest_weekly_change_pct"),
+            "cont_ema_weekly_change_4w_avg": flatten_info.get("avg_weekly_change_4w"),
+            "cont_ema_weekly_change_8w_avg": flatten_info.get("avg_weekly_change_8w"),
+            "cont_flatten_shrink_ratio": flatten_info.get("flatten_shrink_ratio"),
+            "cont_ema_slope_4w": flatten_info.get("slope_4w"),
+            "cont_ema_slope_8w": flatten_info.get("slope_8w"),
+            "cont_ema_slope_12w": flatten_info.get("slope_12w"),
+            "cont_ema_prev_slope_8w": ema_deceleration.get("prev_8w_slope"),
+            "cont_ema_decelerating": bool(ema_deceleration.get("decelerating")),
         }
 
     trend_score = _score_prior_trend(slope_10w)
     pullback_score, pullback_pct = _score_pullback_depth(working)
-    box_score, box_info = _score_box_discipline(working)
+    box_core_score, box_info = _score_box_discipline(working)
+    base_info = _detect_base_region(working, box_info, flatten_info)
+    box_score = _score_stage1_structure(box_core_score, base_info, flatten_info)
     volume_score, vol_ok = _score_volume_trend(working, box_info.get("box_start_idx", 0))
     atr_score, atr_rank = _score_atr_compression(working, daily)
     stage1_bonus = _score_stage1_quality(box_info)
@@ -180,6 +756,10 @@ def compute_continuation_quality(
     box_dur = box_info.get("box_duration_weeks", 0)
     if box_dur >= 8:
         reason_parts.append(f"{box_dur}周箱体")
+    else:
+        base_weeks = int(base_info.get("base_duration_weeks", 0))
+        if base_weeks >= 8:
+            reason_parts.append(f"{base_weeks}周基底")
     if vol_ok:
         reason_parts.append("量缩")
     if atr_score >= 5:
@@ -192,7 +772,12 @@ def compute_continuation_quality(
     elif stage1_type == "需警惕":
         reason_parts.append("基底需警惕")
 
-    return {
+    base_maturity = float(base_info.get("base_maturity_score", 0.0))
+    process_gate_reasons: list[str] = []
+    if base_maturity < MIN_BASE_MATURITY_SCORE:
+        process_gate_reasons.append(f"成熟度{int(round(base_maturity))}")
+
+    payload = {
         "cont_quality_score": round(total, 1),
         "cont_quality_grade": grade,
         "cont_quality_reason": " / ".join(reason_parts) if reason_parts else "续涨待确认",
@@ -225,10 +810,34 @@ def compute_continuation_quality(
         "cont_box_drift_monthly": box_info.get("box_drift_monthly"),
         "cont_box_center_drift_pct": box_info.get("box_center_drift_pct"),
         "cont_box_tilt_ratio": box_info.get("box_tilt_ratio"),
+        "cont_flatten_duration_weeks": int(flatten_info.get("flatten_duration_weeks", 0)),
+        "cont_flatten_score": round(float(flatten_info.get("flatten_score", 0.0)) * 100.0, 1),
+        "cont_lifecycle_phase": lifecycle_phase,
+        "cont_ema_weekly_change_pct": flatten_info.get("latest_weekly_change_pct"),
+        "cont_ema_weekly_change_4w_avg": flatten_info.get("avg_weekly_change_4w"),
+        "cont_ema_weekly_change_8w_avg": flatten_info.get("avg_weekly_change_8w"),
+        "cont_flatten_shrink_ratio": flatten_info.get("flatten_shrink_ratio"),
+        "cont_ema_slope_4w": flatten_info.get("slope_4w"),
+        "cont_ema_slope_8w": flatten_info.get("slope_8w"),
+        "cont_ema_slope_12w": flatten_info.get("slope_12w"),
+        "cont_ema_prev_slope_8w": ema_deceleration.get("prev_8w_slope"),
+        "cont_ema_decelerating": bool(ema_deceleration.get("decelerating")),
+        "cont_base_start_idx": int(base_info.get("base_start_idx", 0)),
+        "cont_base_duration_weeks": int(base_info.get("base_duration_weeks", 0)),
+        "cont_base_maturity_score": float(base_info.get("base_maturity_score", 0.0)),
+        "cont_base_range_stability_score": base_info.get("base_range_stability_score"),
+        "cont_base_center_drift_pct": base_info.get("base_center_drift_pct"),
         "cont_stage1_box_type": box_info.get("stage1_box_type"),
         "cont_stage1_box_detail": box_info.get("stage1_box_detail"),
         "cont_box_start_idx": box_info.get("box_start_idx", 0),
     }
+    if process_gate_reasons:
+        return {
+            **payload,
+            "cont_is_applicable": False,
+            "cont_quality_reason": " / ".join(process_gate_reasons),
+        }
+    return payload
 
 
 # ════════════════════════════════════════════════════

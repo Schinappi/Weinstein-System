@@ -227,9 +227,29 @@ class TushareAdapter(BaseDataAdapter):
             if batch_failure is None and batch_frame is not None and not batch_frame.empty:
                 batch_frame = batch_frame[batch_frame["ts_code"].isin(symbol_list)].copy()
                 if not batch_frame.empty:
+                    adj_batch_runtime = 0.0
                     concat_runtime, adjust_runtime, normalize_runtime = 0.0, 0.0, 0.0
                     if adjust_type == "forward":
-                        # Apply per-stock forward adjustment (adj_factor is per-stock only)
+                        adj_started_at = time.perf_counter()
+                        adj_factor_frame, adj_failure_reason = self._call_api(
+                            self._pro.adj_factor,
+                            trade_date=start,
+                            fields="ts_code,trade_date,adj_factor",
+                        )
+                        adj_batch_runtime = time.perf_counter() - adj_started_at
+                        if adj_failure_reason is None and adj_factor_frame is not None and not adj_factor_frame.empty:
+                            batch_frame = batch_frame.merge(
+                                adj_factor_frame[["ts_code", "trade_date", "adj_factor"]],
+                                on=["ts_code", "trade_date"],
+                                how="left",
+                            )
+                            batch_frame["adj_factor"] = pd.to_numeric(batch_frame["adj_factor"], errors="coerce").fillna(1.0)
+                        else:
+                            batch_frame["adj_factor"] = 1.0
+
+                        # For a single trading day the latest adj_factor equals the row adj_factor,
+                        # so forward-adjusted OHLC stay numerically unchanged; we still keep the
+                        # factor column so downstream merges can detect corporate-action changes.
                         adjust_started_at = time.perf_counter()
                         batch_frame = self._apply_forward_adjustment(batch_frame)
                         adjust_runtime = time.perf_counter() - adjust_started_at
@@ -243,7 +263,7 @@ class TushareAdapter(BaseDataAdapter):
                         "[tushare] fetch_daily_bars done "
                         f"symbols={len(symbol_list)} rows={len(normalized)} elapsed={round(batch_runtime, 2)}s "
                         f"daily_api={round(batch_runtime, 2)}s "
-                        f"adj_api=0.0s filter_merge=0.0s "
+                        f"adj_api={round(adj_batch_runtime, 2)}s filter_merge=0.0s "
                         f"concat={round(concat_runtime, 2)}s adjust={round(adjust_runtime, 2)}s normalize={round(normalize_runtime, 2)}s "
                         "mode=batch"
                     )

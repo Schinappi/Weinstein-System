@@ -48,7 +48,7 @@ class UniverseConfig:
 @dataclass(slots=True)
 class DataConfig:
     primary_source: str = "tushare"
-    fallback_source: str = "tickflow"
+    fallback_source: str = "none"
     adjust_type: str = "forward"
     batch_size: int = 100
     tushare_calls_per_minute: int = 400
@@ -60,6 +60,7 @@ class DataConfig:
     use_cache: bool = True
     force_refresh: bool = False
     tushare_token_env: str = "TUSHARE_TOKEN"
+    chinadata_token_env: str = "CHINADATA_TOKEN"
     tickflow_api_key_env: str = "TICKFLOW_API_KEY"
     tickflow_base_url: str = "https://api.tickflow.org"
     tickflow_free_base_url: str = "https://free-api.tickflow.org"
@@ -88,6 +89,15 @@ class DataConfig:
             return env_value
         if self.tickflow_api_key_env.startswith("tk_"):
             return self.tickflow_api_key_env
+        return None
+
+    @property
+    def chinadata_token(self) -> str | None:
+        env_value = os.getenv(self.chinadata_token_env)
+        if env_value:
+            return env_value
+        if isinstance(self.chinadata_token_env, str) and len(self.chinadata_token_env) >= 24 and self.chinadata_token_env != "CHINADATA_TOKEN":
+            return self.chinadata_token_env
         return None
 
 

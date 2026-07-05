@@ -14,12 +14,20 @@ from .tushare_adapter import ChinadataAdapter, TushareAdapter
 
 def build_adapter(name: str, config: AppConfig) -> BaseDataAdapter:
     normalized = name.lower()
+    if normalized in {"", "none", "null"}:
+        raise ValueError("No adapter configured.")
     if normalized == "akshare":
         return AkshareAdapter(config.data)
+    if normalized == "baostock":
+        from .baostock_adapter import BaostockAdapter
+
+        return BaostockAdapter(config.data)
     if normalized == "tushare":
         return TushareAdapter(config.data.tushare_token, config.data)
     if normalized == "chinadata":
-        return ChinadataAdapter(config.data.tushare_token, config.data)
+        if not config.data.chinadata_token:
+            raise ValueError("CHINADATA_TOKEN is not configured.")
+        return ChinadataAdapter(config.data.chinadata_token, config.data)
     if normalized == "tickflow":
         return TickflowAdapter(
             api_key=config.data.tickflow_api_key,
@@ -35,7 +43,7 @@ class DataSourceRouter:
         self.primary = self._safe_build(config.data.primary_source)
         self.fallback = self._safe_build(config.data.fallback_source)
         if self.primary is None and self.fallback is None:
-            raise RuntimeError("No usable data source is available. Check Tushare/TickFlow configuration.")
+            raise RuntimeError("No usable data source is available. Check Tushare/Baostock/TickFlow configuration.")
 
     def _safe_build(self, source_name: str) -> BaseDataAdapter | None:
         try:

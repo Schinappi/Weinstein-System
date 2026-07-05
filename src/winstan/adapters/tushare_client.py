@@ -19,8 +19,7 @@ from __future__ import annotations
 import os
 
 # ── Primary API config (tushare → a.sszhixia.cn) ──
-DEFAULT_TOKEN = "376a6f79d0b08b8e63c89ae9bcdead99093efb16f3b357a164957f1f"
-DEFAULT_API_URL = "http://a.sszhixia.cn/"
+DEFAULT_TOKEN: str | None = None
 
 # ── Fallback API config (chinadata) ──
 DEFAULT_CHINADATA_TOKEN = "a578bfb4d131b134844e4fbc4a68960dd91"
@@ -42,15 +41,14 @@ def _disable_proxy_env() -> None:
 
 
 def build_tushare_pro(token: str | None = None, api_url: str | None = None):
-    """Create a Tushare pro client connected to **a.sszhixia.cn** (primary).
+    """Create a Tushare pro client.
 
     Parameters
     ----------
     token:
-        Falls back to ``TUSHARE_TOKEN`` env var, then ``DEFAULT_TOKEN``.
+        Falls back to ``TUSHARE_TOKEN`` env var.
     api_url:
-        Falls back to ``TUSHARE_API_URL`` env var, then ``DEFAULT_API_URL``
-        (``http://a.sszhixia.cn/``).
+        Optional override for the underlying Tushare API URL.
 
     Returns
     -------
@@ -62,10 +60,13 @@ def build_tushare_pro(token: str | None = None, api_url: str | None = None):
     import tushare as ts
 
     resolved_token = token or os.getenv("TUSHARE_TOKEN") or DEFAULT_TOKEN
-    resolved_url = api_url or os.getenv("TUSHARE_API_URL") or DEFAULT_API_URL
+    if not resolved_token:
+        raise ValueError("TUSHARE_TOKEN is required.")
+    resolved_url = api_url or os.getenv("TUSHARE_API_URL") or None
 
     pro = ts.pro_api(resolved_token)
-    pro._DataApi__http_url = resolved_url
+    if resolved_url:
+        pro._DataApi__http_url = resolved_url
 
     try:
         pro._DataApi__timeout = 20

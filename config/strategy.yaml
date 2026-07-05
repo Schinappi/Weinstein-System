@@ -7,7 +7,7 @@ universe:
 
 data:
   primary_source: tushare
-  fallback_source: chinadata
+  fallback_source: none
   adjust_type: forward
   batch_size: 20
   tushare_calls_per_minute: 400

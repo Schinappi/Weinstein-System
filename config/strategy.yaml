@@ -8,9 +8,9 @@ universe:
 data:
   primary_source: tushare
   fallback_source: none
-  adjust_type: forward
+  adjust_type: none
   batch_size: 20
-  tushare_calls_per_minute: 400
+  tushare_calls_per_minute: 50
   tushare_retry_times: 3
   tushare_retry_sleep_seconds: 5
   tushare_timeout_seconds: 20

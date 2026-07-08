@@ -1037,7 +1037,7 @@ def _detect_box_core(segment: pd.DataFrame) -> tuple[float, dict]:
     if best_score < 0.60:
         return 0.0, info
 
-    # 用最佳起点构造水平箱体
+    # 用最佳起点构造箱体
     box_start = best_start
     box_weeks = n - box_start
     b_h = best_top
@@ -1047,6 +1047,72 @@ def _detect_box_core(segment: pd.DataFrame) -> tuple[float, dict]:
     # 转换为 0-25 的 box_score 给续涨评分用
     # 注意：实际 box_score 会被 _score_box_discipline 的前期下跌因子调整
     normalized_box = best_score * 25.0
+
+    # ── 箱顶/箱底 独立斜率计算 ──
+    # 在最佳箱体内找摆动高点和低点
+    seg_highs = highs[box_start:]
+    seg_lows = lows[box_start:]
+    box_weeks_sw = len(seg_highs)
+
+    def _find_swing_idx(values: np.ndarray, is_high: bool, order: int = 2) -> list[int]:
+        result = []
+        for i in range(order, len(values) - order):
+            if is_high:
+                if all(values[i] >= values[i - k] for k in range(1, order + 1)) and \
+                   all(values[i] >= values[i + k] for k in range(1, order + 1)):
+                    result.append(i)
+            else:
+                if all(values[i] <= values[i - k] for k in range(1, order + 1)) and \
+                   all(values[i] <= values[i + k] for k in range(1, order + 1)):
+                    result.append(i)
+        return result
+
+    swing_high_idx = _find_swing_idx(seg_highs, is_high=True)
+    swing_low_idx = _find_swing_idx(seg_lows, is_high=False)
+
+    def _calc_monthly_slope(x_vals: np.ndarray, y_vals: np.ndarray) -> float:
+        if len(x_vals) < 2:
+            return 0.0
+        try:
+            slope, _ = np.polyfit(x_vals, y_vals, 1)
+            mean_y = float(np.mean(y_vals))
+            return float(slope * 4.0 / mean_y * 100.0) if mean_y > 0 else 0.0
+        except np.linalg.LinAlgError:
+            return 0.0
+
+    # 箱顶斜率：优先摆动高点，不足时回退到全体高点线性回归
+    top_slope_pct = 0.0
+    if len(swing_high_idx) >= 2:
+        top_slope_pct = _calc_monthly_slope(
+            np.array(swing_high_idx, dtype=float), seg_highs[swing_high_idx])
+    elif box_weeks_sw >= 3:
+        top_slope_pct = _calc_monthly_slope(
+            np.arange(box_weeks_sw, dtype=float), seg_highs)
+
+    # 箱底斜率：优先摆动低点，不足时回退到全体低点线性回归
+    bottom_slope_pct = 0.0
+    if len(swing_low_idx) >= 2:
+        bottom_slope_pct = _calc_monthly_slope(
+            np.array(swing_low_idx, dtype=float), seg_lows[swing_low_idx])
+    elif box_weeks_sw >= 3:
+        bottom_slope_pct = _calc_monthly_slope(
+            np.arange(box_weeks_sw, dtype=float), seg_lows)
+
+    # ── 根据独立斜率判定 Stage1 基底质量 ──
+    abs_top = abs(top_slope_pct)
+    abs_bot = abs(bottom_slope_pct)
+    if abs_top <= 5.0 and abs_bot <= 5.0:
+        stage1_type = "优秀"
+        stage1_detail = f"几乎水平，箱顶斜率{top_slope_pct:.1f}%/月，箱底斜率{bottom_slope_pct:.1f}%/月"
+    elif abs_top <= 10.0 and abs_bot <= 10.0:
+        stage1_type = "可接受"
+        stage1_detail = f"轻微倾斜，箱顶斜率{top_slope_pct:.1f}%/月，箱底斜率{bottom_slope_pct:.1f}%/月"
+    elif top_slope_pct > 15.0:
+        stage1_type = "需警惕"
+        stage1_detail = f"箱顶斜率{top_slope_pct:.1f}%/月（>+15%），更像Stage II初期"
+    else:
+        stage1_type = "一般"
+        stage1_detail = f"箱顶斜率{top_slope_pct:.1f}%/月，箱底斜率{bottom_slope_pct:.1f}%/月"
 
     info["box_valid"] = True
     info["box_range_pct"] = box_range_pct
@@ -1067,19 +1133,10 @@ def _detect_box_core(segment: pd.DataFrame) -> tuple[float, dict]:
     info["box_drift_monthly"] = 0.0
     info["box_center_drift_pct"] = 0.0
     info["box_tilt_ratio"] = 0.0
-    info["box_top_slope_monthly"] = 0.0
-    info["box_bottom_slope_monthly"] = 0.0
-
-    # 基底质量
-    if best_score >= 0.80:
-        info["stage1_box_type"] = "优秀"
-        info["stage1_box_detail"] = f"紧致横盘，振幅{box_range_pct:.1f}%"
-    elif best_score >= 0.70:
-        info["stage1_box_type"] = "可接受"
-        info["stage1_box_detail"] = f"横盘整理，振幅{box_range_pct:.1f}%"
-    else:
-        info["stage1_box_type"] = "一般"
-        info["stage1_box_detail"] = f"振幅{box_range_pct:.1f}%"
+    info["box_top_slope_monthly"] = round(top_slope_pct, 2)
+    info["box_bottom_slope_monthly"] = round(bottom_slope_pct, 2)
+    info["stage1_box_type"] = stage1_type
+    info["stage1_box_detail"] = stage1_detail
 
     return normalized_box, info
 

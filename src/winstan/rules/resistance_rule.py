@@ -82,9 +82,9 @@ def compute_overhead_supply(daily_bars: pd.DataFrame) -> dict[str, object]:
         overhead_supply_ok: True if supply is acceptable (<=40%)
     """
     frame = daily_bars.copy()
-    frame = frame.sort_values("trade_date").reset_index(drop=True)
-    if frame.empty or "close" not in frame.columns:
+    if frame.empty or "close" not in frame.columns or "trade_date" not in frame.columns:
         return {"overhead_supply_pct": 50.0, "overhead_supply_days": 0, "overhead_supply_lookback": 0, "overhead_supply_ok": False}
+    frame = frame.sort_values("trade_date").reset_index(drop=True)
     close_series = pd.to_numeric(frame["close"], errors="coerce").dropna()
     if len(close_series) < 10:
         return {"overhead_supply_pct": 50.0, "overhead_supply_days": 0, "overhead_supply_lookback": 0, "overhead_supply_ok": False}

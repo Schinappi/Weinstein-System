@@ -52,6 +52,23 @@ class DataSourceRouter:
             return None
 
     def fetch_stock_universe(self) -> pd.DataFrame:
+        # ── 从 parquet 缓存构建 universe（绕过 stock_basic 限速）──
+        daily_dir = self.config.parquet_root / 'daily_bars'
+        if daily_dir.exists():
+            files = sorted(daily_dir.glob('*.parquet'))
+            symbols = [f.stem for f in files if f.stem != '__today__']
+            import pandas as pd
+            frame = pd.DataFrame({
+                'symbol': symbols,
+                'name': '',
+                'market': '',
+                'list_date': pd.NaT,
+                'is_st': False,
+            })
+            if not frame.empty:
+                print(f"[router] fetch_stock_universe from parquet cache: {len(frame)} symbols")
+                return frame
+        # 回退到 API
         for adapter in (self.primary, self.fallback):
             if adapter is None:
                 continue

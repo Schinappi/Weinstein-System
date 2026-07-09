@@ -53,6 +53,15 @@ class DataSourceRouter:
 
     def fetch_stock_universe(self) -> pd.DataFrame:
         # ── 从 parquet 缓存构建 universe（绕过 stock_basic 限速）──
+        from pathlib import Path
+        cache_path = Path(str(self.config.parquet_root)).parent / 'stock_universe_cache.parquet'
+        if cache_path.exists():
+            import pandas as pd
+            cached = pd.read_parquet(cache_path)
+            if not cached.empty:
+                print(f"[router] fetch_stock_universe from name cache: {len(cached)} symbols")
+                return cached
+        # ── 从 symbol 列表构建（无名字）──
         daily_dir = self.config.parquet_root / 'daily_bars'
         if daily_dir.exists():
             files = sorted(daily_dir.glob('*.parquet'))
@@ -66,7 +75,7 @@ class DataSourceRouter:
                 'is_st': False,
             })
             if not frame.empty:
-                print(f"[router] fetch_stock_universe from parquet cache: {len(frame)} symbols")
+                print(f"[router] fetch_stock_universe from parquet cache: {len(frame)} symbols (no names)")
                 return frame
         # 回退到 API
         for adapter in (self.primary, self.fallback):

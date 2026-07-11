@@ -15,7 +15,7 @@ _scan_jobs_by_date: dict[str, str] = {}
 _scan_result_cache: dict[str, dict] = {}
 _scan_lock = threading.Lock()
 SCAN_TOP_N = 100
-SCAN_RESULT_VERSION = 2
+SCAN_RESULT_VERSION = 4
 
 
 def _is_current_scan_result(payload: dict | None) -> bool:
@@ -143,6 +143,9 @@ def run_backtest_for_symbols(
                     "cont_box_no_trend": _optional_float(result.get("cont_box_no_trend")),
                     "cont_flatten_duration_weeks": int(result.get("cont_flatten_duration_weeks") or 0),
                     "cont_flatten_score": _optional_float(result.get("cont_flatten_score")),
+                    "cont_decline_pct": _optional_float(result.get("cont_decline_pct")),
+                    "cont_platform_width_pct": _optional_float(result.get("cont_platform_width_pct")),
+                    "cont_platform_width_threshold_pct": _optional_float(result.get("cont_platform_width_threshold_pct")),
                     "cont_lifecycle_phase": str(result.get("cont_lifecycle_phase") or ""),
                     "cont_ema_weekly_change_pct": _optional_float(result.get("cont_ema_weekly_change_pct")),
                     "cont_ema_weekly_change_4w_avg": _optional_float(result.get("cont_ema_weekly_change_4w_avg")),
@@ -152,6 +155,8 @@ def run_backtest_for_symbols(
                     "cont_base_maturity_score": _optional_float(result.get("cont_base_maturity_score")),
                     "cont_base_range_stability_score": _optional_float(result.get("cont_base_range_stability_score")),
                     "cont_base_center_drift_pct": _optional_float(result.get("cont_base_center_drift_pct")),
+                    "cont_near_trough_weeks": int(result.get("cont_near_trough_weeks") or 0),
+                    "cont_long_low_base_ok": bool(result.get("cont_long_low_base_ok")),
                     "error": "",
                 }
             )
@@ -237,6 +242,9 @@ def run_backtest_scan(
                         "cont_box_flatness": _optional_float(result.get("cont_box_flatness")),
                         "cont_flatten_duration_weeks": int(result.get("cont_flatten_duration_weeks") or 0),
                         "cont_flatten_score": _optional_float(result.get("cont_flatten_score")),
+                        "cont_decline_pct": _optional_float(result.get("cont_decline_pct")),
+                        "cont_platform_width_pct": _optional_float(result.get("cont_platform_width_pct")),
+                        "cont_platform_width_threshold_pct": _optional_float(result.get("cont_platform_width_threshold_pct")),
                         "cont_lifecycle_phase": str(result.get("cont_lifecycle_phase") or ""),
                         "cont_ema_weekly_change_pct": _optional_float(result.get("cont_ema_weekly_change_pct")),
                         "cont_ema_weekly_change_4w_avg": _optional_float(result.get("cont_ema_weekly_change_4w_avg")),
@@ -244,6 +252,8 @@ def run_backtest_scan(
                         "cont_flatten_shrink_ratio": _optional_float(result.get("cont_flatten_shrink_ratio")),
                         "cont_base_duration_weeks": int(result.get("cont_base_duration_weeks") or 0),
                         "cont_base_maturity_score": _optional_float(result.get("cont_base_maturity_score")),
+                        "cont_near_trough_weeks": int(result.get("cont_near_trough_weeks") or 0),
+                        "cont_long_low_base_ok": bool(result.get("cont_long_low_base_ok")),
                         "final_score": round(final_score, 1),
                         "latest_date": str(weekly_cut["trade_date"].max().date()),
                         "available_weeks": len(weekly_cut),

@@ -41,6 +41,10 @@ BASE_SEARCH_WEEKS = 52
 MIN_BASE_RANGE_PCT = 4.0
 MAX_BASE_RANGE_PCT = 38.0
 MAX_BASE_CENTER_DRIFT_PCT = 22.0
+PLATFORM_WINDOW_WEEKS = 8
+PLATFORM_BASE_WIDTH_PCT = 1.0
+PLATFORM_DECLINE_WIDTH_FACTOR = 0.05
+PLATFORM_MAX_WIDTH_PCT = 4.0
 MAX_FLAT_WEEKLY_CHANGE_PCT = 0.12
 MAX_FLATTEN_WEEKLY_CHANGE_PCT = 0.35
 FLATTEN_SHRINK_TOLERANCE = 0.12
@@ -65,6 +69,64 @@ def _window_pct_change(series: pd.Series, weeks: int, end_offset: int = 0) -> fl
     if start_idx < 0 or end_idx < 0:
         return None
     return _pct_change(float(values.iloc[end_idx]), float(values.iloc[start_idx]))
+
+
+def _platform_width_pct(values: pd.Series) -> float | None:
+    window = pd.to_numeric(values, errors="coerce").dropna()
+    if window.empty:
+        return None
+    mean_value = float(window.mean())
+    if mean_value <= 0:
+        return None
+    return (float(window.max()) - float(window.min())) / mean_value * 100.0
+
+
+def _platform_width_threshold(decline_abs_pct: float) -> float:
+    decline_adjusted = decline_abs_pct * PLATFORM_DECLINE_WIDTH_FACTOR
+    return max(PLATFORM_BASE_WIDTH_PCT, min(PLATFORM_MAX_WIDTH_PCT, decline_adjusted))
+
+
+def _count_platform_weeks(
+    ema_vals: pd.Series,
+    *,
+    window_weeks: int = PLATFORM_WINDOW_WEEKS,
+    width_threshold_pct: float = PLATFORM_BASE_WIDTH_PCT,
+) -> tuple[int, float | None]:
+    values = pd.to_numeric(ema_vals, errors="coerce").dropna().reset_index(drop=True)
+    if len(values) < window_weeks:
+        return 0, None
+
+    duration = 0
+    latest_width = None
+    for end_idx in range(len(values) - 1, window_weeks - 2, -1):
+        window = values.iloc[end_idx - window_weeks + 1 : end_idx + 1]
+        width_pct = _platform_width_pct(window)
+        if latest_width is None:
+            latest_width = width_pct
+        if width_pct is None or width_pct >= width_threshold_pct:
+            break
+        duration += 1
+    return duration, latest_width
+
+
+def _score_decline_ratio(decline_abs_pct: float) -> float:
+    if decline_abs_pct <= 0:
+        return 0.0
+    return min(decline_abs_pct / 50.0 * 50.0, 50.0)
+
+
+def _score_platform_duration(platform_weeks: int) -> float:
+    if platform_weeks >= 52:
+        return 50.0
+    if platform_weeks >= 39:
+        return 45.0
+    if platform_weeks >= 26:
+        return 38.0
+    if platform_weeks >= 16:
+        return 28.0
+    if platform_weeks >= 8:
+        return 18.0
+    return max(0.0, platform_weeks / 8.0 * 18.0)
 
 
 def _detect_ema_deceleration(
@@ -581,6 +643,9 @@ def compute_continuation_quality(
         "cont_box_tilt_ratio": None,
         "cont_flatten_duration_weeks": 0,
         "cont_flatten_score": 0.0,
+        "cont_decline_pct": None,
+        "cont_platform_width_pct": None,
+        "cont_platform_width_threshold_pct": None,
         "cont_lifecycle_phase": "unknown",
         "cont_ema_weekly_change_pct": None,
         "cont_ema_weekly_change_4w_avg": None,
@@ -596,6 +661,8 @@ def compute_continuation_quality(
         "cont_base_maturity_score": 0.0,
         "cont_base_range_stability_score": None,
         "cont_base_center_drift_pct": None,
+        "cont_near_trough_weeks": 0,
+        "cont_long_low_base_ok": False,
         "cont_stage1_box_type": None,
         "cont_stage1_box_detail": None,
         "cont_score_stage1": 0.0,
@@ -631,6 +698,14 @@ def compute_continuation_quality(
         if len(ema144_vals) < 10:
             return default
 
+    # Use weekly EMA30W for Stage I platform scoring. Daily EMA144 is kept above
+    # only for backward compatibility with older callers, then intentionally
+    # replaced here so the rule matches the Weinstein Stage I definition.
+    working["ema_30w"] = working["close"].ewm(span=30, min_periods=1).mean()
+    ema144_vals = working["ema_30w"].dropna()
+    if len(ema144_vals) < 10:
+        return default
+
     slope_10w = (float(ema144_vals.iloc[-1]) / float(ema144_vals.iloc[-10]) - 1.0) * 100.0
     # 5周斜率：捕捉近期走平（10周可能包含早期急跌）
     slope_5w = (float(ema144_vals.iloc[-1]) / float(ema144_vals.iloc[-5]) - 1.0) * 100.0 if len(ema144_vals) >= 5 else slope_10w
@@ -638,7 +713,40 @@ def compute_continuation_quality(
     lifecycle_phase = str(flatten_info.get("lifecycle_phase") or "unknown")
     ema_deceleration = _detect_ema_deceleration(ema144_vals, flatten_info)
 
-    if lifecycle_phase == "still_falling":
+    # Check the big-picture Stage I context before rejecting on recent EMA wiggles.
+    # A multi-year decline followed by a long low-level base can still be a valid
+    # Stage I setup even if the latest EMA tick is slightly negative.
+    lookback = min(300, len(ema144_vals))
+    if lookback >= 40:
+        window = ema144_vals.iloc[-lookback:]
+        ma_peak = float(window.max())
+        ma_trough = float(window.min())
+        ema_now = float(ema144_vals.iloc[-1])
+        if lookback >= 200:
+            enough_decline = (ma_trough / ma_peak - 1.0) * 100.0 < -20.0
+        elif lookback >= 120:
+            enough_decline = (ma_trough / ma_peak - 1.0) * 100.0 < -15.0
+        elif lookback >= 80:
+            enough_decline = (ma_trough / ma_peak - 1.0) * 100.0 < -10.0
+        else:
+            enough_decline = (ma_trough / ma_peak - 1.0) * 100.0 < -6.0
+        peak_trough_range = ma_peak - ma_trough
+        in_lower_half = True if peak_trough_range <= 0 else (ema_now - ma_trough) / peak_trough_range < 0.4
+        near_trough_limit = ma_trough * 1.15
+        near_trough_weeks = 0
+        for ema_value in reversed(ema144_vals.tolist()):
+            if float(ema_value) <= near_trough_limit:
+                near_trough_weeks += 1
+            else:
+                break
+        still_near_trough = ma_trough > 0 and (ema_now / ma_trough - 1.0) * 100.0 < 15.0
+        long_term_decline = enough_decline and in_lower_half and still_near_trough
+    else:
+        near_trough_weeks = 0
+        long_term_decline = False
+    prior_trend_ok = long_term_decline and bool(ema_deceleration.get("decelerating"))
+
+    if lifecycle_phase == "still_falling" and not prior_trend_ok:
         reason_parts = ["EMA仍在下降阶段"]
         avg_change_4w = flatten_info.get("avg_weekly_change_4w")
         latest_change = flatten_info.get("latest_weekly_change_pct")
@@ -727,6 +835,83 @@ def compute_continuation_quality(
             "cont_ema_decelerating": bool(ema_deceleration.get("decelerating")),
         }
 
+    decline_pct = (ma_trough / ma_peak - 1.0) * 100.0 if ma_peak > 0 else 0.0
+    decline_abs_pct = abs(min(decline_pct, 0.0))
+    platform_threshold_pct = _platform_width_threshold(decline_abs_pct)
+    platform_weeks, latest_platform_width_pct = _count_platform_weeks(
+        ema144_vals,
+        width_threshold_pct=platform_threshold_pct,
+    )
+    decline_score = _score_decline_ratio(decline_abs_pct)
+    platform_score = _score_platform_duration(platform_weeks)
+    total = min(decline_score + platform_score, 100.0)
+
+    grade, grade_label = "C", "一般"
+    for threshold, g, label in GRADE_THRESHOLDS:
+        if total >= threshold:
+            grade, grade_label = g, label
+            break
+
+    if platform_weeks <= 0:
+        return {
+            **default,
+            "cont_quality_reason": (
+                f"平台未形成 / 前期跌幅{decline_abs_pct:.0f}% / "
+                f"8周平台宽度{latest_platform_width_pct:.2f}%"
+                if latest_platform_width_pct is not None
+                else f"平台未形成 / 前期跌幅{decline_abs_pct:.0f}%"
+            ),
+            "cont_quality_score": round(total, 1),
+            "cont_quality_grade": grade,
+            "cont_score_trend": round(decline_score, 1),
+            "cont_score_box": 0.0,
+            "cont_ma30w_slope_10w": round(slope_10w, 2),
+            "cont_prior_trend_ok": prior_trend_ok,
+            "cont_flatten_duration_weeks": 0,
+            "cont_flatten_score": 0.0,
+            "cont_decline_pct": round(decline_pct, 1),
+            "cont_platform_width_pct": round(latest_platform_width_pct, 2) if latest_platform_width_pct is not None else None,
+            "cont_platform_width_threshold_pct": round(platform_threshold_pct, 2),
+            "cont_lifecycle_phase": lifecycle_phase,
+            "cont_ema_weekly_change_pct": flatten_info.get("latest_weekly_change_pct"),
+            "cont_ema_weekly_change_4w_avg": flatten_info.get("avg_weekly_change_4w"),
+            "cont_ema_weekly_change_8w_avg": flatten_info.get("avg_weekly_change_8w"),
+            "cont_ema_slope_4w": flatten_info.get("slope_4w"),
+            "cont_ema_slope_8w": flatten_info.get("slope_8w"),
+            "cont_ema_slope_12w": flatten_info.get("slope_12w"),
+            "cont_ema_decelerating": bool(ema_deceleration.get("decelerating")),
+        }
+
+    return {
+        **default,
+        "cont_quality_score": round(total, 1),
+        "cont_quality_grade": grade,
+        "cont_quality_reason": (
+            f"{grade_label} / 前期跌幅{decline_abs_pct:.0f}% / "
+            f"平台{platform_weeks}周 / 8周宽度{latest_platform_width_pct:.2f}%"
+        ),
+        "cont_score_trend": round(decline_score, 1),
+        "cont_score_box": round(platform_score, 1),
+        "cont_ma30w_slope_10w": round(slope_10w, 2),
+        "cont_prior_trend_ok": prior_trend_ok,
+        "cont_is_applicable": True,
+        "cont_flatten_duration_weeks": int(platform_weeks),
+        "cont_flatten_score": round(platform_score, 1),
+        "cont_decline_pct": round(decline_pct, 1),
+        "cont_platform_width_pct": round(latest_platform_width_pct, 2) if latest_platform_width_pct is not None else None,
+        "cont_platform_width_threshold_pct": round(platform_threshold_pct, 2),
+        "cont_lifecycle_phase": lifecycle_phase,
+        "cont_ema_weekly_change_pct": flatten_info.get("latest_weekly_change_pct"),
+        "cont_ema_weekly_change_4w_avg": flatten_info.get("avg_weekly_change_4w"),
+        "cont_ema_weekly_change_8w_avg": flatten_info.get("avg_weekly_change_8w"),
+        "cont_flatten_shrink_ratio": flatten_info.get("flatten_shrink_ratio"),
+        "cont_ema_slope_4w": flatten_info.get("slope_4w"),
+        "cont_ema_slope_8w": flatten_info.get("slope_8w"),
+        "cont_ema_slope_12w": flatten_info.get("slope_12w"),
+        "cont_ema_prev_slope_8w": ema_deceleration.get("prev_8w_slope"),
+        "cont_ema_decelerating": bool(ema_deceleration.get("decelerating")),
+    }
+
     trend_score = _score_prior_trend(slope_10w)
     pullback_score, pullback_pct = _score_pullback_depth(working)
     box_core_score, box_info = _score_box_discipline(working)
@@ -774,7 +959,8 @@ def compute_continuation_quality(
 
     base_maturity = float(base_info.get("base_maturity_score", 0.0))
     process_gate_reasons: list[str] = []
-    if base_maturity < MIN_BASE_MATURITY_SCORE:
+    long_low_base_ok = prior_trend_ok and near_trough_weeks >= 26
+    if base_maturity < MIN_BASE_MATURITY_SCORE and not long_low_base_ok:
         process_gate_reasons.append(f"成熟度{int(round(base_maturity))}")
 
     payload = {
@@ -827,6 +1013,8 @@ def compute_continuation_quality(
         "cont_base_maturity_score": float(base_info.get("base_maturity_score", 0.0)),
         "cont_base_range_stability_score": base_info.get("base_range_stability_score"),
         "cont_base_center_drift_pct": base_info.get("base_center_drift_pct"),
+        "cont_near_trough_weeks": int(near_trough_weeks),
+        "cont_long_low_base_ok": bool(long_low_base_ok),
         "cont_stage1_box_type": box_info.get("stage1_box_type"),
         "cont_stage1_box_detail": box_info.get("stage1_box_detail"),
         "cont_box_start_idx": box_info.get("box_start_idx", 0),

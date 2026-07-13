@@ -19,6 +19,7 @@ from winstan.pipeline.screener import WeinsteinScreener
 from winstan.pipeline.universe import build_universe
 from winstan.resample.weekly_builder import build_weekly_bars
 from winstan.rules.breakout_rule import evaluate_breakout
+from winstan.rules.demand_support import compute_demand_support_quality
 from winstan.rules.market_trend import evaluate_market_trend
 from winstan.rules.relative_strength_rule import evaluate_relative_strength
 from winstan.rules.resistance_rule import evaluate_resistance, compute_overhead_supply
@@ -367,6 +368,68 @@ class DashboardService:
             return {"items": rows, "error": str(exc), "count": 0}
         return {"items": rows, "count": len(rows), "error": ""}
 
+    def get_demand_support_ranking_payload(self) -> dict[str, object]:
+        """Read stocks with strong repeated demand-zone support."""
+        store = DuckDBStore(self.config.duckdb_path)
+        rows: list[dict[str, object]] = []
+        try:
+            with store.connect() as conn:
+                df = conn.execute("""
+                    SELECT symbol, name, close, stage_label,
+                           demand_support_score, demand_support_grade,
+                           demand_support_reason, demand_support_price,
+                           demand_support_lower, demand_support_upper,
+                           demand_support_touch_count,
+                           demand_support_success_count,
+                           demand_support_success_rate,
+                           demand_support_avg_rebound_pct,
+                           demand_support_avg_penetration_pct,
+                           demand_support_max_penetration_pct,
+                           demand_support_box_height_pct,
+                           demand_support_duration_weeks,
+                           demand_support_latest_touch_date,
+                           demand_support_avg_touch_volume_ratio,
+                           base_quality_score, base_quality_grade,
+                           final_score, rs_rank_pct, headroom_pct
+                    FROM screening_results
+                    WHERE demand_support_candidate = TRUE
+                    ORDER BY demand_support_score DESC,
+                             demand_support_touch_count DESC,
+                             demand_support_duration_weeks DESC
+                    LIMIT 50
+                """).fetchdf()
+            for _, r in df.iterrows():
+                rows.append({
+                    "symbol": _to_text(r.get("symbol")),
+                    "name": _to_text(r.get("name")),
+                    "close": _to_float(r.get("close")),
+                    "stage_label": _to_text(r.get("stage_label")),
+                    "demand_support_score": _to_float(r.get("demand_support_score")),
+                    "demand_support_grade": _to_text(r.get("demand_support_grade")),
+                    "demand_support_reason": _to_text(r.get("demand_support_reason")),
+                    "demand_support_price": _to_float(r.get("demand_support_price")),
+                    "demand_support_lower": _to_float(r.get("demand_support_lower")),
+                    "demand_support_upper": _to_float(r.get("demand_support_upper")),
+                    "demand_support_touch_count": _to_int(r.get("demand_support_touch_count")),
+                    "demand_support_success_count": _to_int(r.get("demand_support_success_count")),
+                    "demand_support_success_rate": _to_float(r.get("demand_support_success_rate")),
+                    "demand_support_avg_rebound_pct": _to_float(r.get("demand_support_avg_rebound_pct")),
+                    "demand_support_avg_penetration_pct": _to_float(r.get("demand_support_avg_penetration_pct")),
+                    "demand_support_max_penetration_pct": _to_float(r.get("demand_support_max_penetration_pct")),
+                    "demand_support_box_height_pct": _to_float(r.get("demand_support_box_height_pct")),
+                    "demand_support_duration_weeks": _to_int(r.get("demand_support_duration_weeks")),
+                    "demand_support_latest_touch_date": _to_text(r.get("demand_support_latest_touch_date")),
+                    "demand_support_avg_touch_volume_ratio": _to_float(r.get("demand_support_avg_touch_volume_ratio")),
+                    "base_quality_score": _to_float(r.get("base_quality_score")),
+                    "base_quality_grade": _to_text(r.get("base_quality_grade")),
+                    "final_score": _to_float(r.get("final_score")),
+                    "rs_rank_pct": _to_float(r.get("rs_rank_pct")),
+                    "headroom_pct": _to_float(r.get("headroom_pct")),
+                })
+        except Exception as exc:
+            return {"items": rows, "error": str(exc), "count": 0}
+        return {"items": rows, "count": len(rows), "error": ""}
+
     def get_stage2_watchlist_payload(self) -> dict[str, object]:
         self.refresh_stage2_tracking()
         watchlist = self.watchlist_store.list_watchlist(["watching", "triggered", "expired", "cancelled"])
@@ -625,7 +688,7 @@ class DashboardService:
         """Read fundamental data from DuckDB batch cache (no API calls).
 
         The batch cache is populated by ``fetch_supplemental_data()`` during
-        Phase1 screening — 3 API calls total for ALL A-shares.
+        Weinstein screening — 3 API calls total for ALL A-shares.
         """
         return get_fundamental_for_symbol(symbol)
 
@@ -654,8 +717,8 @@ class DashboardService:
 
             results = self._read_results_from_duckdb()
             if results.empty:
-                # 禁止自动触发 Phase1 (内存密集, 易 OOM)
-                # Phase1 应由外部脚本手动触发
+                # 禁止自动触发完整筛选 (内存密集, 易 OOM)
+                # 完整筛选应由外部脚本手动触发
                 pass
 
             if "trade_date" in results.columns:
@@ -697,7 +760,7 @@ class DashboardService:
         return {"recommendations": recs}
 
     def run_preclose(self) -> dict[str, object]:
-        """手动触发：拉腾讯实时行情 → 注入今日日K → 跑完整 Phase1 筛选 → 刷新排行缓存"""
+        """手动触发：拉腾讯实时行情 → 注入今日日K → 跑完整 Weinstein 筛选 → 刷新排行缓存"""
         import subprocess
         import sys
         import time
@@ -724,7 +787,7 @@ class DashboardService:
                 stdout = f.read()
         except subprocess.TimeoutExpired:
             os.unlink(tmp_path)
-            return {"success": False, "message": "预收盘+Phase1超时（>600秒）", "elapsed_seconds": 600}
+            return {"success": False, "message": "预收盘+筛选超时（>600秒）", "elapsed_seconds": 600}
         except Exception as e:
             os.unlink(tmp_path)
             return {"success": False, "message": f"预收盘执行失败: {e}", "elapsed_seconds": time.time() - t0}
@@ -818,7 +881,7 @@ class DashboardService:
             self._refresh_result = {
                 "status": "completed" if exit_ok else "failed",
                 "success": exit_ok,
-                "message": f"续涨刷新完成: {cont_count}只有效箱体候选" if exit_ok else f"Phase1异常退出(code={proc.returncode})",
+                "message": f"续涨刷新完成: {cont_count}只有效箱体候选" if exit_ok else f"筛选异常退出(code={proc.returncode})",
                 "elapsed_seconds": round(elapsed, 1),
                 "continuation_count": cont_count,
                 "exit_code": proc.returncode,
@@ -998,6 +1061,7 @@ class DashboardService:
             latest, self.config,
             base_breakout_price=stage_info.get("base_breakout_price"),
         )
+        demand_support_info = compute_demand_support_quality(recent, self.config, daily=daily)
 
         record = {
             "symbol": symbol,
@@ -1010,6 +1074,7 @@ class DashboardService:
             **rs_info,
             **resistance_info,
             **breakout_info,
+            **demand_support_info,
             "price_vs_ma_pct": _to_float(latest.get("price_vs_ma_pct")),
             "ma_30w": _to_float(latest.get("ma_30w")),
             "ma_10w": _to_float(latest.get("ma_10w")),
@@ -1147,6 +1212,18 @@ class DashboardService:
                     "base_duration_weeks": _to_int(row.get("base_duration_weeks")),
                     "base_volume_contraction_ok": _to_bool(row.get("base_volume_contraction_ok")),
                     "base_atr_rank_pct": _to_int(row.get("base_atr_rank_pct")),
+                    "demand_support_score": _format_number(row.get("demand_support_score"), ".0f"),
+                    "demand_support_grade": _to_text(row.get("demand_support_grade")),
+                    "demand_support_reason": _to_text(row.get("demand_support_reason")),
+                    "demand_support_price": _format_number(row.get("demand_support_price")),
+                    "demand_support_lower": _format_number(row.get("demand_support_lower")),
+                    "demand_support_upper": _format_number(row.get("demand_support_upper")),
+                    "demand_support_touch_count": _to_int(row.get("demand_support_touch_count")),
+                    "demand_support_success_rate": _format_percent(row.get("demand_support_success_rate")),
+                    "demand_support_avg_rebound_pct": _format_percent(row.get("demand_support_avg_rebound_pct")),
+                    "demand_support_avg_penetration_pct": _format_percent(row.get("demand_support_avg_penetration_pct")),
+                    "demand_support_box_height_pct": _format_percent(row.get("demand_support_box_height_pct")),
+                    "demand_support_duration_weeks": _to_int(row.get("demand_support_duration_weeks")),
                     # 旧字段保留
                     "watch_score": _format_number(row.get("watch_score")),
                     "total_score": _format_number(row.get("total_score")),
@@ -1339,7 +1416,7 @@ class DashboardService:
         Cross-day protection: fields that define the entry contract
         (target_entry_price, breakout_level, stop_loss_reference) are
         locked once the watch_date is before today.  This prevents a
-        data re-fetch + Phase 1 re-run from silently mutating a
+        data re-fetch + screener re-run from silently mutating a
         yesterday entry.
 
         Same-day correction: when watch_date equals today a re-run is

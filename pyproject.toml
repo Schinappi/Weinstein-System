@@ -3,9 +3,9 @@ requires = ["setuptools>=69", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "winstan-phase1"
+name = "winstan"
 version = "0.1.0"
-description = "Phase 1 Weinstein screener for A-share equities."
+description = "Weinstein screener and dashboard for A-share equities."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [

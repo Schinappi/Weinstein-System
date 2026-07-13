@@ -35,6 +35,7 @@ const TODAY = dayjs().format("YYYY-MM-DD");
 const PAGE_OVERVIEW = "overview";
 const PAGE_BACKTEST = "backtest";
 const PAGE_MONITOR = "monitor";
+const PAGE_DEMAND_SUPPORT = "demand-support";
 const SCAN_RULE_LABEL = "通过生命周期/减速/成熟度门槛后，按结构分排序显示前100个";
 
 function formatNumber(value, digits = 1, fallback = "--") {
@@ -958,6 +959,217 @@ function OverviewPage({
   `;
 }
 
+function DemandSupportPage({
+  loading,
+  data,
+  statusText,
+  onRefresh,
+  onOpenDetail,
+}) {
+  const items = data?.items || [];
+  const metrics = useMemo(() => {
+    const avgScore = items.length
+      ? items.reduce((sum, item) => sum + Number(item.demand_support_score || 0), 0) / items.length
+      : 0;
+    const avgTouches = items.length
+      ? items.reduce((sum, item) => sum + Number(item.demand_support_touch_count || 0), 0) / items.length
+      : 0;
+    const maxScore = items.length
+      ? Math.max(...items.map((item) => Number(item.demand_support_score || 0)))
+      : 0;
+    return [
+      { label: "候选数量", value: formatInt(data?.count || items.length || 0), extra: "需求区支撑候选 Top 50" },
+      { label: "最高分", value: formatNumber(maxScore, 1), extra: "支撑触底与反弹综合评分" },
+      { label: "平均分", value: formatNumber(avgScore, 1), extra: "当前榜单均值" },
+      { label: "平均触底", value: formatNumber(avgTouches, 1), extra: "同一需求区的分离触底次数" },
+    ];
+  }, [data, items]);
+
+  const columns = [
+    {
+      title: "排名",
+      key: "rank",
+      width: 84,
+      render: (_, __, index) => html`<span className="rank-chip">#${index + 1}</span>`,
+    },
+    {
+      title: "股票",
+      dataIndex: "symbol",
+      key: "symbol",
+      width: 170,
+      render: (_, row) => html`
+        <div className="symbol-cell">
+          <div className="symbol-code">${row.symbol}</div>
+          <div className="symbol-name">${row.name || "--"}</div>
+        </div>
+      `,
+    },
+    {
+      title: "支撑分",
+      dataIndex: "demand_support_score",
+      key: "demand_support_score",
+      width: 110,
+      render: (value) => html`<span className=${Number(value) >= 85 ? "positive-text" : ""}>${formatNumber(value, 1)}</span>`,
+    },
+    {
+      title: "等级",
+      dataIndex: "demand_support_grade",
+      key: "demand_support_grade",
+      width: 90,
+      render: (value) => {
+        const colorMap = { S: "gold", A: "green", B: "blue", C: "default" };
+        return html`<${Tag} color=${colorMap[value] || "default"}>${value || "--"}<//>`;
+      },
+    },
+    {
+      title: "支撑区",
+      key: "zone",
+      width: 150,
+      render: (_, row) => `${formatNumber(row.demand_support_lower, 2)} - ${formatNumber(row.demand_support_upper, 2)}`,
+    },
+    {
+      title: "触底",
+      dataIndex: "demand_support_touch_count",
+      key: "demand_support_touch_count",
+      width: 90,
+      render: (value) => formatInt(value),
+    },
+    {
+      title: "反弹成功",
+      dataIndex: "demand_support_success_rate",
+      key: "demand_support_success_rate",
+      width: 110,
+      render: (value) => formatPercent(value, 0),
+    },
+    {
+      title: "平均反弹",
+      dataIndex: "demand_support_avg_rebound_pct",
+      key: "demand_support_avg_rebound_pct",
+      width: 110,
+      render: (value) => formatPercent(value, 1),
+    },
+    {
+      title: "平均穿透",
+      dataIndex: "demand_support_avg_penetration_pct",
+      key: "demand_support_avg_penetration_pct",
+      width: 110,
+      render: (value) => formatPercent(value, 2),
+    },
+    {
+      title: "箱体高度",
+      dataIndex: "demand_support_box_height_pct",
+      key: "demand_support_box_height_pct",
+      width: 110,
+      render: (value) => formatPercent(value, 1),
+    },
+    {
+      title: "持续周数",
+      dataIndex: "demand_support_duration_weeks",
+      key: "demand_support_duration_weeks",
+      width: 100,
+      render: (value) => formatInt(value),
+    },
+    {
+      title: "最近触底",
+      dataIndex: "demand_support_latest_touch_date",
+      key: "demand_support_latest_touch_date",
+      width: 120,
+    },
+    {
+      title: "信号解读",
+      dataIndex: "demand_support_reason",
+      key: "demand_support_reason",
+      render: (value) => html`<span className="reason-text" title=${value || ""}>${value || "--"}</span>`,
+    },
+  ];
+
+  return html`
+    <div className="page-shell">
+      <div className="hero-grid">
+        <${Card} className="hero-card">
+          <div className="hero-panel">
+            <div className="hero-kicker">Demand Zone</div>
+            <div className="hero-title">需求区支撑榜</div>
+            <div className="hero-copy">
+              这页不先找箱体，而是先找最近 30 周低点的价格聚类，统计同一支撑区的触底次数、
+              触底后反弹、支撑穿透、箱体高度和持续时间，用来找“每次跌到那里都有资金接”的股票。
+            </div>
+            <div className="hero-actions">
+              <${Button} type="primary" size="large" onClick=${onRefresh} loading=${loading}>刷新榜单<//>
+              <${Tag} color="green">支撑优先<//>
+              <${Tag} color="cyan">触底反弹验证<//>
+            </div>
+          </div>
+        <//>
+
+        <${Card} className="hero-card">
+          <div className="hero-meta">
+            <div className="meta-pill">
+              <div className="meta-pill-label">窗口</div>
+              <div className="meta-pill-value">30W</div>
+            </div>
+            <div className="meta-pill">
+              <div className="meta-pill-label">支撑容差</div>
+              <div className="meta-pill-value">±1.5%</div>
+            </div>
+            <div className="meta-pill">
+              <div className="meta-pill-label">反弹验证</div>
+              <div className="meta-pill-value">5W</div>
+            </div>
+            <div className="meta-pill">
+              <div className="meta-pill-label">候选阈值</div>
+              <div className="meta-pill-value">70+</div>
+            </div>
+          </div>
+        <//>
+      </div>
+
+      <div className="page-grid">
+        <div className="cards-grid">
+          ${metrics.map(
+            (item) => html`
+              <${Card} className="metric-card" key=${item.label}>
+                <div className="metric-label">${item.label}</div>
+                <div className="metric-value">${item.value}</div>
+                <div className="metric-extra">${item.extra}</div>
+              <//>
+            `
+          )}
+        </div>
+
+        <${Card} className="panel-card table-card">
+          <div className="toolbar-row" style=${{ marginBottom: 18 }}>
+            <div>
+              <h2 className="section-title">支撑质量排行榜</h2>
+              <div className="toolbar-copy">${statusText || "展示需求区支撑候选。"}</div>
+            </div>
+            <div className="toolbar-actions">
+              <${Tag} color=${loading ? "processing" : "success"}>${loading ? "加载中" : "已就绪"}<//>
+              <${Tag} color="default">点击行查看个股详情<//>
+            </div>
+          </div>
+          <${Table}
+            className="backtest-table"
+            columns=${columns}
+            dataSource=${items}
+            rowKey=${(row) => row.symbol}
+            pagination=${{ pageSize: 20, showSizeChanger: false, hideOnSinglePage: true }}
+            loading=${loading}
+            scroll=${{ x: 1500 }}
+            locale=${{
+              emptyText: html`<div className="empty-block">${loading ? "正在加载" : "暂无需求区支撑候选"}</div>`,
+            }}
+            onRow=${(record) => ({
+              onClick: () => onOpenDetail(record.symbol, items),
+              style: { cursor: "pointer" },
+            })}
+          />
+        <//>
+      </div>
+    </div>
+  `;
+}
+
 function SearchPanel({ onOpenDetail }) {
   const [query, setQuery] = useState("");
   const [loading, setLoading] = useState(false);
@@ -1405,6 +1617,9 @@ function AppContent() {
   const [overviewLoading, setOverviewLoading] = useState(false);
   const [overviewStatus, setOverviewStatus] = useState("正在准备今日排行榜。");
   const [overviewData, setOverviewData] = useState({ items: [], target_date: TODAY });
+  const [demandLoading, setDemandLoading] = useState(false);
+  const [demandStatus, setDemandStatus] = useState("正在准备需求区支撑榜。");
+  const [demandData, setDemandData] = useState({ items: [], count: 0 });
   const [monitorLoading, setMonitorLoading] = useState(false);
   const [monitorStatus, setMonitorStatus] = useState("请从个股详情中添加价格监控。");
   const [monitorData, setMonitorData] = useState({ items: [], count: 0 });
@@ -1581,6 +1796,22 @@ function AppContent() {
     target: "overview",
   });
 
+  const loadDemandSupport = async () => {
+    setDemandLoading(true);
+    try {
+      const payload = await fetchJson("/api/demand-support/ranking");
+      setDemandData(payload);
+      setDemandStatus(payload.count
+        ? `当前展示 ${payload.items?.length || 0} 条需求区支撑候选。`
+        : "暂无需求区支撑候选。");
+    } catch (error) {
+      setDemandStatus(error.message || "加载需求区支撑榜失败");
+      message.error(error.message || "加载需求区支撑榜失败");
+    } finally {
+      setDemandLoading(false);
+    }
+  };
+
   const handleRunBacktest = () => runBacktestRequest({
     symbols: formState.symbols || "",
     date: formState.date || TODAY,
@@ -1589,11 +1820,13 @@ function AppContent() {
 
   useEffect(() => {
     loadOverview(false);
+    loadDemandSupport();
     loadMonitors();
   }, []);
 
   const menuItems = [
     { key: PAGE_OVERVIEW, label: "总览页" },
+    { key: PAGE_DEMAND_SUPPORT, label: "需求区支撑" },
     { key: PAGE_BACKTEST, label: "回测页" },
   ];
 
@@ -1614,6 +1847,16 @@ function AppContent() {
           </div>
         <//>
       `
+    : activePage === PAGE_DEMAND_SUPPORT
+      ? html`
+          <${DemandSupportPage}
+            loading=${demandLoading}
+            data=${demandData}
+            statusText=${demandStatus}
+            onRefresh=${loadDemandSupport}
+            onOpenDetail=${openDetail}
+          />
+        `
     : activePage === PAGE_MONITOR
       ? html`
           <${MonitorPage}
@@ -1647,7 +1890,7 @@ function AppContent() {
               <div className="brand-badge">Weinstein Console</div>
               <div className="brand-title">温斯坦回测看板</div>
               <div className="brand-copy">
-                当前只保留总览页和回测页两个入口。总览页等价于“今天的全市场回测排行榜”，回测页继续承载手动回测与扫描。
+                总览页展示今日全市场回测排行榜，需求区支撑页筛选反复触底有资金承接的股票，回测页继续承载手动回测与扫描。
               </div>
             </div>
 

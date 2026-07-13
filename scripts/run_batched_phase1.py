@@ -28,6 +28,7 @@ from winstan.rules.relative_strength_rule import evaluate_relative_strength
 from winstan.rules.resistance_rule import evaluate_resistance, compute_overhead_supply
 from winstan.rules.stage_analysis import apply_stage2_scoring, detect_transition, evaluate_stage
 from winstan.rules.base_quality import compute_base_quality
+from winstan.rules.demand_support import compute_demand_support_quality
 from winstan.rules.stage2_continuation import compute_continuation_quality
 from winstan.rules.volume_confirmation import evaluate_volume
 from winstan.scoring.ranker import build_stage2_top_n, score_and_rank
@@ -105,6 +106,7 @@ def run_batched_screener():
 
             # Stage I 基底质量评分
             base_quality_info = compute_base_quality(recent, config, base_info=stage_info, daily=daily)
+            demand_support_info = compute_demand_support_quality(recent, config, daily=daily)
 
             # Stage2 续涨形态评分
             continuation_info = compute_continuation_quality(recent, config, daily=daily)
@@ -129,6 +131,7 @@ def run_batched_screener():
                 **overhead_info,
                 **transition_info,
                 **base_quality_info,
+                **demand_support_info,
                 **continuation_info,
                 "price_vs_ma_pct": float(latest["price_vs_ma_pct"]) if pd.notna(latest["price_vs_ma_pct"]) else None,
                 "ma_30w": float(latest["ma_30w"]) if pd.notna(latest["ma_30w"]) else None,
@@ -201,6 +204,7 @@ def run_batched_screener():
         "volume_ok_count": int(results["volume_ok"].sum()) if not results.empty else 0,
         "rs_ok_count": int(results["rs_ok"].sum()) if not results.empty else 0,
         "resistance_ok_count": int(results["resistance_ok"].sum()) if not results.empty else 0,
+        "demand_support_count": int(results["demand_support_candidate"].sum()) if not results.empty and "demand_support_candidate" in results.columns else 0,
         "candidate_count": len(candidates),
     }
 

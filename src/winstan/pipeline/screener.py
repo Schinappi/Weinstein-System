@@ -17,6 +17,7 @@ from winstan.rules.relative_strength_rule import evaluate_relative_strength
 from winstan.rules.resistance_rule import evaluate_resistance, compute_overhead_supply
 from winstan.rules.stage_analysis import apply_stage2_scoring, detect_transition, evaluate_stage
 from winstan.rules.base_quality import compute_base_quality
+from winstan.rules.demand_support import compute_demand_support_quality
 from winstan.rules.stage2_continuation import compute_continuation_quality
 from winstan.rules.volume_confirmation import evaluate_volume
 from winstan.scoring.fundamental import fetch_supplemental_data
@@ -81,9 +82,9 @@ class WeinsteinScreener:
             all_rs_composite.append(pd.DataFrame({"symbol": latest["symbol"], "rs_composite": rs_comp}))
 
             all_weekly.append(batch_weekly)
-            del batch_daily, batch_weekly, latest
+            del batch_weekly, latest
 
-            print(f"[phase1] batch {batch_idx // batch_size + 1}/{(len(symbols) + batch_size - 1) // batch_size} done ({len(batch_symbols)} symbols)")
+            print(f"[screener] batch {batch_idx // batch_size + 1}/{(len(symbols) + batch_size - 1) // batch_size} done ({len(batch_symbols)} symbols)")
 
         # Combine weekly, compute RS ranks across ALL stocks, merge back
         weekly_bars = pd.concat(all_weekly, ignore_index=True) if all_weekly else pd.DataFrame()
@@ -209,6 +210,7 @@ class WeinsteinScreener:
             base_quality_info = compute_base_quality(recent, self.config,
                                                       base_info=stage_info,
                                                       daily=daily_df)
+            demand_support_info = compute_demand_support_quality(recent, self.config, daily=daily_df)
 
             # Stage2 续涨形态评分（暴涨后回踩MA30w紧凑整理）
             continuation_info = compute_continuation_quality(recent, self.config, daily=daily_df)
@@ -233,6 +235,7 @@ class WeinsteinScreener:
                 **overhead_info,
                 **transition_info,
                 **base_quality_info,
+                **demand_support_info,
                 **continuation_info,
                 "price_vs_ma_pct": float(latest["price_vs_ma_pct"]) if pd.notna(latest["price_vs_ma_pct"]) else None,
                 "ma_30w": float(latest["ma_30w"]) if pd.notna(latest["ma_30w"]) else None,
@@ -291,6 +294,7 @@ class WeinsteinScreener:
             "volume_ok_count": int(results["volume_ok"].sum()) if not results.empty else 0,
             "rs_ok_count": int(results["rs_ok"].sum()) if not results.empty else 0,
             "resistance_ok_count": int(results["resistance_ok"].sum()) if not results.empty else 0,
+            "demand_support_count": int(results["demand_support_candidate"].sum()) if not results.empty and "demand_support_candidate" in results.columns else 0,
             "candidate_count": len(candidates),
             "config_snapshot": {
                 "benchmark_symbol": self.config.market.benchmark_symbol,

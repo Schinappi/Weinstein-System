@@ -809,7 +809,7 @@ def _update_index_daily_bars(
     return summary
 
 
-def _rerun_phase1(config) -> dict[str, object]:
+def _rerun_screener(config) -> dict[str, object]:
     result = WeinsteinScreener(config).run()
     results = result.get("results", pd.DataFrame())
     latest_trade_date = None
@@ -831,7 +831,7 @@ def main() -> None:
     parser.add_argument("--config", default="config/strategy.yaml", help="Path to strategy config file.")
     parser.add_argument("--include-missing", action="store_true", help="Also fetch symbols not yet cached locally.")
     parser.add_argument("--skip-index", action="store_true", help="Skip benchmark index daily bar update.")
-    parser.add_argument("--skip-phase1", action="store_true", help="Skip rerunning the Phase1 screener after data update.")
+    parser.add_argument("--skip-phase1", action="store_true", help="Skip rerunning the Weinstein screener after data update.")
     parser.add_argument("--skip-non-trading-day", action="store_true", help="Exit successfully without updating when the target end date is not an open trading day.")
     parser.add_argument("--dry-run", action="store_true", help="Only plan updates without writing data.")
     parser.add_argument("--limit", type=int, default=0, help="Limit the number of stock symbols processed for testing.")
@@ -911,7 +911,7 @@ def main() -> None:
         should_run_phase1 = phase1_requested and (stock_summary["stock_symbols_updated"] > 0 or bool(index_summary["index_updated"]))
         phase1_started_counter = time.perf_counter()
         if should_run_phase1:
-            phase1_summary = _rerun_phase1(config)
+            phase1_summary = _rerun_screener(config)
             phase1_skipped_reason = ""
         else:
             phase1_summary = {

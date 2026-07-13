@@ -192,7 +192,7 @@ def cross_with_weinstein(
                 "FROM screening_results"
             ).fetchdf()
     except Exception:
-        logger.warning("无法读取 screening_results（可能尚未运行Phase1）")
+        logger.warning("无法读取 screening_results（可能尚未运行完整筛选）")
         screening = pd.DataFrame()
     
     if screening.empty:

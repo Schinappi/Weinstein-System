@@ -71,6 +71,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._send_json(self.service.get_continuation_ranking_payload())
             return
 
+        if path == "/api/demand-support/ranking":
+            self._send_json(self.service.get_demand_support_ranking_payload())
+            return
+
         if path == "/api/continuation/refresh-status":
             self._send_json(self.service.get_refresh_status())
             return

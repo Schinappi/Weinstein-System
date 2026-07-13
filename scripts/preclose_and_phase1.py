@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-收盘前一键跑：拉腾讯实时行情 → 注入今日日K到 daily_bars parquet → 跑完整 Phase1 筛选
+收盘前一键跑：拉腾讯实时行情 → 注入今日日K到 daily_bars parquet → 跑完整 Weinstein 筛选
 """
 from __future__ import annotations
 
@@ -154,7 +154,7 @@ def inject_realtime_into_daily_bars(
         return
 
     parquet_root = Path(config.parquet_root)
-    # 1. Inject into daily_bars (for Phase1 DuckDB view)
+    # 1. Inject into daily_bars (for the DuckDB screening view)
     today_path = parquet_root / "daily_bars" / "__today__.parquet"
     today_df.to_parquet(today_path, index=False)
     print(f"[inject] Saved {len(today_df)} bars → {today_path}")
@@ -194,15 +194,15 @@ def main() -> None:
     print("[preclose] Injecting real-time bars into daily_bars parquet...")
     inject_realtime_into_daily_bars(config, realtime, today)
 
-    # ── Step 3: 跑 Phase1 完整筛选 ──
-    print("[preclose] Running Phase1 screening...")
+    # ── Step 3: 跑完整 Weinstein 筛选 ──
+    print("[preclose] Running Weinstein screening...")
     screener = WeinsteinScreener(config)
     results = screener.run()
     summary = results.get("summary", {})
     elapsed = time.time() - t0
 
     print(f"\n{'═' * 50}")
-    print(f"✅ Phase1 complete in {elapsed:.1f}s")
+    print(f"✅ Screening complete in {elapsed:.1f}s")
     print(f"   Total symbols:     {summary.get('total_symbols', '?')}")
     print(f"   Candidates:        {summary.get('candidate_count', '?')}")
     print(f"   Stage II top N:    {summary.get('stage2_top_count', '?')}")

@@ -1,6 +1,6 @@
-# Winstan Phase 1
+# Winstan
 
-Phase 1 focuses on an offline A-share screener for the Weinstein strategy:
+Winstan is an offline A-share screener and dashboard for the Weinstein strategy:
 
 - market trend filter
 - 30-week stage analysis
@@ -14,4 +14,3 @@ Primary design goals:
 - support both Tushare and TickFlow
 - keep a local cache with DuckDB + Parquet
 - produce candidates, Top N strong names, and a summary report
-

@@ -375,22 +375,7 @@ class DashboardService:
         try:
             with store.connect() as conn:
                 df = conn.execute("""
-                    SELECT symbol, name, close, stage_label,
-                           demand_support_score, demand_support_grade,
-                           demand_support_reason, demand_support_price,
-                           demand_support_lower, demand_support_upper,
-                           demand_support_touch_count,
-                           demand_support_success_count,
-                           demand_support_success_rate,
-                           demand_support_avg_rebound_pct,
-                           demand_support_avg_penetration_pct,
-                           demand_support_max_penetration_pct,
-                           demand_support_box_height_pct,
-                           demand_support_duration_weeks,
-                           demand_support_latest_touch_date,
-                           demand_support_avg_touch_volume_ratio,
-                           base_quality_score, base_quality_grade,
-                           final_score, rs_rank_pct, headroom_pct
+                    SELECT *
                     FROM screening_results
                     WHERE demand_support_candidate = TRUE
                     ORDER BY demand_support_score DESC,
@@ -420,6 +405,15 @@ class DashboardService:
                     "demand_support_duration_weeks": _to_int(r.get("demand_support_duration_weeks")),
                     "demand_support_latest_touch_date": _to_text(r.get("demand_support_latest_touch_date")),
                     "demand_support_avg_touch_volume_ratio": _to_float(r.get("demand_support_avg_touch_volume_ratio")),
+                    "demand_support_avg_swing_pct": _to_float(r.get("demand_support_avg_swing_pct")),
+                    "demand_support_swing_count": _to_int(r.get("demand_support_swing_count")),
+                    "demand_support_top_price": _to_float(r.get("demand_support_top_price")),
+                    "demand_support_top_stability_pct": _to_float(r.get("demand_support_top_stability_pct")),
+                    "demand_support_rebound_efficiency": _to_float(r.get("demand_support_rebound_efficiency")),
+                    "demand_support_box_utilization_pct": _to_float(r.get("demand_support_box_utilization_pct")),
+                    "demand_support_volume_contraction_ratio": _to_float(r.get("demand_support_volume_contraction_ratio")),
+                    "demand_support_score_cycle": _to_float(r.get("demand_support_score_cycle")),
+                    "demand_support_score_volume": _to_float(r.get("demand_support_score_volume")),
                     "base_quality_score": _to_float(r.get("base_quality_score")),
                     "base_quality_grade": _to_text(r.get("base_quality_grade")),
                     "final_score": _to_float(r.get("final_score")),
@@ -1224,6 +1218,12 @@ class DashboardService:
                     "demand_support_avg_penetration_pct": _format_percent(row.get("demand_support_avg_penetration_pct")),
                     "demand_support_box_height_pct": _format_percent(row.get("demand_support_box_height_pct")),
                     "demand_support_duration_weeks": _to_int(row.get("demand_support_duration_weeks")),
+                    "demand_support_avg_swing_pct": _format_percent(row.get("demand_support_avg_swing_pct")),
+                    "demand_support_swing_count": _to_int(row.get("demand_support_swing_count")),
+                    "demand_support_top_price": _format_number(row.get("demand_support_top_price")),
+                    "demand_support_top_stability_pct": _format_percent(row.get("demand_support_top_stability_pct")),
+                    "demand_support_rebound_efficiency": _format_number(row.get("demand_support_rebound_efficiency"), ".2f"),
+                    "demand_support_box_utilization_pct": _format_percent(row.get("demand_support_box_utilization_pct")),
                     # 旧字段保留
                     "watch_score": _format_number(row.get("watch_score")),
                     "total_score": _format_number(row.get("total_score")),

@@ -17,6 +17,7 @@ import numpy as np
 import pandas as pd
 
 from winstan.config import AppConfig
+from winstan.rules.base_oscillation import compute_base_oscillation_quality
 
 
 LOOKBACK_WEEKS = 30
@@ -46,110 +47,13 @@ def compute_demand_support_quality(
     config: AppConfig | None = None,
     daily: pd.DataFrame | None = None,
 ) -> dict[str, object]:
-    """Compute support-zone quality from weekly OHLCV data.
+    """Compute large-base support quality from weekly OHLCV data.
 
     ``config`` and ``daily`` are accepted for API symmetry with other rule
-    modules; the current implementation uses weekly bars only.
+    modules.  The implementation now delegates to the large-base oscillation
+    model: support touches + full touch-to-touch swings + top stability.
     """
-    default = _default_result("insufficient data")
-    if recent.empty or not {"low", "high", "close"}.issubset(recent.columns):
-        return default
-
-    weekly = recent.sort_values("trade_date").reset_index(drop=True).copy()
-    for col in ["low", "high", "close", "volume"]:
-        if col in weekly.columns:
-            weekly[col] = pd.to_numeric(weekly[col], errors="coerce")
-    weekly = weekly.dropna(subset=["low", "high", "close"]).reset_index(drop=True)
-    if len(weekly) < max(12, PIVOT_RADIUS * 2 + 3):
-        return default
-
-    window_start = max(0, len(weekly) - LOOKBACK_WEEKS)
-    window = weekly.iloc[window_start:].reset_index(drop=False).rename(columns={"index": "_abs_idx"})
-    pivots = _find_pivot_lows(window)
-    if len(pivots) < 2:
-        pivots = _fallback_low_candidates(window)
-    if len(pivots) < 2:
-        return _default_result("not enough low pivots")
-
-    clusters = _cluster_prices(pivots, SUPPORT_TOLERANCE_PCT)
-    if not clusters:
-        return _default_result("no support cluster")
-
-    cluster = _select_best_cluster(clusters, len(weekly))
-    support = float(np.median([item["price"] for item in cluster]))
-    zone_lower = support * (1.0 - SUPPORT_TOLERANCE_PCT / 100.0)
-    zone_upper = support * (1.0 + SUPPORT_TOLERANCE_PCT / 100.0)
-    if support <= 0:
-        return _default_result("invalid support")
-
-    touches = _build_touch_events(weekly, window_start, support, zone_lower, zone_upper)
-    touch_count = len(touches)
-    if touch_count == 0:
-        return _default_result("no support touches")
-
-    evaluable = [touch for touch in touches if touch.rebound_success is not None]
-    successful = [touch for touch in evaluable if touch.rebound_success]
-    pending_count = touch_count - len(evaluable)
-
-    touch_score = _score_touch_count(touch_count)
-    rebound_score = _score_rebounds(evaluable, successful)
-    penetration_values = [touch.penetration_pct for touch in touches]
-    penetration_score = _score_penetration(float(np.mean(penetration_values)) if penetration_values else None)
-    box_height_pct = _compute_box_height_pct(weekly)
-    box_score = _score_box_height(box_height_pct)
-    duration_weeks = _touch_span_weeks(touches)
-    duration_score = _score_duration(duration_weeks)
-
-    total = min(100.0, touch_score + rebound_score + penetration_score + box_score + duration_score)
-    grade = _grade(total)
-    volume_ratios = [touch.volume_ratio for touch in touches if touch.volume_ratio is not None]
-    volume_confirm_count = sum(1 for ratio in volume_ratios if ratio is not None and ratio >= 1.0)
-
-    avg_rebound = _mean([touch.rebound_pct for touch in evaluable if touch.rebound_pct is not None])
-    success_rate = (len(successful) / len(evaluable) * 100.0) if evaluable else None
-    latest_touch = touches[-1]
-    reason = _build_reason(
-        grade=grade,
-        total=total,
-        touch_count=touch_count,
-        success_rate=success_rate,
-        avg_rebound=avg_rebound,
-        avg_penetration=_mean(penetration_values),
-        box_height_pct=box_height_pct,
-        duration_weeks=duration_weeks,
-        pending_count=pending_count,
-    )
-
-    return {
-        "demand_support_score": round(total, 1),
-        "demand_support_grade": grade,
-        "demand_support_reason": reason,
-        "demand_support_candidate": bool(total >= MIN_CANDIDATE_SCORE and touch_count >= MIN_VALID_TOUCHES),
-        "demand_support_price": round(support, 4),
-        "demand_support_lower": round(zone_lower, 4),
-        "demand_support_upper": round(zone_upper, 4),
-        "demand_support_zone_width_pct": round((zone_upper / zone_lower - 1.0) * 100.0, 2),
-        "demand_support_touch_count": int(touch_count),
-        "demand_support_success_count": int(len(successful)),
-        "demand_support_pending_count": int(pending_count),
-        "demand_support_success_rate": round(success_rate, 1) if success_rate is not None else None,
-        "demand_support_avg_rebound_pct": round(avg_rebound, 2) if avg_rebound is not None else None,
-        "demand_support_avg_penetration_pct": round(_mean(penetration_values) or 0.0, 2),
-        "demand_support_max_penetration_pct": round(max(penetration_values) if penetration_values else 0.0, 2),
-        "demand_support_box_height_pct": round(box_height_pct, 2) if box_height_pct is not None else None,
-        "demand_support_duration_weeks": int(duration_weeks),
-        "demand_support_latest_touch_date": _format_date(latest_touch.date),
-        "demand_support_volume_confirm_count": int(volume_confirm_count),
-        "demand_support_volume_confirm_rate": (
-            round(volume_confirm_count / len(volume_ratios) * 100.0, 1) if volume_ratios else None
-        ),
-        "demand_support_avg_touch_volume_ratio": round(_mean(volume_ratios), 2) if volume_ratios else None,
-        "demand_support_score_touch": round(touch_score, 1),
-        "demand_support_score_rebound": round(rebound_score, 1),
-        "demand_support_score_penetration": round(penetration_score, 1),
-        "demand_support_score_box": round(box_score, 1),
-        "demand_support_score_duration": round(duration_score, 1),
-    }
+    return compute_base_oscillation_quality(recent, daily=daily)
 
 
 def _default_result(reason: str) -> dict[str, object]:

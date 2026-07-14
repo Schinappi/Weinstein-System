@@ -974,14 +974,17 @@ function DemandSupportPage({
     const avgTouches = items.length
       ? items.reduce((sum, item) => sum + Number(item.demand_support_touch_count || 0), 0) / items.length
       : 0;
+    const avgSwing = items.length
+      ? items.reduce((sum, item) => sum + Number(item.demand_support_avg_swing_pct || item.demand_support_avg_rebound_pct || 0), 0) / items.length
+      : 0;
     const maxScore = items.length
       ? Math.max(...items.map((item) => Number(item.demand_support_score || 0)))
       : 0;
     return [
-      { label: "候选数量", value: formatInt(data?.count || items.length || 0), extra: "需求区支撑候选 Top 50" },
-      { label: "最高分", value: formatNumber(maxScore, 1), extra: "支撑触底与反弹综合评分" },
-      { label: "平均分", value: formatNumber(avgScore, 1), extra: "当前榜单均值" },
-      { label: "平均触底", value: formatNumber(avgTouches, 1), extra: "同一需求区的分离触底次数" },
+      { label: "候选数量", value: formatInt(data?.count || items.length || 0), extra: "大箱体摆动候选 Top 50" },
+      { label: "最高分", value: formatNumber(maxScore, 1), extra: "箱底支撑 + Swing 综合评分" },
+      { label: "平均Swing", value: formatPercent(avgSwing, 1), extra: "从箱底到下一次触底前高点" },
+      { label: "平均触底", value: formatNumber(avgTouches, 1), extra: "同一箱底的分离触底次数" },
     ];
   }, [data, items]);
 
@@ -1035,18 +1038,39 @@ function DemandSupportPage({
       render: (value) => formatInt(value),
     },
     {
-      title: "反弹成功",
+      title: "完整Cycle",
       dataIndex: "demand_support_success_rate",
       key: "demand_support_success_rate",
       width: 110,
-      render: (value) => formatPercent(value, 0),
+      render: (_, row) => formatInt(row.demand_support_swing_count ?? row.demand_support_success_count),
     },
     {
-      title: "平均反弹",
+      title: "平均Swing",
       dataIndex: "demand_support_avg_rebound_pct",
       key: "demand_support_avg_rebound_pct",
       width: 110,
-      render: (value) => formatPercent(value, 1),
+      render: (_, row) => formatPercent(row.demand_support_avg_swing_pct ?? row.demand_support_avg_rebound_pct, 1),
+    },
+    {
+      title: "箱顶",
+      dataIndex: "demand_support_top_price",
+      key: "demand_support_top_price",
+      width: 100,
+      render: (value) => formatNumber(value, 2),
+    },
+    {
+      title: "反弹效率",
+      dataIndex: "demand_support_rebound_efficiency",
+      key: "demand_support_rebound_efficiency",
+      width: 110,
+      render: (value) => Number.isFinite(Number(value)) ? formatPercent(Number(value) * 100, 0) : "--",
+    },
+    {
+      title: "箱体利用",
+      dataIndex: "demand_support_box_utilization_pct",
+      key: "demand_support_box_utilization_pct",
+      width: 110,
+      render: (value) => formatPercent(value, 0),
     },
     {
       title: "平均穿透",
@@ -1059,6 +1083,13 @@ function DemandSupportPage({
       title: "箱体高度",
       dataIndex: "demand_support_box_height_pct",
       key: "demand_support_box_height_pct",
+      width: 110,
+      render: (value) => formatPercent(value, 1),
+    },
+    {
+      title: "顶部稳定",
+      dataIndex: "demand_support_top_stability_pct",
+      key: "demand_support_top_stability_pct",
       width: 110,
       render: (value) => formatPercent(value, 1),
     },
@@ -1088,16 +1119,16 @@ function DemandSupportPage({
       <div className="hero-grid">
         <${Card} className="hero-card">
           <div className="hero-panel">
-            <div className="hero-kicker">Demand Zone</div>
-            <div className="hero-title">需求区支撑榜</div>
+            <div className="hero-kicker">Base Oscillation</div>
+            <div className="hero-title">箱体摆动质量榜</div>
             <div className="hero-copy">
-              这页不先找箱体，而是先找最近 30 周低点的价格聚类，统计同一支撑区的触底次数、
-              触底后反弹、支撑穿透、箱体高度和持续时间，用来找“每次跌到那里都有资金接”的股票。
+              这页先找箱底支撑，再统计每次 Touch 到下一次 Touch 前的完整 Swing，
+              重点筛选“长期大箱体、箱底反复承接、每次反弹尽量摸到箱顶”的股票。
             </div>
             <div className="hero-actions">
               <${Button} type="primary" size="large" onClick=${onRefresh} loading=${loading}>刷新榜单<//>
-              <${Tag} color="green">支撑优先<//>
-              <${Tag} color="cyan">触底反弹验证<//>
+              <${Tag} color="green">箱底支撑<//>
+              <${Tag} color="cyan">完整Swing验证<//>
             </div>
           </div>
         <//>
@@ -1106,7 +1137,7 @@ function DemandSupportPage({
           <div className="hero-meta">
             <div className="meta-pill">
               <div className="meta-pill-label">窗口</div>
-              <div className="meta-pill-value">30W</div>
+              <div className="meta-pill-value">52W</div>
             </div>
             <div className="meta-pill">
               <div className="meta-pill-label">支撑容差</div>
@@ -1114,7 +1145,7 @@ function DemandSupportPage({
             </div>
             <div className="meta-pill">
               <div className="meta-pill-label">反弹验证</div>
-              <div className="meta-pill-value">5W</div>
+              <div className="meta-pill-value">Touch间</div>
             </div>
             <div className="meta-pill">
               <div className="meta-pill-label">候选阈值</div>
@@ -1140,8 +1171,8 @@ function DemandSupportPage({
         <${Card} className="panel-card table-card">
           <div className="toolbar-row" style=${{ marginBottom: 18 }}>
             <div>
-              <h2 className="section-title">支撑质量排行榜</h2>
-              <div className="toolbar-copy">${statusText || "展示需求区支撑候选。"}</div>
+              <h2 className="section-title">箱体摆动质量排行榜</h2>
+              <div className="toolbar-copy">${statusText || "展示箱底支撑与完整 Swing 候选。"}</div>
             </div>
             <div className="toolbar-actions">
               <${Tag} color=${loading ? "processing" : "success"}>${loading ? "加载中" : "已就绪"}<//>
@@ -1157,7 +1188,7 @@ function DemandSupportPage({
             loading=${loading}
             scroll=${{ x: 1500 }}
             locale=${{
-              emptyText: html`<div className="empty-block">${loading ? "正在加载" : "暂无需求区支撑候选"}</div>`,
+              emptyText: html`<div className="empty-block">${loading ? "正在加载" : "暂无箱体摆动候选"}</div>`,
             }}
             onRow=${(record) => ({
               onClick: () => onOpenDetail(record.symbol, items),
@@ -1618,7 +1649,7 @@ function AppContent() {
   const [overviewStatus, setOverviewStatus] = useState("正在准备今日排行榜。");
   const [overviewData, setOverviewData] = useState({ items: [], target_date: TODAY });
   const [demandLoading, setDemandLoading] = useState(false);
-  const [demandStatus, setDemandStatus] = useState("正在准备需求区支撑榜。");
+  const [demandStatus, setDemandStatus] = useState("正在准备箱体摆动质量榜。");
   const [demandData, setDemandData] = useState({ items: [], count: 0 });
   const [monitorLoading, setMonitorLoading] = useState(false);
   const [monitorStatus, setMonitorStatus] = useState("请从个股详情中添加价格监控。");
@@ -1802,11 +1833,11 @@ function AppContent() {
       const payload = await fetchJson("/api/demand-support/ranking");
       setDemandData(payload);
       setDemandStatus(payload.count
-        ? `当前展示 ${payload.items?.length || 0} 条需求区支撑候选。`
-        : "暂无需求区支撑候选。");
+        ? `当前展示 ${payload.items?.length || 0} 条箱体摆动候选。`
+        : "暂无箱体摆动候选。");
     } catch (error) {
-      setDemandStatus(error.message || "加载需求区支撑榜失败");
-      message.error(error.message || "加载需求区支撑榜失败");
+      setDemandStatus(error.message || "加载箱体摆动质量榜失败");
+      message.error(error.message || "加载箱体摆动质量榜失败");
     } finally {
       setDemandLoading(false);
     }
@@ -1826,7 +1857,7 @@ function AppContent() {
 
   const menuItems = [
     { key: PAGE_OVERVIEW, label: "总览页" },
-    { key: PAGE_DEMAND_SUPPORT, label: "需求区支撑" },
+    { key: PAGE_DEMAND_SUPPORT, label: "箱体摆动" },
     { key: PAGE_BACKTEST, label: "回测页" },
   ];
 
@@ -1890,7 +1921,7 @@ function AppContent() {
               <div className="brand-badge">Weinstein Console</div>
               <div className="brand-title">温斯坦回测看板</div>
               <div className="brand-copy">
-                总览页展示今日全市场回测排行榜，需求区支撑页筛选反复触底有资金承接的股票，回测页继续承载手动回测与扫描。
+                总览页展示今日全市场回测排行榜，箱体摆动页筛选箱底反复承接且 Swing 充分的大箱体，回测页继续承载手动回测与扫描。
               </div>
             </div>
 

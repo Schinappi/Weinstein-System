@@ -25,9 +25,11 @@ LOOKBACK_WEEKS = 52
 LOOKBACK_DAYS = 252
 PIVOT_RADIUS = 2
 SUPPORT_TOLERANCE_PCT = 1.5
+MAX_TOUCH_PENETRATION_PCT = 4.0
 VOLUME_LOOKBACK_WEEKS = 20
 DAILY_TOUCH_MERGE_GAP_BARS = 10
 WEEKLY_TOUCH_MERGE_GAP_BARS = 1
+MIN_SEPARATE_TOUCH_SWING_PCT = 12.0
 MIN_VALID_TOUCHES = 3
 MIN_VALID_SWING_CYCLES = 1
 MIN_CANDIDATE_SCORE = 70.0
@@ -54,6 +56,38 @@ class SwingCycle:
     peak_price: float
     swing_pct: float
     rebound_efficiency: float | None
+
+
+@dataclass(frozen=True)
+class SupportZoneEvaluation:
+    cluster: list[dict[str, float | int]]
+    support: float
+    zone_lower: float
+    zone_upper: float
+    touches: list[SupportTouch]
+    preliminary_cycles: list[SwingCycle]
+    box_top: float | None
+    cycles: list[SwingCycle]
+    avg_swing: float | None
+    avg_penetration: float | None
+    max_penetration: float | None
+    duration_bars: int
+    duration_weeks: int
+    box_height_pct: float | None
+    top_stability_pct: float | None
+    avg_efficiency: float | None
+    utilization_pct: float | None
+    volume_contraction_ratio: float | None
+    touch_score: float
+    penetration_score: float
+    swing_score: float
+    cycle_score: float
+    top_score: float
+    duration_score: float
+    volume_score: float
+    total: float
+    active: bool
+    latest_break_pct: float
 
 
 def compute_base_oscillation_quality(
@@ -87,63 +121,56 @@ def compute_base_oscillation_quality(
     if not clusters:
         return _default_result("no bottom cluster")
 
-    support_cluster = _select_best_cluster(clusters, len(bars))
-    support = float(np.median([item["price"] for item in support_cluster]))
-    if support <= 0:
-        return _default_result("invalid support")
-
-    zone_lower = support * (1.0 - SUPPORT_TOLERANCE_PCT / 100.0)
-    zone_upper = support * (1.0 + SUPPORT_TOLERANCE_PCT / 100.0)
     merge_gap = DAILY_TOUCH_MERGE_GAP_BARS if source_label == "daily" else WEEKLY_TOUCH_MERGE_GAP_BARS
-    touches = _build_support_touches(bars, window_start, support, zone_lower, zone_upper, merge_gap)
+    evaluations = [
+        evaluation
+        for cluster in clusters
+        if (
+            evaluation := _evaluate_support_zone(
+                bars=bars,
+                cluster=cluster,
+                window_start=window_start,
+                merge_gap=merge_gap,
+                source_label=source_label,
+            )
+        )
+        is not None
+    ]
+    if not evaluations:
+        return _default_result("no support touches")
+
+    selected = _select_best_support_zone(evaluations)
+    support = selected.support
+    zone_lower = selected.zone_lower
+    zone_upper = selected.zone_upper
+    touches = selected.touches
     touch_count = len(touches)
     if touch_count == 0:
         return _default_result("no support touches")
 
-    preliminary_cycles = _build_swing_cycles(bars, touches, box_top=None)
+    preliminary_cycles = selected.preliminary_cycles
     peak_prices = [cycle.peak_price for cycle in preliminary_cycles]
-    box_top = _estimate_box_top(bars, peak_prices, support)
-    cycles = _build_swing_cycles(bars, touches, box_top=box_top)
-
+    box_top = selected.box_top
+    cycles = selected.cycles
     swing_values = [cycle.swing_pct for cycle in cycles]
-    avg_swing = _mean(swing_values)
+    avg_swing = selected.avg_swing
     swing_count = len(cycles)
-    penetration_values = [touch.penetration_pct for touch in touches]
-    avg_penetration = _mean(penetration_values)
-    max_penetration = max(penetration_values) if penetration_values else None
-    duration_weeks = _touch_span_weeks(touches)
-
-    box_height_pct = None
-    if box_top is not None and box_top > support:
-        box_height_pct = (box_top / support - 1.0) * 100.0
-
-    top_stability_pct = _top_stability_pct(peak_prices)
-    rebound_efficiencies = [cycle.rebound_efficiency for cycle in cycles if cycle.rebound_efficiency is not None]
-    avg_efficiency = _mean(rebound_efficiencies)
-    utilization_pct = None
-    if avg_swing is not None and box_height_pct and box_height_pct > 0:
-        utilization_pct = min(avg_swing / box_height_pct * 100.0, 140.0)
-
-    volume_contraction_ratio = _volume_contraction_ratio(bars, touches)
-
-    touch_score = _score_touch_count(touch_count)
-    penetration_score = _score_penetration(avg_penetration)
-    swing_score = _score_avg_swing(avg_swing)
-    cycle_score = _score_cycle_count(swing_count)
-    top_score = _score_top_stability(top_stability_pct)
-    duration_score = _score_duration(duration_weeks)
-    volume_score = _score_volume_contraction(volume_contraction_ratio)
-
-    total = min(
-        100.0,
-        touch_score
-        + penetration_score
-        + swing_score
-        + cycle_score
-        + top_score
-        + duration_score
-        + volume_score,
-    )
+    avg_penetration = selected.avg_penetration
+    max_penetration = selected.max_penetration
+    duration_weeks = selected.duration_weeks
+    box_height_pct = selected.box_height_pct
+    top_stability_pct = selected.top_stability_pct
+    avg_efficiency = selected.avg_efficiency
+    utilization_pct = selected.utilization_pct
+    volume_contraction_ratio = selected.volume_contraction_ratio
+    touch_score = selected.touch_score
+    penetration_score = selected.penetration_score
+    swing_score = selected.swing_score
+    cycle_score = selected.cycle_score
+    top_score = selected.top_score
+    duration_score = selected.duration_score
+    volume_score = selected.volume_score
+    total = selected.total
     grade = _grade(total)
     latest_touch = touches[-1]
     pending_count = max(touch_count - swing_count, 0)
@@ -159,6 +186,7 @@ def compute_base_oscillation_quality(
         and (avg_swing or 0.0) >= MIN_CANDIDATE_AVG_SWING_PCT
         and (avg_efficiency is None or avg_efficiency >= MIN_CANDIDATE_REBOUND_EFFICIENCY)
         and (top_stability_pct is None or top_stability_pct <= MAX_CANDIDATE_TOP_STABILITY_PCT)
+        and selected.active
     )
 
     reason = _build_reason(
@@ -172,6 +200,7 @@ def compute_base_oscillation_quality(
         rebound_efficiency=avg_efficiency,
         duration_weeks=duration_weeks,
         pending_count=pending_count,
+        latest_break_pct=selected.latest_break_pct,
     )
 
     return {
@@ -192,6 +221,8 @@ def compute_base_oscillation_quality(
         "demand_support_max_penetration_pct": round(max_penetration or 0.0, 2),
         "demand_support_box_height_pct": round(box_height_pct, 2) if box_height_pct is not None else None,
         "demand_support_duration_weeks": int(duration_weeks),
+        "demand_support_duration_bars": int(selected.duration_bars),
+        "demand_support_duration_unit": source_label,
         "demand_support_latest_touch_date": _format_date(latest_touch.date),
         "demand_support_volume_confirm_count": int(volume_confirm_count),
         "demand_support_volume_confirm_rate": (
@@ -216,6 +247,8 @@ def compute_base_oscillation_quality(
         "demand_support_volume_contraction_ratio": (
             round(volume_contraction_ratio, 2) if volume_contraction_ratio is not None else None
         ),
+        "demand_support_active": bool(selected.active),
+        "demand_support_latest_break_pct": round(selected.latest_break_pct, 2),
     }
 
 
@@ -238,6 +271,8 @@ def _default_result(reason: str) -> dict[str, object]:
         "demand_support_max_penetration_pct": None,
         "demand_support_box_height_pct": None,
         "demand_support_duration_weeks": 0,
+        "demand_support_duration_bars": 0,
+        "demand_support_duration_unit": "",
         "demand_support_latest_touch_date": "",
         "demand_support_volume_confirm_count": 0,
         "demand_support_volume_confirm_rate": None,
@@ -258,6 +293,8 @@ def _default_result(reason: str) -> dict[str, object]:
         "demand_support_rebound_efficiency": None,
         "demand_support_box_utilization_pct": None,
         "demand_support_volume_contraction_ratio": None,
+        "demand_support_active": False,
+        "demand_support_latest_break_pct": None,
     }
 
 
@@ -317,6 +354,120 @@ def _select_best_cluster(
     return max(clusters, key=key)
 
 
+def _evaluate_support_zone(
+    *,
+    bars: pd.DataFrame,
+    cluster: list[dict[str, float | int]],
+    window_start: int,
+    merge_gap: int,
+    source_label: str,
+) -> SupportZoneEvaluation | None:
+    support = float(np.median([item["price"] for item in cluster]))
+    if support <= 0:
+        return None
+
+    zone_lower = support * (1.0 - SUPPORT_TOLERANCE_PCT / 100.0)
+    zone_upper = support * (1.0 + SUPPORT_TOLERANCE_PCT / 100.0)
+    raw_touches = _build_support_touches(bars, window_start, support, zone_lower, zone_upper, merge_gap)
+    touches = _merge_weak_retest_touches(bars, raw_touches)
+    if not touches:
+        return None
+
+    preliminary_cycles = _build_swing_cycles(bars, touches, box_top=None)
+    peak_prices = [cycle.peak_price for cycle in preliminary_cycles]
+    box_top = _estimate_box_top(bars, peak_prices, support)
+    cycles = _build_swing_cycles(bars, touches, box_top=box_top)
+    swing_values = [cycle.swing_pct for cycle in cycles]
+    avg_swing = _mean(swing_values)
+
+    penetration_values = [touch.penetration_pct for touch in touches]
+    avg_penetration = _mean(penetration_values)
+    max_penetration = max(penetration_values) if penetration_values else None
+    duration_bars = _touch_span_bars(touches)
+    duration_weeks = _duration_in_weeks(duration_bars, source_label)
+
+    box_height_pct = None
+    if box_top is not None and box_top > support:
+        box_height_pct = (box_top / support - 1.0) * 100.0
+
+    top_stability_pct = _top_stability_pct(peak_prices)
+    rebound_efficiencies = [cycle.rebound_efficiency for cycle in cycles if cycle.rebound_efficiency is not None]
+    avg_efficiency = _mean(rebound_efficiencies)
+    utilization_pct = None
+    if avg_swing is not None and box_height_pct and box_height_pct > 0:
+        utilization_pct = min(avg_swing / box_height_pct * 100.0, 140.0)
+
+    volume_contraction_ratio = _volume_contraction_ratio(bars, touches)
+    touch_score = _score_touch_count(len(touches))
+    penetration_score = _score_penetration(avg_penetration)
+    swing_score = _score_avg_swing(avg_swing)
+    cycle_score = _score_cycle_count(len(cycles))
+    top_score = _score_top_stability(top_stability_pct)
+    duration_score = _score_duration(duration_weeks)
+    volume_score = _score_volume_contraction(volume_contraction_ratio)
+    total = min(
+        100.0,
+        touch_score
+        + penetration_score
+        + swing_score
+        + cycle_score
+        + top_score
+        + duration_score
+        + volume_score,
+    )
+    latest_break_pct = _latest_break_pct(bars, zone_lower, support)
+
+    return SupportZoneEvaluation(
+        cluster=cluster,
+        support=support,
+        zone_lower=zone_lower,
+        zone_upper=zone_upper,
+        touches=touches,
+        preliminary_cycles=preliminary_cycles,
+        box_top=box_top,
+        cycles=cycles,
+        avg_swing=avg_swing,
+        avg_penetration=avg_penetration,
+        max_penetration=max_penetration,
+        duration_bars=duration_bars,
+        duration_weeks=duration_weeks,
+        box_height_pct=box_height_pct,
+        top_stability_pct=top_stability_pct,
+        avg_efficiency=avg_efficiency,
+        utilization_pct=utilization_pct,
+        volume_contraction_ratio=volume_contraction_ratio,
+        touch_score=touch_score,
+        penetration_score=penetration_score,
+        swing_score=swing_score,
+        cycle_score=cycle_score,
+        top_score=top_score,
+        duration_score=duration_score,
+        volume_score=volume_score,
+        total=total,
+        active=latest_break_pct <= 0.0,
+        latest_break_pct=latest_break_pct,
+    )
+
+
+def _select_best_support_zone(evaluations: list[SupportZoneEvaluation]) -> SupportZoneEvaluation:
+    def key(evaluation: SupportZoneEvaluation) -> tuple[float, float, float, float, float, float, float]:
+        avg_swing = evaluation.avg_swing or 0.0
+        avg_efficiency = evaluation.avg_efficiency or 0.0
+        successful_cycles = sum(1 for cycle in evaluation.cycles if cycle.swing_pct >= MIN_CANDIDATE_AVG_SWING_PCT)
+        latest_touch_idx = evaluation.touches[-1].index if evaluation.touches else -1
+        return (
+            1.0 if evaluation.active else 0.0,
+            float(len(evaluation.touches)),
+            float(successful_cycles),
+            avg_swing,
+            evaluation.total,
+            avg_efficiency,
+            float(latest_touch_idx),
+        )
+
+    return max(evaluations, key=key)
+
+
 def _build_support_touches(
     weekly: pd.DataFrame,
     window_start: int,
@@ -325,8 +476,9 @@ def _build_support_touches(
     zone_upper: float,
     merge_gap_bars: int,
 ) -> list[SupportTouch]:
+    touch_lower = support * (1.0 - MAX_TOUCH_PENETRATION_PCT / 100.0)
     in_zone = weekly.iloc[window_start:][
-        (weekly.iloc[window_start:]["low"] >= zone_lower)
+        (weekly.iloc[window_start:]["low"] >= touch_lower)
         & (weekly.iloc[window_start:]["low"] <= zone_upper)
     ]
     if in_zone.empty:
@@ -358,6 +510,46 @@ def _touch_from_group(weekly: pd.DataFrame, group: list[int], support: float) ->
         low=low,
         penetration_pct=penetration_pct,
         volume_ratio=_touch_volume_ratio(weekly, idx),
+    )
+
+
+def _merge_weak_retest_touches(weekly: pd.DataFrame, touches: list[SupportTouch]) -> list[SupportTouch]:
+    if len(touches) <= 1:
+        return touches
+
+    merged: list[SupportTouch] = [touches[0]]
+    for touch in touches[1:]:
+        previous = merged[-1]
+        if _touch_to_touch_swing_pct(weekly, previous, touch) < MIN_SEPARATE_TOUCH_SWING_PCT:
+            merged[-1] = _merge_touch_pair(previous, touch)
+        else:
+            merged.append(touch)
+    return merged
+
+
+def _touch_to_touch_swing_pct(weekly: pd.DataFrame, first: SupportTouch, second: SupportTouch) -> float:
+    if second.index <= first.index or first.low <= 0:
+        return 0.0
+    segment = weekly.iloc[first.index : second.index + 1]
+    if segment.empty:
+        return 0.0
+    peak_price = float(segment["high"].max())
+    return max(0.0, (peak_price / first.low - 1.0) * 100.0)
+
+
+def _merge_touch_pair(first: SupportTouch, second: SupportTouch) -> SupportTouch:
+    if second.low < first.low:
+        low_touch = second
+    else:
+        low_touch = first
+
+    volume_ratio = _mean([first.volume_ratio, second.volume_ratio])
+    return SupportTouch(
+        index=low_touch.index,
+        date=low_touch.date,
+        low=low_touch.low,
+        penetration_pct=max(first.penetration_pct, second.penetration_pct),
+        volume_ratio=volume_ratio,
     )
 
 
@@ -460,13 +652,15 @@ def _score_penetration(avg_penetration_pct: float | None) -> float:
         return 0.0
     if avg_penetration_pct <= 0.5:
         return 15.0
-    if avg_penetration_pct <= 1.0:
-        return 13.5
-    if avg_penetration_pct <= 2.0:
-        return 10.5
+    if avg_penetration_pct <= 1.5:
+        return 14.0
+    if avg_penetration_pct <= 3.0:
+        return 12.5
     if avg_penetration_pct <= 4.0:
-        return 6.0
-    return max(0.0, 6.0 - (avg_penetration_pct - 4.0) * 1.5)
+        return 10.0
+    if avg_penetration_pct <= 6.0:
+        return 5.0
+    return max(0.0, 5.0 - (avg_penetration_pct - 6.0) * 1.5)
 
 
 def _score_avg_swing(avg_swing_pct: float | None) -> float:
@@ -515,8 +709,10 @@ def _score_top_stability(stability_pct: float | None) -> float:
     if stability_pct <= 6.0:
         return 8.0
     if stability_pct <= 10.0:
-        return 5.0
-    if stability_pct <= 16.0:
+        return 6.0
+    if stability_pct <= 18.0:
+        return 4.0
+    if stability_pct <= MAX_CANDIDATE_TOP_STABILITY_PCT:
         return 2.0
     return 0.0
 
@@ -551,10 +747,25 @@ def _score_volume_contraction(ratio: float | None) -> float:
     return 0.0
 
 
-def _touch_span_weeks(touches: list[SupportTouch]) -> int:
+def _touch_span_bars(touches: list[SupportTouch]) -> int:
     if len(touches) < 2:
         return 0
     return int(touches[-1].index - touches[0].index + 1)
+
+
+def _duration_in_weeks(duration_bars: int, source_label: str) -> int:
+    if source_label == "daily":
+        return int(round(duration_bars / 5.0))
+    return duration_bars
+
+
+def _latest_break_pct(weekly: pd.DataFrame, zone_lower: float, support: float) -> float:
+    if weekly.empty or support <= 0:
+        return 0.0
+    latest_close = weekly.iloc[-1].get("close")
+    if latest_close is None or pd.isna(latest_close):
+        return 0.0
+    return max(0.0, (zone_lower - float(latest_close)) / support * 100.0)
 
 
 def _grade(score: float) -> str:
@@ -579,6 +790,7 @@ def _build_reason(
     rebound_efficiency: float | None,
     duration_weeks: int,
     pending_count: int,
+    latest_break_pct: float,
 ) -> str:
     parts = [f"{grade} base {total:.0f}", f"touches {touch_count}", f"cycles {swing_count}"]
     if avg_swing is not None:
@@ -591,6 +803,8 @@ def _build_reason(
         parts.append(f"top stable {top_stability_pct:.1f}%")
     if duration_weeks:
         parts.append(f"{duration_weeks}w")
+    if latest_break_pct > 0:
+        parts.append(f"broken {latest_break_pct:.1f}%")
     if pending_count:
         parts.append(f"{pending_count} pending")
     return " / ".join(parts)

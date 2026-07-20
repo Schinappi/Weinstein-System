@@ -1094,11 +1094,16 @@ function DemandSupportPage({
       render: (value) => formatPercent(value, 1),
     },
     {
-      title: "持续周数",
+      title: "持续",
       dataIndex: "demand_support_duration_weeks",
       key: "demand_support_duration_weeks",
       width: 100,
-      render: (value) => formatInt(value),
+      render: (_, row) => {
+        const weeks = formatInt(row.demand_support_duration_weeks);
+        const bars = Number(row.demand_support_duration_bars || 0);
+        const unit = row.demand_support_duration_unit === "daily" ? "日线" : "周线";
+        return bars ? `${weeks}周/${bars}${unit}bar` : `${weeks}周`;
+      },
     },
     {
       title: "最近触底",

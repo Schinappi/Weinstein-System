@@ -42,6 +42,7 @@ class UniverseConfig:
     custom_symbols: list[str] = field(default_factory=list)
     exclude_st: bool = True
     exclude_new_listing_days: int = 180
+    excluded_symbol_prefixes: list[str] = field(default_factory=lambda: ["688"])
     min_avg_turnover: float | None = None
 
 

@@ -3,6 +3,8 @@ universe:
   custom_symbols: []
   exclude_st: true
   exclude_new_listing_days: 180
+  excluded_symbol_prefixes:
+    - "688"
   min_avg_turnover: null
 
 data:

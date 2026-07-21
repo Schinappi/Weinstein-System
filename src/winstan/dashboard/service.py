@@ -372,6 +372,8 @@ class DashboardService:
         """Read stocks with strong repeated demand-zone support."""
         store = DuckDBStore(self.config.duckdb_path)
         rows: list[dict[str, object]] = []
+        comparison_date = ""
+        new_hit_count = 0
         try:
             with store.connect() as conn:
                 df = conn.execute("""
@@ -383,50 +385,23 @@ class DashboardService:
                              demand_support_duration_weeks DESC
                     LIMIT 50
                 """).fetchdf()
-            for _, r in df.iterrows():
-                rows.append({
-                    "symbol": _to_text(r.get("symbol")),
-                    "name": _to_text(r.get("name")),
-                    "close": _to_float(r.get("close")),
-                    "stage_label": _to_text(r.get("stage_label")),
-                    "demand_support_score": _to_float(r.get("demand_support_score")),
-                    "demand_support_grade": _to_text(r.get("demand_support_grade")),
-                    "demand_support_reason": _to_text(r.get("demand_support_reason")),
-                    "demand_support_price": _to_float(r.get("demand_support_price")),
-                    "demand_support_lower": _to_float(r.get("demand_support_lower")),
-                    "demand_support_upper": _to_float(r.get("demand_support_upper")),
-                    "demand_support_touch_count": _to_int(r.get("demand_support_touch_count")),
-                    "demand_support_success_count": _to_int(r.get("demand_support_success_count")),
-                    "demand_support_success_rate": _to_float(r.get("demand_support_success_rate")),
-                    "demand_support_avg_rebound_pct": _to_float(r.get("demand_support_avg_rebound_pct")),
-                    "demand_support_avg_penetration_pct": _to_float(r.get("demand_support_avg_penetration_pct")),
-                    "demand_support_max_penetration_pct": _to_float(r.get("demand_support_max_penetration_pct")),
-                    "demand_support_box_height_pct": _to_float(r.get("demand_support_box_height_pct")),
-                    "demand_support_duration_weeks": _to_int(r.get("demand_support_duration_weeks")),
-                    "demand_support_duration_bars": _to_int(r.get("demand_support_duration_bars")),
-                    "demand_support_duration_unit": _to_text(r.get("demand_support_duration_unit")),
-                    "demand_support_latest_touch_date": _to_text(r.get("demand_support_latest_touch_date")),
-                    "demand_support_avg_touch_volume_ratio": _to_float(r.get("demand_support_avg_touch_volume_ratio")),
-                    "demand_support_avg_swing_pct": _to_float(r.get("demand_support_avg_swing_pct")),
-                    "demand_support_swing_count": _to_int(r.get("demand_support_swing_count")),
-                    "demand_support_top_price": _to_float(r.get("demand_support_top_price")),
-                    "demand_support_top_stability_pct": _to_float(r.get("demand_support_top_stability_pct")),
-                    "demand_support_rebound_efficiency": _to_float(r.get("demand_support_rebound_efficiency")),
-                    "demand_support_box_utilization_pct": _to_float(r.get("demand_support_box_utilization_pct")),
-                    "demand_support_volume_contraction_ratio": _to_float(r.get("demand_support_volume_contraction_ratio")),
-                    "demand_support_score_cycle": _to_float(r.get("demand_support_score_cycle")),
-                    "demand_support_score_volume": _to_float(r.get("demand_support_score_volume")),
-                    "demand_support_active": bool(r.get("demand_support_active", True)),
-                    "demand_support_latest_break_pct": _to_float(r.get("demand_support_latest_break_pct")),
-                    "base_quality_score": _to_float(r.get("base_quality_score")),
-                    "base_quality_grade": _to_text(r.get("base_quality_grade")),
-                    "final_score": _to_float(r.get("final_score")),
-                    "rs_rank_pct": _to_float(r.get("rs_rank_pct")),
-                    "headroom_pct": _to_float(r.get("headroom_pct")),
-                })
+            rows = self._serialize_demand_support_rows(df)
+            comparison_date = self._previous_screening_snapshot_date()
+            previous_rows: list[dict[str, object]] = []
+            if comparison_date:
+                previous_frame = self.duckdb_store.read_snapshot(comparison_date)
+                if not previous_frame.empty:
+                    previous_rows = self._serialize_demand_support_rows(previous_frame, limit=None)
+            new_hit_count = self._annotate_new_hits(rows, previous_rows)
         except Exception as exc:
             return {"items": rows, "error": str(exc), "count": 0}
-        return {"items": rows, "count": len(rows), "error": ""}
+        return {
+            "items": rows,
+            "count": len(rows),
+            "error": "",
+            "comparison_date": comparison_date if rows else "",
+            "new_hit_count": new_hit_count if rows else 0,
+        }
 
     def get_stage2_watchlist_payload(self) -> dict[str, object]:
         self.refresh_stage2_tracking()
@@ -590,6 +565,147 @@ class DashboardService:
         if not isinstance(payload, dict) or not isinstance(payload.get("items"), list):
             return
         self.overview_store.save(target_date, {**payload, "snapshot_version": OVERVIEW_SNAPSHOT_VERSION})
+
+    def run_backtest_payload(
+        self,
+        symbols_str: str,
+        target_date: str,
+        reuse_scan: bool = False,
+        force_refresh: bool = False,
+    ) -> dict[str, object]:
+        from winstan.dashboard.backtest_handler import run_backtest_for_symbols
+
+        payload = run_backtest_for_symbols(
+            self.parquet_store,
+            self.config,
+            symbols_str,
+            target_date,
+            reuse_scan=reuse_scan,
+            force_refresh=force_refresh,
+            name_lookup=self._lookup_stock_name,
+            snapshot_loader=self.load_overview_snapshot,
+            snapshot_saver=self.save_overview_snapshot,
+        )
+        return self.annotate_backtest_scan_payload(payload, target_date)
+
+    def annotate_backtest_scan_payload(
+        self,
+        payload: dict[str, object],
+        fallback_target_date: str = "",
+    ) -> dict[str, object]:
+        if not isinstance(payload, dict) or payload.get("mode") != "scan":
+            return payload
+
+        target = _to_text(payload.get("target_date")) or _to_text(fallback_target_date)
+        comparison_date, previous_payload = self._previous_overview_snapshot(target)
+        previous_items = []
+        if isinstance(previous_payload, dict) and isinstance(previous_payload.get("items"), list):
+            previous_items = previous_payload["items"]
+        current_items = payload.get("items") if isinstance(payload.get("items"), list) else []
+        if not current_items:
+            return payload
+        new_hit_count = self._annotate_new_hits(current_items, previous_items)
+        payload["comparison_date"] = comparison_date
+        payload["new_hit_count"] = new_hit_count
+        if target:
+            self.save_overview_snapshot(target, payload)
+        return payload
+
+    @staticmethod
+    def _symbol_key(value: object) -> str:
+        return _to_text(value).upper()
+
+    def _annotate_new_hits(
+        self,
+        current_rows: list[dict[str, object]],
+        previous_rows: list[dict[str, object]] | None,
+    ) -> int:
+        previous_symbols = {
+            self._symbol_key(row.get("symbol"))
+            for row in (previous_rows or [])
+            if self._symbol_key(row.get("symbol"))
+        }
+        new_hit_count = 0
+        for row in current_rows:
+            symbol = self._symbol_key(row.get("symbol"))
+            is_new_hit = bool(symbol) and symbol not in previous_symbols
+            row["is_new_hit"] = is_new_hit
+            if is_new_hit:
+                new_hit_count += 1
+        return new_hit_count
+
+    def _previous_overview_snapshot(self, target_date: str) -> tuple[str, dict[str, object] | None]:
+        for snapshot_date in self.overview_store.list_dates():
+            if snapshot_date and snapshot_date < target_date:
+                return snapshot_date, self.load_overview_snapshot(snapshot_date)
+        return "", None
+
+    def _previous_screening_snapshot_date(self) -> str:
+        dates = self.get_available_dates()
+        return dates[1] if len(dates) > 1 else ""
+
+    def _serialize_demand_support_rows(self, frame: pd.DataFrame, limit: int | None = 50) -> list[dict[str, object]]:
+        rows: list[dict[str, object]] = []
+        if frame.empty:
+            return rows
+        local = frame.copy()
+        if "demand_support_candidate" in local.columns:
+            local = local[local["demand_support_candidate"].fillna(False).astype(bool)]
+        if local.empty:
+            return rows
+        sort_columns = [
+            col
+            for col in ["demand_support_score", "demand_support_touch_count", "demand_support_duration_weeks"]
+            if col in local.columns
+        ]
+        if sort_columns:
+            local = local.sort_values(sort_columns, ascending=[False] * len(sort_columns))
+        if limit is not None:
+            local = local.head(limit)
+        local = local.reset_index(drop=True)
+
+        for _, r in local.iterrows():
+            rows.append({
+                "symbol": _to_text(r.get("symbol")),
+                "name": _to_text(r.get("name")),
+                "close": _to_float(r.get("close")),
+                "stage_label": _to_text(r.get("stage_label")),
+                "demand_support_score": _to_float(r.get("demand_support_score")),
+                "demand_support_grade": _to_text(r.get("demand_support_grade")),
+                "demand_support_reason": _to_text(r.get("demand_support_reason")),
+                "demand_support_price": _to_float(r.get("demand_support_price")),
+                "demand_support_lower": _to_float(r.get("demand_support_lower")),
+                "demand_support_upper": _to_float(r.get("demand_support_upper")),
+                "demand_support_touch_count": _to_int(r.get("demand_support_touch_count")),
+                "demand_support_success_count": _to_int(r.get("demand_support_success_count")),
+                "demand_support_success_rate": _to_float(r.get("demand_support_success_rate")),
+                "demand_support_avg_rebound_pct": _to_float(r.get("demand_support_avg_rebound_pct")),
+                "demand_support_avg_penetration_pct": _to_float(r.get("demand_support_avg_penetration_pct")),
+                "demand_support_max_penetration_pct": _to_float(r.get("demand_support_max_penetration_pct")),
+                "demand_support_box_height_pct": _to_float(r.get("demand_support_box_height_pct")),
+                "demand_support_duration_weeks": _to_int(r.get("demand_support_duration_weeks")),
+                "demand_support_duration_bars": _to_int(r.get("demand_support_duration_bars")),
+                "demand_support_duration_unit": _to_text(r.get("demand_support_duration_unit")),
+                "demand_support_latest_touch_date": _to_text(r.get("demand_support_latest_touch_date")),
+                "demand_support_avg_touch_volume_ratio": _to_float(r.get("demand_support_avg_touch_volume_ratio")),
+                "demand_support_avg_swing_pct": _to_float(r.get("demand_support_avg_swing_pct")),
+                "demand_support_swing_count": _to_int(r.get("demand_support_swing_count")),
+                "demand_support_top_price": _to_float(r.get("demand_support_top_price")),
+                "demand_support_top_stability_pct": _to_float(r.get("demand_support_top_stability_pct")),
+                "demand_support_rebound_efficiency": _to_float(r.get("demand_support_rebound_efficiency")),
+                "demand_support_box_utilization_pct": _to_float(r.get("demand_support_box_utilization_pct")),
+                "demand_support_volume_contraction_ratio": _to_float(r.get("demand_support_volume_contraction_ratio")),
+                "demand_support_score_cycle": _to_float(r.get("demand_support_score_cycle")),
+                "demand_support_score_volume": _to_float(r.get("demand_support_score_volume")),
+                "demand_support_active": bool(r.get("demand_support_active", True)),
+                "demand_support_latest_break_pct": _to_float(r.get("demand_support_latest_break_pct")),
+                "base_quality_score": _to_float(r.get("base_quality_score")),
+                "base_quality_grade": _to_text(r.get("base_quality_grade")),
+                "final_score": _to_float(r.get("final_score")),
+                "rs_rank_pct": _to_float(r.get("rs_rank_pct")),
+                "headroom_pct": _to_float(r.get("headroom_pct")),
+            })
+        return rows
 
     def get_price_monitor_payload(self) -> dict[str, object]:
         frame = self.price_monitor_store.list_items()

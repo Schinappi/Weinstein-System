@@ -58,6 +58,19 @@ function formatBoolean(value) {
   return value ? "是" : "否";
 }
 
+function renderStockCell(row) {
+  const isNewHit = Boolean(row?.is_new_hit);
+  return html`
+    <div className=${`symbol-cell${isNewHit ? " symbol-cell-new-hit" : ""}`}>
+      <div className="symbol-headline">
+        <div className="symbol-code">${row.symbol}</div>
+        ${isNewHit ? html`<span className="new-hit-pill">新增</span>` : null}
+      </div>
+      <div className="symbol-name">${row.name || "--"}</div>
+    </div>
+  `;
+}
+
 function escapeHtml(value) {
   return String(value ?? "")
     .replaceAll("&", "&amp;")
@@ -779,12 +792,7 @@ function OverviewPage({
       dataIndex: "symbol",
       key: "symbol",
       width: 160,
-      render: (_, row) => html`
-        <div className="symbol-cell">
-          <div className="symbol-code">${row.symbol}</div>
-          <div className="symbol-name">${row.name || "--"}</div>
-        </div>
-      `,
+      render: (_, row) => renderStockCell(row),
     },
     {
       title: "结构分",
@@ -942,6 +950,7 @@ function OverviewPage({
             columns=${columns}
             dataSource=${items}
             rowKey=${(row) => row.symbol}
+            rowClassName=${(record) => record.is_new_hit ? "ranking-row-new-hit" : ""}
             pagination=${false}
             loading=${loading}
             scroll=${{ x: 1280 }}
@@ -1000,12 +1009,7 @@ function DemandSupportPage({
       dataIndex: "symbol",
       key: "symbol",
       width: 170,
-      render: (_, row) => html`
-        <div className="symbol-cell">
-          <div className="symbol-code">${row.symbol}</div>
-          <div className="symbol-name">${row.name || "--"}</div>
-        </div>
-      `,
+      render: (_, row) => renderStockCell(row),
     },
     {
       title: "支撑分",
@@ -1189,6 +1193,7 @@ function DemandSupportPage({
             columns=${columns}
             dataSource=${items}
             rowKey=${(row) => row.symbol}
+            rowClassName=${(record) => record.is_new_hit ? "ranking-row-new-hit" : ""}
             pagination=${{ pageSize: 20, showSizeChanger: false, hideOnSinglePage: true }}
             loading=${loading}
             scroll=${{ x: 1500 }}
@@ -1424,12 +1429,7 @@ function BacktestPage({
       dataIndex: "symbol",
       key: "symbol",
       width: 170,
-      render: (_, row) => html`
-        <div className="symbol-cell">
-          <div className="symbol-code">${row.symbol}</div>
-          <div className="symbol-name">${row.name || "--"}</div>
-        </div>
-      `,
+      render: (_, row) => renderStockCell(row),
     },
     {
       title: "结构分",
@@ -1631,6 +1631,7 @@ function BacktestPage({
             columns=${columns}
             dataSource=${filteredItems}
             rowKey=${(row) => `${row.symbol}-${row.latest_date || ""}`}
+            rowClassName=${(record) => record.is_new_hit ? "ranking-row-new-hit" : ""}
             pagination=${isScanMode ? { pageSize: 20, showSizeChanger: false, hideOnSinglePage: true } : false}
             loading=${loading}
             scroll=${{ x: 1320 }}
@@ -1821,7 +1822,10 @@ function AppContent() {
     const modernScanInfo = payload.mode === "scan"
       ? ` 全市场扫描 ${formatInt(payload.scanned, "?")} 只，用时 ${formatElapsedSeconds(payload.elapsed)}，共命中 ${formatInt(payload.candidates_total, "?")} 个候选，当前显示前 ${formatInt(payload.items?.length, "0")} 个。`
       : "";
-    return `${formatInt(items.length, "0")} 条结果，目标日期 ${payload.target_date || TODAY}。${modernScanInfo}`.trim();
+    const newHitInfo = payload.comparison_date
+      ? ` 较 ${payload.comparison_date} 新增命中 ${formatInt(payload.new_hit_count || 0, "0")} 只。`
+      : "";
+    return `${formatInt(items.length, "0")} 条结果，目标日期 ${payload.target_date || TODAY}。${modernScanInfo}${newHitInfo}`.trim();
   };
 
   const loadOverview = (forceRefresh = false) => runBacktestRequest({
@@ -1837,8 +1841,11 @@ function AppContent() {
     try {
       const payload = await fetchJson("/api/demand-support/ranking");
       setDemandData(payload);
+      const newHitText = payload.comparison_date
+        ? `，较 ${payload.comparison_date} 新增命中 ${formatInt(payload.new_hit_count || 0, "0")} 只`
+        : "";
       setDemandStatus(payload.count
-        ? `当前展示 ${payload.items?.length || 0} 条箱体摆动候选。`
+        ? `当前展示 ${payload.items?.length || 0} 条箱体摆动候选${newHitText}。`
         : "暂无箱体摆动候选。");
     } catch (error) {
       setDemandStatus(error.message || "加载箱体摆动质量榜失败");

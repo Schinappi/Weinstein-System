@@ -23,6 +23,12 @@ class OverviewStore:
         path = self._path_for(target_date)
         path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
+    def list_dates(self) -> list[str]:
+        return sorted(
+            (path.stem for path in self.root.glob("*.json")),
+            reverse=True,
+        )
+
     def _path_for(self, target_date: str) -> Path:
         safe_date = str(target_date or "").strip() or "unknown-date"
         return self.root / f"{safe_date}.json"

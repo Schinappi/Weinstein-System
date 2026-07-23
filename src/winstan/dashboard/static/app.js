@@ -32,6 +32,7 @@ const { TextArea } = Input;
 const { Title, Paragraph, Text } = Typography;
 
 const TODAY = dayjs().format("YYYY-MM-DD");
+const APP_VERSION = "v2026.07.23.1";
 const PAGE_OVERVIEW = "overview";
 const PAGE_BACKTEST = "backtest";
 const PAGE_MONITOR = "monitor";
@@ -866,6 +867,7 @@ function OverviewPage({
             </div>
             <div className="hero-actions">
               <${Button} type="primary" size="large" onClick=${onRefresh} loading=${loading}>刷新今日排行榜<//>
+              <${Tag} color="geekblue">版本 ${APP_VERSION}<//>
               <${Tag} color="blue">目标日期 ${data?.target_date || TODAY}<//>
               <${Tag} color="cyan">全市场续涨结构扫描<//>
             </div>

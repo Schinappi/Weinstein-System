@@ -39,7 +39,8 @@ class DuckDBStore:
         Automatically adds missing columns to the target table to handle schema evolution.
         """
         snap = frame.copy()
-        snap["_snapshot_date"] = (snapshot_date or date.today()).isoformat()
+        snapshot_value = (snapshot_date or date.today()).isoformat()
+        snap["_snapshot_date"] = snapshot_value
         with self.connect() as conn:
             conn.execute(
                 f"CREATE TABLE IF NOT EXISTS {SNAPSHOT_TABLE} AS "
@@ -65,6 +66,7 @@ class DuckDBStore:
                     print(f"[duckdb] Added column to {SNAPSHOT_TABLE}: {col} ({dtype})")
             conn.register("snap_frame", snap)
             cols = ", ".join(f'"{c}"' for c in snap.columns)
+            conn.execute(f"DELETE FROM {SNAPSHOT_TABLE} WHERE _snapshot_date = ?", [snapshot_value])
             conn.execute(f"INSERT INTO {SNAPSHOT_TABLE} ({cols}) SELECT * FROM snap_frame")
 
     def read_snapshot(self, snapshot_date: str) -> pd.DataFrame:

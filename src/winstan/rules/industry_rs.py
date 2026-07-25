@@ -33,7 +33,7 @@ def _load_industry_map(config: AppConfig) -> dict[str, str]:
         # Fallback: try relative to CWD
         mapping_path = Path("data/mapping/stock_industry_to_sw_l1.json")
     if mapping_path.exists():
-        basic_to_l1 = json.loads(mapping_path.read_text())
+        basic_to_l1 = json.loads(mapping_path.read_text(encoding="utf-8"))
     else:
         print("[industry] WARNING: mapping file not found, using identity mapping")
         basic_to_l1 = {}

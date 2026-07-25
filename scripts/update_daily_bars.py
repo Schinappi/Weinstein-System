@@ -24,6 +24,7 @@ from winstan.calendar.trading_calendar import clean_daily_bars
 from winstan.config import load_config, normalize_date_like
 from winstan.pipeline.universe import build_universe
 from winstan.pipeline.screener import WeinsteinScreener
+from winstan.resample.weekly_builder import build_weekly_bars
 from winstan.storage.duckdb_store import DuckDBStore
 from winstan.storage.parquet_store import ParquetStore
 
@@ -204,6 +205,52 @@ def _load_latest_trade_dates(parquet_store: ParquetStore, dataset: str) -> dict[
         if symbol and latest:
             latest_by_symbol[symbol] = latest
     return latest_by_symbol
+
+
+def _sync_weekly_bars_from_daily(parquet_store: ParquetStore) -> dict[str, object]:
+    """Rebuild stale weekly parquet files from the local daily cache."""
+    started_counter = time.perf_counter()
+    latest_daily = _load_latest_trade_dates(parquet_store, "daily_bars")
+    latest_weekly = _load_latest_trade_dates(parquet_store, "weekly_bars")
+    stale_symbols = sorted(
+        symbol
+        for symbol, daily_date in latest_daily.items()
+        if daily_date and daily_date > latest_weekly.get(symbol, "")
+    )
+    summary: dict[str, object] = {
+        "weekly_symbols_scanned": len(latest_daily),
+        "weekly_symbols_planned": len(stale_symbols),
+        "weekly_symbols_updated": 0,
+        "weekly_symbols_failed": 0,
+        "weekly_sync_runtime_seconds": 0.0,
+        "weekly_latest_trade_date": max(latest_daily.values()) if latest_daily else None,
+    }
+    if not stale_symbols:
+        return summary
+
+    print(
+        "[update_daily_bars] weekly sync planned "
+        f"symbols={len(stale_symbols)} latest_daily={summary['weekly_latest_trade_date']}"
+    )
+    for index, symbol in enumerate(stale_symbols, start=1):
+        try:
+            daily = clean_daily_bars(parquet_store.read_symbol_frame("daily_bars", symbol))
+            weekly = build_weekly_bars(daily)
+            parquet_store.write_symbol_frame("weekly_bars", symbol, weekly)
+            summary["weekly_symbols_updated"] = int(summary["weekly_symbols_updated"]) + 1
+        except Exception as exc:
+            summary["weekly_symbols_failed"] = int(summary["weekly_symbols_failed"]) + 1
+            print(f"[update_daily_bars] weekly sync failed symbol={symbol} reason={exc}")
+        if index % 500 == 0 or index == len(stale_symbols):
+            print(
+                "[update_daily_bars] weekly sync progress "
+                f"processed={index}/{len(stale_symbols)} "
+                f"updated={summary['weekly_symbols_updated']} "
+                f"failed={summary['weekly_symbols_failed']}"
+            )
+
+    summary["weekly_sync_runtime_seconds"] = _round_seconds(time.perf_counter() - started_counter)
+    return summary
 
 
 
@@ -904,8 +951,19 @@ def main() -> None:
 
         if not args.dry_run:
             duckdb_store.refresh_parquet_view("daily_bars", str(config.parquet_root / "daily_bars" / "*.parquet"))
+            weekly_summary = _sync_weekly_bars_from_daily(parquet_store)
+            duckdb_store.refresh_parquet_view("weekly_bars", str(config.parquet_root / "weekly_bars" / "*.parquet"))
             if not args.skip_index:
                 duckdb_store.refresh_parquet_view("index_bars", str(config.parquet_root / "index_bars" / "*.parquet"))
+        else:
+            weekly_summary = {
+                "weekly_symbols_scanned": 0,
+                "weekly_symbols_planned": 0,
+                "weekly_symbols_updated": 0,
+                "weekly_symbols_failed": 0,
+                "weekly_sync_runtime_seconds": 0.0,
+                "weekly_latest_trade_date": None,
+            }
 
         phase1_requested = not args.dry_run and not args.skip_phase1
         should_run_phase1 = phase1_requested and (stock_summary["stock_symbols_updated"] > 0 or bool(index_summary["index_updated"]))
@@ -949,6 +1007,7 @@ def main() -> None:
             "phase1_runtime_seconds": phase1_runtime_seconds,
             "total_runtime_seconds": _round_seconds(time.perf_counter() - started_counter),
             **stock_summary,
+            **weekly_summary,
             **index_summary,
             **phase1_summary,
         }

@@ -154,6 +154,25 @@ class DashboardHandler(BaseHTTPRequestHandler):
             ))
             return
 
+        if path in {"/api/box-backtest", "/api/demand-backtest"}:
+            symbols_str = str(payload.get("symbols", ""))
+            target_date = str(payload.get("date", ""))
+            reuse_scan = bool(payload.get("reuse_scan", False))
+            force_refresh = bool(payload.get("force_refresh", False))
+            from winstan.dashboard.box_backtest_handler import get_box_scan_status
+            job_id = parse_qs(parsed.query).get("job_id", [""])[0]
+            if job_id:
+                result = get_box_scan_status(job_id)
+                self._send_json(self.service.annotate_box_backtest_scan_payload(result, target_date))
+                return
+            self._send_json(self.service.run_box_backtest_payload(
+                symbols_str,
+                target_date,
+                reuse_scan=reuse_scan,
+                force_refresh=force_refresh,
+            ))
+            return
+
         if path == "/api/price-monitors":
             try:
                 symbol = str(payload.get("symbol", ""))

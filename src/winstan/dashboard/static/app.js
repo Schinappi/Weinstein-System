@@ -32,12 +32,15 @@ const { TextArea } = Input;
 const { Title, Paragraph, Text } = Typography;
 
 const TODAY = dayjs().format("YYYY-MM-DD");
-const APP_VERSION = "v2026.07.25.1";
+const APP_VERSION = "v2026.07.26.1";
 const PAGE_OVERVIEW = "overview";
 const PAGE_BACKTEST = "backtest";
 const PAGE_MONITOR = "monitor";
 const PAGE_DEMAND_SUPPORT = "demand-support";
+const PAGE_DEMAND_BACKTEST = "demand-backtest";
+const PAGE_BOX_BACKTEST = "box-backtest";
 const SCAN_RULE_LABEL = "通过生命周期/减速/成熟度门槛后，按结构分排序显示前100个";
+const BOX_SCAN_RULE_LABEL = "按日线Demand支撑质量 + 历史反弹 + 当前距离排序显示前100个";
 
 function formatNumber(value, digits = 1, fallback = "--") {
   return Number.isFinite(Number(value)) ? Number(value).toFixed(digits) : fallback;
@@ -186,13 +189,13 @@ function usePollingBacktestJob() {
     }
   };
 
-  const poll = ({ jobId, onProgress, onDone, onError, intervalMs = 5000, maxAttempts = 360 }) => {
+  const poll = ({ jobId, endpoint = "/api/backtest", onProgress, onDone, onError, intervalMs = 5000, maxAttempts = 360 }) => {
     let attempts = 0;
     stop();
 
     const tick = async () => {
       try {
-        const payload = await fetchJson(`/api/backtest?job_id=${encodeURIComponent(jobId)}`, { method: "POST" });
+        const payload = await fetchJson(`${endpoint}?job_id=${encodeURIComponent(jobId)}`, { method: "POST" });
         if (payload.status === "running" || payload.status === "started") {
           attempts += 1;
           onProgress?.(attempts, payload);
@@ -992,10 +995,10 @@ function DemandSupportPage({
       ? Math.max(...items.map((item) => Number(item.demand_support_score || 0)))
       : 0;
     return [
-      { label: "候选数量", value: formatInt(data?.count || items.length || 0), extra: "大箱体摆动候选 Top 50" },
-      { label: "最高分", value: formatNumber(maxScore, 1), extra: "箱底支撑 + Swing 综合评分" },
-      { label: "平均Swing", value: formatPercent(avgSwing, 1), extra: "从箱底到下一次触底前高点" },
-      { label: "平均触底", value: formatNumber(avgTouches, 1), extra: "同一箱底的分离触底次数" },
+      { label: "候选数量", value: formatInt(data?.count || items.length || 0), extra: "Demand回踩候选 Top 50" },
+      { label: "最高分", value: formatNumber(maxScore, 1), extra: "支撑质量 + 历史反弹 + 当前距离" },
+      { label: "平均Swing", value: formatPercent(avgSwing, 1), extra: "辅助观察，不再主导总分" },
+      { label: "平均触底", value: formatNumber(avgTouches, 1), extra: "真实回踩Demand的分离次数" },
     ];
   }, [data, items]);
 
@@ -1029,6 +1032,48 @@ function DemandSupportPage({
         const colorMap = { S: "gold", A: "green", B: "blue", C: "default" };
         return html`<${Tag} color=${colorMap[value] || "default"}>${value || "--"}<//>`;
       },
+    },
+    {
+      title: "支撑质量",
+      dataIndex: "demand_support_score_support_quality",
+      key: "demand_support_score_support_quality",
+      width: 110,
+      render: (value) => formatNumber(value, 1),
+    },
+    {
+      title: "历史反弹",
+      dataIndex: "demand_support_score_historical_rebound",
+      key: "demand_support_score_historical_rebound",
+      width: 110,
+      render: (value) => formatNumber(value, 1),
+    },
+    {
+      title: "当前距离",
+      dataIndex: "demand_support_score_current_distance",
+      key: "demand_support_score_current_distance",
+      width: 110,
+      render: (value) => formatNumber(value, 1),
+    },
+    {
+      title: "距Demand",
+      dataIndex: "demand_support_approach_gap_pct",
+      key: "demand_support_approach_gap_pct",
+      width: 110,
+      render: (value) => formatPercent(value, 1),
+    },
+    {
+      title: "20D动能",
+      dataIndex: "demand_support_approach_energy_pct",
+      key: "demand_support_approach_energy_pct",
+      width: 110,
+      render: (value) => formatPercent(value, 1),
+    },
+    {
+      title: "回踩缩量",
+      dataIndex: "demand_support_pullback_volume_ratio",
+      key: "demand_support_pullback_volume_ratio",
+      width: 110,
+      render: (value) => formatNumber(value, 2),
     },
     {
       title: "支撑区",
@@ -1130,16 +1175,16 @@ function DemandSupportPage({
       <div className="hero-grid">
         <${Card} className="hero-card">
           <div className="hero-panel">
-            <div className="hero-kicker">Base Oscillation</div>
-            <div className="hero-title">箱体摆动质量榜</div>
+            <div className="hero-kicker">Demand Support</div>
+            <div className="hero-title">Demand支撑回踩榜</div>
             <div className="hero-copy">
-              这页先找箱底支撑，再统计每次 Touch 到下一次 Touch 前的完整 Swing，
-              重点筛选“长期大箱体、箱底反复承接、每次反弹尽量摸到箱顶”的股票。
+              这页先找市场反复认可的 Demand 支撑区，再看历史回弹能力和当前是否主动回踩到位，
+              重点筛选“离已验证支撑很近、容易出现承接反弹”的观察机会。
             </div>
             <div className="hero-actions">
               <${Button} type="primary" size="large" onClick=${onRefresh} loading=${loading}>刷新榜单<//>
-              <${Tag} color="green">箱底支撑<//>
-              <${Tag} color="cyan">完整Swing验证<//>
+              <${Tag} color="green">Demand支撑<//>
+              <${Tag} color="cyan">当前回踩<//>
             </div>
           </div>
         <//>
@@ -1182,7 +1227,7 @@ function DemandSupportPage({
         <${Card} className="panel-card table-card">
           <div className="toolbar-row" style=${{ marginBottom: 18 }}>
             <div>
-              <h2 className="section-title">箱体摆动质量排行榜</h2>
+              <h2 className="section-title">Demand支撑回踩排行榜</h2>
               <div className="toolbar-copy">${statusText || "展示箱底支撑与完整 Swing 候选。"}</div>
             </div>
             <div className="toolbar-actions">
@@ -1198,9 +1243,9 @@ function DemandSupportPage({
             rowClassName=${(record) => record.is_new_hit ? "ranking-row-new-hit" : ""}
             pagination=${{ pageSize: 20, showSizeChanger: false, hideOnSinglePage: true }}
             loading=${loading}
-            scroll=${{ x: 1500 }}
+            scroll=${{ x: 2200 }}
             locale=${{
-              emptyText: html`<div className="empty-block">${loading ? "正在加载" : "暂无箱体摆动候选"}</div>`,
+              emptyText: html`<div className="empty-block">${loading ? "正在加载" : "暂无Demand回踩候选"}</div>`,
             }}
             onRow=${(record) => ({
               onClick: () => onOpenDetail(record.symbol, items),
@@ -1651,13 +1696,336 @@ function BacktestPage({
   `;
 }
 
+function BoxBacktestPage({
+  loading,
+  runningLabel,
+  statusText,
+  formState,
+  onChangeForm,
+  onRun,
+  onOpenDetail,
+  data,
+  pageKicker = "Box Backtest",
+  pageTitle = "箱体回测页",
+  pageCopy = "这个页面和普通回测页交互一致，但计算逻辑独立：按目标日期切片日线，重新识别 Demand 支撑、真实回踩 Touch、历史反弹能力和当前距离支撑的观察价值。",
+  parameterCopy = "每行支持 code + date，也可以统一使用右侧日期输入框。留空代码即可执行全市场扫描。",
+  textareaPlaceholder = "000831.SZ 2026-07-24\n300142.SZ 2026-06-09\n600984.SH 2026-07-24",
+  idleDescription = "输入参数后点击运行回测。",
+  resultTitle = "回测结果",
+  scanModeText = "全市场扫描",
+  manualModeText = "单股回测",
+  emptyText = "输入参数后运行回测",
+}) {
+  const items = data?.items || [];
+  const isScanMode = data?.mode === "scan";
+  const [symbolFilter, setSymbolFilter] = useState("");
+  const normalizedFilter = symbolFilter.trim().toUpperCase();
+  const filteredItems = useMemo(() => {
+    if (!normalizedFilter) return items;
+    return items.filter((item) => {
+      const symbol = String(item.symbol || "").toUpperCase();
+      const name = String(item.name || "").toUpperCase();
+      return symbol.includes(normalizedFilter) || name.includes(normalizedFilter);
+    });
+  }, [items, normalizedFilter]);
+
+  useEffect(() => {
+    setSymbolFilter("");
+  }, [data?.target_date, data?.mode, items.length]);
+
+  const columns = [
+    {
+      title: "股票",
+      dataIndex: "symbol",
+      key: "symbol",
+      width: 170,
+      render: (_, row) => renderStockCell(row),
+    },
+    {
+      title: "候选",
+      dataIndex: "demand_support_candidate",
+      key: "demand_support_candidate",
+      width: 90,
+      render: (value) => html`<${Tag} color=${value ? "green" : "default"}>${formatBoolean(value)}<//>`,
+    },
+    {
+      title: "支撑分",
+      dataIndex: "demand_support_score",
+      key: "demand_support_score",
+      width: 100,
+      render: (value) => html`<span className=${Number(value) >= 85 ? "positive-text" : ""}>${formatNumber(value, 1)}</span>`,
+    },
+    {
+      title: "等级",
+      dataIndex: "demand_support_grade",
+      key: "demand_support_grade",
+      width: 86,
+      render: (value) => {
+        const colorMap = { S: "gold", A: "green", B: "blue", C: "default" };
+        return html`<${Tag} color=${colorMap[value] || "default"}>${value || "--"}<//>`;
+      },
+    },
+    {
+      title: "支撑质量",
+      dataIndex: "demand_support_score_support_quality",
+      key: "demand_support_score_support_quality",
+      width: 110,
+      render: (value) => formatNumber(value, 1),
+    },
+    {
+      title: "历史反弹",
+      dataIndex: "demand_support_score_historical_rebound",
+      key: "demand_support_score_historical_rebound",
+      width: 110,
+      render: (value) => formatNumber(value, 1),
+    },
+    {
+      title: "当前距离",
+      dataIndex: "demand_support_score_current_distance",
+      key: "demand_support_score_current_distance",
+      width: 110,
+      render: (value) => formatNumber(value, 1),
+    },
+    {
+      title: "距Demand",
+      dataIndex: "demand_support_approach_gap_pct",
+      key: "demand_support_approach_gap_pct",
+      width: 110,
+      render: (value) => formatPercent(value, 1),
+    },
+    {
+      title: "20D动能",
+      dataIndex: "demand_support_approach_energy_pct",
+      key: "demand_support_approach_energy_pct",
+      width: 110,
+      render: (value) => formatPercent(value, 1),
+    },
+    {
+      title: "回踩缩量",
+      dataIndex: "demand_support_pullback_volume_ratio",
+      key: "demand_support_pullback_volume_ratio",
+      width: 110,
+      render: (value) => formatNumber(value, 2),
+    },
+    {
+      title: "支撑区",
+      key: "zone",
+      width: 150,
+      render: (_, row) => `${formatNumber(row.demand_support_lower, 2)} - ${formatNumber(row.demand_support_upper, 2)}`,
+    },
+    {
+      title: "触底",
+      dataIndex: "demand_support_touch_count",
+      key: "demand_support_touch_count",
+      width: 86,
+      render: (value) => formatInt(value),
+    },
+    {
+      title: "完整Cycle",
+      dataIndex: "demand_support_swing_count",
+      key: "demand_support_swing_count",
+      width: 105,
+      render: (value) => formatInt(value),
+    },
+    {
+      title: "平均Swing",
+      dataIndex: "demand_support_avg_swing_pct",
+      key: "demand_support_avg_swing_pct",
+      width: 110,
+      render: (_, row) => formatPercent(row.demand_support_avg_swing_pct ?? row.demand_support_avg_rebound_pct, 1),
+    },
+    {
+      title: "箱顶",
+      dataIndex: "demand_support_top_price",
+      key: "demand_support_top_price",
+      width: 96,
+      render: (value) => formatNumber(value, 2),
+    },
+    {
+      title: "反弹效率",
+      dataIndex: "demand_support_rebound_efficiency",
+      key: "demand_support_rebound_efficiency",
+      width: 110,
+      render: (value) => Number.isFinite(Number(value)) ? formatPercent(Number(value) * 100, 0) : "--",
+    },
+    {
+      title: "箱体利用",
+      dataIndex: "demand_support_box_utilization_pct",
+      key: "demand_support_box_utilization_pct",
+      width: 110,
+      render: (value) => formatPercent(value, 0),
+    },
+    {
+      title: "平均穿透",
+      dataIndex: "demand_support_avg_penetration_pct",
+      key: "demand_support_avg_penetration_pct",
+      width: 110,
+      render: (value) => formatPercent(value, 2),
+    },
+    {
+      title: "箱体高度",
+      dataIndex: "demand_support_box_height_pct",
+      key: "demand_support_box_height_pct",
+      width: 110,
+      render: (value) => formatPercent(value, 1),
+    },
+    {
+      title: "顶部稳定",
+      dataIndex: "demand_support_top_stability_pct",
+      key: "demand_support_top_stability_pct",
+      width: 110,
+      render: (value) => formatPercent(value, 1),
+    },
+    {
+      title: "持续",
+      dataIndex: "demand_support_duration_weeks",
+      key: "demand_support_duration_weeks",
+      width: 116,
+      render: (_, row) => {
+        const weeks = formatInt(row.demand_support_duration_weeks);
+        const bars = Number(row.demand_support_duration_bars || 0);
+        const unit = row.demand_support_duration_unit === "daily" ? "日线" : "周线";
+        return bars ? `${weeks}周/${bars}${unit}bar` : `${weeks}周`;
+      },
+    },
+    {
+      title: "数据日",
+      dataIndex: "latest_date",
+      key: "latest_date",
+      width: 120,
+    },
+    {
+      title: "原因",
+      dataIndex: "demand_support_reason",
+      key: "demand_support_reason",
+      render: (value, row) => html`
+        <span className="reason-text" title=${value || row.error || ""}>${value || row.error || "--"}</span>
+      `,
+    },
+  ];
+
+  return html`
+    <div className="page-shell">
+      <${Card} className="hero-card">
+        <div className="toolbar-row">
+          <div>
+            <div className="hero-kicker">${pageKicker}</div>
+            <div className="hero-title" style=${{ fontSize: "34px", marginTop: 16 }}>${pageTitle}</div>
+            <div className="hero-copy">${pageCopy}</div>
+          </div>
+        </div>
+      <//>
+
+      <div className="page-grid">
+        <${Card} className="panel-card">
+          <div className="toolbar-row" style=${{ marginBottom: 16 }}>
+            <div>
+              <h2 className="section-title">运行参数</h2>
+              <div className="toolbar-copy">${parameterCopy}</div>
+            </div>
+          </div>
+
+          <${Form} layout="vertical">
+            <${Row} gutter=${16}>
+              <${Col} xs=${24} lg=${16}>
+                <${Form.Item} label="股票代码和目标日期">
+                  <${TextArea}
+                    rows=${6}
+                    value=${formState.symbols}
+                    onChange=${(event) => onChangeForm("symbols", event.target.value)}
+                    placeholder=${textareaPlaceholder}
+                  />
+                  <div className="text-area-hint" style=${{ marginTop: 8 }}>
+                    示例：每行一只股票。只输入代码时，会默认使用统一目标日期。
+                  </div>
+                <//>
+              <//>
+              <${Col} xs=${24} lg=${8}>
+                <${Form.Item} label="统一目标日期">
+                  <${DatePicker}
+                    style=${{ width: "100%" }}
+                    value=${formState.date ? dayjs(formState.date) : null}
+                    onChange=${(value) => onChangeForm("date", value ? value.format("YYYY-MM-DD") : "")}
+                  />
+                <//>
+                <${Space} direction="vertical" size="middle" style=${{ width: "100%" }}>
+                  <${Button} type="primary" size="large" onClick=${onRun} loading=${loading} block>
+                    ${runningLabel}
+                  <//>
+                  <${Alert}
+                    className="floating-alert"
+                    type=${loading ? "info" : "success"}
+                    showIcon=${true}
+                    message=${loading ? "任务执行中" : "任务等待运行"}
+                    description=${statusText || idleDescription}
+                  />
+                <//>
+              <//>
+            <//>
+          <//>
+        <//>
+
+        <${Card} className="panel-card table-card">
+          <div className="toolbar-row" style=${{ marginBottom: 16 }}>
+            <div>
+              <h2 className="section-title">${resultTitle}</h2>
+              <div className="toolbar-copy">
+                ${isScanMode
+                  ? `点击行可查看个股详情。全市场Demand扫描${BOX_SCAN_RULE_LABEL}，并支持分页浏览。`
+                  : "点击行可查看个股详情。手动模式会展示候选与非候选的Demand评分明细。"}
+              </div>
+            </div>
+            <div className="toolbar-actions">
+              <${Tag} color=${isScanMode ? "cyan" : "blue"}>${isScanMode ? scanModeText : manualModeText}<//>
+              <${Tag} color="default">目标日期 ${data?.target_date || formState.date || TODAY}<//>
+              ${isScanMode ? html`<${Tag} color="green">${BOX_SCAN_RULE_LABEL}<//>` : null}
+            </div>
+          </div>
+          <div className="toolbar-row" style=${{ marginBottom: 16, gap: 12 }}>
+            <div className="toolbar-copy">
+              ${normalizedFilter ? `当前筛选后 ${filteredItems.length} 条结果` : `当前共 ${items.length} 条结果`}
+            </div>
+            <div className="toolbar-actions" style=${{ minWidth: "min(100%, 360px)" }}>
+              <${Input}
+                allowClear=${true}
+                value=${symbolFilter}
+                onChange=${(event) => setSymbolFilter(event.target.value)}
+                placeholder="按股票代码或名称筛选结果"
+                size="large"
+              />
+            </div>
+          </div>
+
+          <${Table}
+            className="backtest-table"
+            columns=${columns}
+            dataSource=${filteredItems}
+            rowKey=${(row) => `${row.symbol}-${row.latest_date || ""}`}
+            rowClassName=${(record) => record.is_new_hit ? "ranking-row-new-hit" : ""}
+            pagination=${isScanMode ? { pageSize: 20, showSizeChanger: false, hideOnSinglePage: true } : false}
+            loading=${loading}
+            scroll=${{ x: 2400 }}
+            locale=${{
+              emptyText: html`<div className="empty-block">${normalizedFilter ? "没有匹配的股票结果" : emptyText}</div>`,
+            }}
+            onRow=${(record) => ({
+              onClick: () => onOpenDetail(record.symbol, filteredItems),
+              style: { cursor: "pointer" },
+            })}
+          />
+        <//>
+      </div>
+    </div>
+  `;
+}
+
 function AppContent() {
   const [activePage, setActivePage] = useState(PAGE_OVERVIEW);
   const [overviewLoading, setOverviewLoading] = useState(false);
   const [overviewStatus, setOverviewStatus] = useState("正在准备今日排行榜。");
   const [overviewData, setOverviewData] = useState({ items: [], target_date: TODAY });
   const [demandLoading, setDemandLoading] = useState(false);
-  const [demandStatus, setDemandStatus] = useState("正在准备箱体摆动质量榜。");
+  const [demandStatus, setDemandStatus] = useState("正在准备Demand支撑回踩榜。");
   const [demandData, setDemandData] = useState({ items: [], count: 0 });
   const [monitorLoading, setMonitorLoading] = useState(false);
   const [monitorStatus, setMonitorStatus] = useState("请从个股详情中添加价格监控。");
@@ -1668,9 +2036,19 @@ function AppContent() {
   const [backtestLoading, setBacktestLoading] = useState(false);
   const [backtestStatus, setBacktestStatus] = useState("输入股票代码和日期后点击运行回测。");
   const [backtestData, setBacktestData] = useState({ items: [], target_date: TODAY });
+  const [demandBacktestLoading, setDemandBacktestLoading] = useState(false);
+  const [demandBacktestStatus, setDemandBacktestStatus] = useState("输入股票代码和日期后点击运行Demand回测。");
+  const [demandBacktestData, setDemandBacktestData] = useState({ items: [], target_date: TODAY });
+  const [boxBacktestLoading, setBoxBacktestLoading] = useState(false);
+  const [boxBacktestStatus, setBoxBacktestStatus] = useState("输入股票代码和日期后点击运行箱体回测。");
+  const [boxBacktestData, setBoxBacktestData] = useState({ items: [], target_date: TODAY });
   const [formState, setFormState] = useState({ symbols: "", date: TODAY });
+  const [demandBacktestFormState, setDemandBacktestFormState] = useState({ symbols: "", date: TODAY });
+  const [boxFormState, setBoxFormState] = useState({ symbols: "", date: TODAY });
   const [detailState, setDetailState] = useState({ open: false, symbol: "", symbols: [] });
   const polling = usePollingBacktestJob();
+  const demandBacktestPolling = usePollingBacktestJob();
+  const boxPolling = usePollingBacktestJob();
   const latestDetailListRef = useRef([]);
 
   const openDetail = (symbol, sourceItems) => {
@@ -1753,17 +2131,33 @@ function AppContent() {
     setFormState((prev) => ({ ...prev, [key]: value }));
   };
 
+  const updateDemandBacktestForm = (key, value) => {
+    setDemandBacktestFormState((prev) => ({ ...prev, [key]: value }));
+  };
+
+  const updateBoxBacktestForm = (key, value) => {
+    setBoxFormState((prev) => ({ ...prev, [key]: value }));
+  };
+
   const runBacktestRequest = async ({
     symbols,
     date,
     reuseScan = false,
     forceRefresh = false,
     target = "backtest",
+    endpoint = "/api/backtest",
   }) => {
-    const setLoading = target === "overview" ? setOverviewLoading : setBacktestLoading;
-    const setStatus = target === "overview" ? setOverviewStatus : setBacktestStatus;
-    const setData = target === "overview" ? setOverviewData : setBacktestData;
+    const setters = target === "overview"
+      ? { setLoading: setOverviewLoading, setStatus: setOverviewStatus, setData: setOverviewData }
+      : target === "demandBacktest"
+        ? { setLoading: setDemandBacktestLoading, setStatus: setDemandBacktestStatus, setData: setDemandBacktestData }
+      : target === "boxBacktest"
+        ? { setLoading: setBoxBacktestLoading, setStatus: setBoxBacktestStatus, setData: setBoxBacktestData }
+        : { setLoading: setBacktestLoading, setStatus: setBacktestStatus, setData: setBacktestData };
+    const { setLoading, setStatus, setData } = setters;
     const isScan = !symbols.trim();
+    const isDemandBacktest = target === "demandBacktest";
+    const isBoxBacktest = target === "boxBacktest";
 
     if (!date) {
       setStatus("请至少输入目标日期。");
@@ -1771,10 +2165,12 @@ function AppContent() {
     }
 
     setLoading(true);
-    setStatus(isScan ? "全市场扫描已启动，正在等待结果..." : "正在计算回测结果...");
+    setStatus(isScan
+      ? (isDemandBacktest ? "全市场Demand回踩扫描已启动，正在等待结果..." : isBoxBacktest ? "全市场箱体扫描已启动，正在等待结果..." : "全市场扫描已启动，正在等待结果...")
+      : (isDemandBacktest ? "正在计算Demand回测结果..." : isBoxBacktest ? "正在计算箱体回测结果..." : "正在计算回测结果..."));
 
     try {
-      const payload = await fetchJson("/api/backtest", {
+      const payload = await fetchJson(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ symbols, date, reuse_scan: reuseScan, force_refresh: forceRefresh }),
@@ -1782,8 +2178,10 @@ function AppContent() {
 
       if (isScan && payload.job_id) {
         setStatus(`扫描中... (job=${payload.job_id})`);
-        polling.poll({
+        const poller = target === "demandBacktest" ? demandBacktestPolling : target === "boxBacktest" ? boxPolling : polling;
+        poller.poll({
           jobId: payload.job_id,
+          endpoint,
           onProgress: (_attempts, pollPayload) => {
             const processed = formatInt(pollPayload?.processed, "0");
             const total = formatInt(pollPayload?.total, "?");
@@ -1847,11 +2245,11 @@ function AppContent() {
         ? `，较 ${payload.comparison_date} 新增命中 ${formatInt(payload.new_hit_count || 0, "0")} 只`
         : "";
       setDemandStatus(payload.count
-        ? `当前展示 ${payload.items?.length || 0} 条箱体摆动候选${newHitText}。`
-        : "暂无箱体摆动候选。");
+        ? `当前展示 ${payload.items?.length || 0} 条Demand回踩候选${newHitText}。`
+        : "暂无Demand回踩候选。");
     } catch (error) {
-      setDemandStatus(error.message || "加载箱体摆动质量榜失败");
-      message.error(error.message || "加载箱体摆动质量榜失败");
+      setDemandStatus(error.message || "加载Demand支撑回踩榜失败");
+      message.error(error.message || "加载Demand支撑回踩榜失败");
     } finally {
       setDemandLoading(false);
     }
@@ -1863,6 +2261,20 @@ function AppContent() {
     target: "backtest",
   });
 
+  const handleRunDemandBacktest = () => runBacktestRequest({
+    symbols: demandBacktestFormState.symbols || "",
+    date: demandBacktestFormState.date || TODAY,
+    target: "demandBacktest",
+    endpoint: "/api/box-backtest",
+  });
+
+  const handleRunBoxBacktest = () => runBacktestRequest({
+    symbols: boxFormState.symbols || "",
+    date: boxFormState.date || TODAY,
+    target: "boxBacktest",
+    endpoint: "/api/box-backtest",
+  });
+
   useEffect(() => {
     loadOverview(false);
     loadDemandSupport();
@@ -1871,7 +2283,9 @@ function AppContent() {
 
   const menuItems = [
     { key: PAGE_OVERVIEW, label: "总览页" },
-    { key: PAGE_DEMAND_SUPPORT, label: "箱体摆动" },
+    { key: PAGE_DEMAND_SUPPORT, label: "Demand回踩" },
+    { key: PAGE_DEMAND_BACKTEST, label: "Demand回测" },
+    { key: PAGE_BOX_BACKTEST, label: "箱体回测" },
     { key: PAGE_BACKTEST, label: "回测页" },
   ];
 
@@ -1902,6 +2316,29 @@ function AppContent() {
             onOpenDetail=${openDetail}
           />
         `
+    : activePage === PAGE_DEMAND_BACKTEST
+      ? html`
+          <${BoxBacktestPage}
+            loading=${demandBacktestLoading}
+            runningLabel=${!demandBacktestFormState.symbols.trim() ? "运行全市场Demand扫描" : "运行Demand回测"}
+            statusText=${demandBacktestStatus}
+            formState=${demandBacktestFormState}
+            onChangeForm=${updateDemandBacktestForm}
+            onRun=${handleRunDemandBacktest}
+            onOpenDetail=${openDetail}
+            data=${demandBacktestData}
+            pageKicker="Demand Backtest"
+            pageTitle="Demand回踩回测页"
+            pageCopy="按目标日期切片日线，回到当时重新识别Demand支撑区，评估支撑质量、历史反弹能力、当前距离和回踩缩量，用来验证某一天是否已经值得观察或挂单。"
+            parameterCopy="每行支持 code + date，也可以统一使用右侧日期输入框。留空代码即可执行全市场Demand回踩扫描。"
+            textareaPlaceholder=${"600984.SH 2026-07-16\n301459.SZ 2026-07-20\n920239.BJ 2026-07-20"}
+            idleDescription="输入参数后点击运行Demand回测。"
+            resultTitle="Demand回测结果"
+            scanModeText="全市场Demand扫描"
+            manualModeText="单股Demand回测"
+            emptyText="输入参数后运行Demand回测"
+          />
+        `
     : activePage === PAGE_MONITOR
       ? html`
           <${MonitorPage}
@@ -1911,6 +2348,19 @@ function AppContent() {
             onRefresh=${loadMonitors}
             onDelete=${handleDeleteMonitor}
             onOpenDetail=${openDetail}
+          />
+        `
+    : activePage === PAGE_BOX_BACKTEST
+      ? html`
+          <${BoxBacktestPage}
+            loading=${boxBacktestLoading}
+            runningLabel=${!boxFormState.symbols.trim() ? "运行全市场箱体扫描" : "运行箱体回测"}
+            statusText=${boxBacktestStatus}
+            formState=${boxFormState}
+            onChangeForm=${updateBoxBacktestForm}
+            onRun=${handleRunBoxBacktest}
+            onOpenDetail=${openDetail}
+            data=${boxBacktestData}
           />
         `
     : html`
@@ -1935,7 +2385,7 @@ function AppContent() {
               <div className="brand-badge">Weinstein Console</div>
               <div className="brand-title">温斯坦回测看板</div>
               <div className="brand-copy">
-                总览页展示今日全市场回测排行榜，箱体摆动页筛选箱底反复承接且 Swing 充分的大箱体，回测页继续承载手动回测与扫描。
+                总览页展示今日全市场回测排行榜，Demand回踩页展示当前榜单，箱体回测页按历史日期重算Demand支撑与回踩机会，普通回测页继续承载原有逻辑。
               </div>
             </div>
 

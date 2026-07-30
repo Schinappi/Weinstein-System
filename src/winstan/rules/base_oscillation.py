@@ -22,7 +22,7 @@ import pandas as pd
 
 
 LOOKBACK_WEEKS = 52
-LOOKBACK_DAYS = 252
+LOOKBACK_DAYS = 380
 PIVOT_RADIUS = 2
 SUPPORT_TOLERANCE_PCT = 1.5
 MAX_TOUCH_PENETRATION_PCT = 4.0
@@ -30,12 +30,19 @@ VOLUME_LOOKBACK_WEEKS = 20
 DAILY_TOUCH_MERGE_GAP_BARS = 10
 WEEKLY_TOUCH_MERGE_GAP_BARS = 1
 MIN_SEPARATE_TOUCH_SWING_PCT = 12.0
+MIN_PRE_TOUCH_RALLY_PCT = 20.0
+DAILY_PRE_TOUCH_LOOKBACK_BARS = 45
+WEEKLY_PRE_TOUCH_LOOKBACK_BARS = 10
 MIN_VALID_TOUCHES = 3
 MIN_VALID_SWING_CYCLES = 1
 MIN_CANDIDATE_SCORE = 70.0
 MIN_CANDIDATE_AVG_SWING_PCT = 15.0
 MAX_CANDIDATE_TOP_STABILITY_PCT = 25.0
 MIN_CANDIDATE_REBOUND_EFFICIENCY = 0.65
+REBOUND_WINDOWS = (5, 10, 20)
+RECENT_APPROACH_LOOKBACK_BARS = 20
+PULLBACK_VOLUME_RECENT_BARS = 5
+PULLBACK_VOLUME_BASELINE_BARS = 20
 
 
 @dataclass(frozen=True)
@@ -78,6 +85,20 @@ class SupportZoneEvaluation:
     avg_efficiency: float | None
     utilization_pct: float | None
     volume_contraction_ratio: float | None
+    approach_gap_pct: float | None
+    approach_decline_pct: float | None
+    approach_energy_pct: float | None
+    pullback_volume_ratio: float | None
+    avg_rebound_5d_pct: float | None
+    avg_rebound_10d_pct: float | None
+    avg_rebound_20d_pct: float | None
+    rebound_success_rate_pct: float | None
+    rebound_sample_count: int
+    support_quality_score: float
+    historical_rebound_score: float
+    current_distance_score: float
+    approach_score: float
+    trend_filter_score: float
     touch_score: float
     penetration_score: float
     swing_score: float
@@ -163,6 +184,15 @@ def compute_base_oscillation_quality(
     avg_efficiency = selected.avg_efficiency
     utilization_pct = selected.utilization_pct
     volume_contraction_ratio = selected.volume_contraction_ratio
+    approach_gap_pct = selected.approach_gap_pct
+    approach_decline_pct = selected.approach_decline_pct
+    approach_energy_pct = selected.approach_energy_pct
+    pullback_volume_ratio = selected.pullback_volume_ratio
+    approach_score = selected.approach_score
+    support_quality_score = selected.support_quality_score
+    historical_rebound_score = selected.historical_rebound_score
+    current_distance_score = selected.current_distance_score
+    trend_filter_score = selected.trend_filter_score
     touch_score = selected.touch_score
     penetration_score = selected.penetration_score
     swing_score = selected.swing_score
@@ -179,14 +209,14 @@ def compute_base_oscillation_quality(
     success_count = sum(1 for value in swing_values if value >= MIN_CANDIDATE_AVG_SWING_PCT)
     success_rate = success_count / swing_count * 100.0 if swing_count else None
 
+    approach_ok = approach_gap_pct is not None and approach_gap_pct <= 12.0 and current_distance_score >= 8.0
     candidate = (
-        total >= MIN_CANDIDATE_SCORE
-        and touch_count >= MIN_VALID_TOUCHES
-        and swing_count >= MIN_VALID_SWING_CYCLES
-        and (avg_swing or 0.0) >= MIN_CANDIDATE_AVG_SWING_PCT
-        and (avg_efficiency is None or avg_efficiency >= MIN_CANDIDATE_REBOUND_EFFICIENCY)
-        and (top_stability_pct is None or top_stability_pct <= MAX_CANDIDATE_TOP_STABILITY_PCT)
-        and selected.active
+        selected.active
+        and touch_count >= 2
+        and support_quality_score >= 15.0
+        and historical_rebound_score >= 8.0
+        and approach_ok
+        and total >= 58.0
     )
 
     reason = _build_reason(
@@ -201,6 +231,14 @@ def compute_base_oscillation_quality(
         duration_weeks=duration_weeks,
         pending_count=pending_count,
         latest_break_pct=selected.latest_break_pct,
+        approach_gap_pct=approach_gap_pct,
+        approach_decline_pct=approach_decline_pct,
+        approach_energy_pct=approach_energy_pct,
+        support_quality_score=support_quality_score,
+        historical_rebound_score=historical_rebound_score,
+        current_distance_score=current_distance_score,
+        volume_score=volume_score,
+        trend_filter_score=trend_filter_score,
     )
 
     return {
@@ -229,8 +267,8 @@ def compute_base_oscillation_quality(
             round(volume_confirm_count / len(volume_ratios) * 100.0, 1) if volume_ratios else None
         ),
         "demand_support_avg_touch_volume_ratio": round(_mean(volume_ratios), 2) if volume_ratios else None,
-        "demand_support_score_touch": round(touch_score, 1),
-        "demand_support_score_rebound": round(swing_score, 1),
+        "demand_support_score_touch": round(support_quality_score, 1),
+        "demand_support_score_rebound": round(historical_rebound_score, 1),
         "demand_support_score_penetration": round(penetration_score, 1),
         "demand_support_score_box": round(top_score, 1),
         "demand_support_score_duration": round(duration_score, 1),
@@ -247,6 +285,28 @@ def compute_base_oscillation_quality(
         "demand_support_volume_contraction_ratio": (
             round(volume_contraction_ratio, 2) if volume_contraction_ratio is not None else None
         ),
+        "demand_support_approach_gap_pct": round(approach_gap_pct, 2) if approach_gap_pct is not None else None,
+        "demand_support_approach_decline_pct": round(approach_decline_pct, 2) if approach_decline_pct is not None else None,
+        "demand_support_approach_energy_pct": round(approach_energy_pct, 2) if approach_energy_pct is not None else None,
+        "demand_support_pullback_volume_ratio": round(pullback_volume_ratio, 2) if pullback_volume_ratio is not None else None,
+        "demand_support_score_approach": round(approach_score, 1),
+        "demand_support_score_support_quality": round(support_quality_score, 1),
+        "demand_support_score_historical_rebound": round(historical_rebound_score, 1),
+        "demand_support_score_current_distance": round(current_distance_score, 1),
+        "demand_support_score_trend_filter": round(trend_filter_score, 1),
+        "demand_support_avg_5d_rebound_pct": (
+            round(selected.avg_rebound_5d_pct, 2) if selected.avg_rebound_5d_pct is not None else None
+        ),
+        "demand_support_avg_10d_rebound_pct": (
+            round(selected.avg_rebound_10d_pct, 2) if selected.avg_rebound_10d_pct is not None else None
+        ),
+        "demand_support_avg_20d_rebound_pct": (
+            round(selected.avg_rebound_20d_pct, 2) if selected.avg_rebound_20d_pct is not None else None
+        ),
+        "demand_support_rebound_success_rate": (
+            round(selected.rebound_success_rate_pct, 1) if selected.rebound_success_rate_pct is not None else None
+        ),
+        "demand_support_rebound_sample_count": int(selected.rebound_sample_count),
         "demand_support_active": bool(selected.active),
         "demand_support_latest_break_pct": round(selected.latest_break_pct, 2),
     }
@@ -293,6 +353,20 @@ def _default_result(reason: str) -> dict[str, object]:
         "demand_support_rebound_efficiency": None,
         "demand_support_box_utilization_pct": None,
         "demand_support_volume_contraction_ratio": None,
+        "demand_support_approach_gap_pct": None,
+        "demand_support_approach_decline_pct": None,
+        "demand_support_approach_energy_pct": None,
+        "demand_support_pullback_volume_ratio": None,
+        "demand_support_score_approach": 0.0,
+        "demand_support_score_support_quality": 0.0,
+        "demand_support_score_historical_rebound": 0.0,
+        "demand_support_score_current_distance": 0.0,
+        "demand_support_score_trend_filter": 0.0,
+        "demand_support_avg_5d_rebound_pct": None,
+        "demand_support_avg_10d_rebound_pct": None,
+        "demand_support_avg_20d_rebound_pct": None,
+        "demand_support_rebound_success_rate": None,
+        "demand_support_rebound_sample_count": 0,
         "demand_support_active": False,
         "demand_support_latest_break_pct": None,
     }
@@ -369,6 +443,7 @@ def _evaluate_support_zone(
     zone_lower = support * (1.0 - SUPPORT_TOLERANCE_PCT / 100.0)
     zone_upper = support * (1.0 + SUPPORT_TOLERANCE_PCT / 100.0)
     raw_touches = _build_support_touches(bars, window_start, support, zone_lower, zone_upper, merge_gap)
+    raw_touches = _filter_retest_touches(bars, raw_touches, support, source_label)
     touches = _merge_weak_retest_touches(bars, raw_touches)
     if not touches:
         return None
@@ -398,22 +473,39 @@ def _evaluate_support_zone(
         utilization_pct = min(avg_swing / box_height_pct * 100.0, 140.0)
 
     volume_contraction_ratio = _volume_contraction_ratio(bars, touches)
+    latest_low = float(bars.iloc[-1]["low"])
+    recent_low_window = bars.tail(min(5, len(bars)))
+    recent_low_max = float(recent_low_window["low"].max()) if not recent_low_window.empty else None
+    approach_gap_pct = None
+    approach_decline_pct = None
+    if support > 0 and np.isfinite(latest_low):
+        approach_gap_pct = max(0.0, (latest_low / support - 1.0) * 100.0)
+    if recent_low_max is not None and np.isfinite(latest_low) and latest_low > 0:
+        approach_decline_pct = max(0.0, (recent_low_max / latest_low - 1.0) * 100.0)
+    approach_energy_pct = _approach_energy_pct(bars, latest_low)
+    pullback_volume_ratio = _pullback_volume_ratio(bars)
+    rebound_stats = _historical_rebound_stats(bars, touches)
+
+    support_quality_score = _score_support_quality(touches, avg_penetration, duration_bars, source_label)
+    historical_rebound_score = _score_historical_rebound(rebound_stats)
+    current_distance_score = _score_current_distance(approach_gap_pct, approach_energy_pct)
+    volume_score = _score_pullback_volume(pullback_volume_ratio, volume_contraction_ratio)
+    trend_filter_score = _score_trend_filter(bars)
+    approach_score = current_distance_score
+
     touch_score = _score_touch_count(len(touches))
     penetration_score = _score_penetration(avg_penetration)
     swing_score = _score_avg_swing(avg_swing)
     cycle_score = _score_cycle_count(len(cycles))
     top_score = _score_top_stability(top_stability_pct)
     duration_score = _score_duration(duration_weeks)
-    volume_score = _score_volume_contraction(volume_contraction_ratio)
     total = min(
         100.0,
-        touch_score
-        + penetration_score
-        + swing_score
-        + cycle_score
-        + top_score
-        + duration_score
-        + volume_score,
+        support_quality_score
+        + historical_rebound_score
+        + current_distance_score
+        + volume_score
+        + trend_filter_score,
     )
     latest_break_pct = _latest_break_pct(bars, zone_lower, support)
 
@@ -436,6 +528,20 @@ def _evaluate_support_zone(
         avg_efficiency=avg_efficiency,
         utilization_pct=utilization_pct,
         volume_contraction_ratio=volume_contraction_ratio,
+        approach_gap_pct=approach_gap_pct,
+        approach_decline_pct=approach_decline_pct,
+        approach_energy_pct=approach_energy_pct,
+        pullback_volume_ratio=pullback_volume_ratio,
+        avg_rebound_5d_pct=rebound_stats.get("avg_5d"),
+        avg_rebound_10d_pct=rebound_stats.get("avg_10d"),
+        avg_rebound_20d_pct=rebound_stats.get("avg_20d"),
+        rebound_success_rate_pct=rebound_stats.get("success_rate"),
+        rebound_sample_count=int(rebound_stats.get("sample_count") or 0),
+        support_quality_score=support_quality_score,
+        historical_rebound_score=historical_rebound_score,
+        current_distance_score=current_distance_score,
+        approach_score=approach_score,
+        trend_filter_score=trend_filter_score,
         touch_score=touch_score,
         penetration_score=penetration_score,
         swing_score=swing_score,
@@ -450,22 +556,32 @@ def _evaluate_support_zone(
 
 
 def _select_best_support_zone(evaluations: list[SupportZoneEvaluation]) -> SupportZoneEvaluation:
-    def key(evaluation: SupportZoneEvaluation) -> tuple[float, float, float, float, float, float, float]:
+    if not evaluations:
+        raise ValueError("No support zone evaluations available")
+
+    active = [evaluation for evaluation in evaluations if evaluation.active]
+    pool = active or evaluations
+    strong = [evaluation for evaluation in pool if len(evaluation.touches) >= 2]
+    candidates = strong or pool
+
+    min_support = min(evaluation.support for evaluation in candidates)
+    floor_band = min_support * 1.05
+    near_floor = [evaluation for evaluation in candidates if evaluation.support <= floor_band]
+    pool = near_floor or candidates
+
+    def key(evaluation: SupportZoneEvaluation) -> tuple[float, float, float, float, float, float]:
         avg_swing = evaluation.avg_swing or 0.0
-        avg_efficiency = evaluation.avg_efficiency or 0.0
-        successful_cycles = sum(1 for cycle in evaluation.cycles if cycle.swing_pct >= MIN_CANDIDATE_AVG_SWING_PCT)
-        latest_touch_idx = evaluation.touches[-1].index if evaluation.touches else -1
+        # Prefer the demand zone the latest price is approaching, then rank by reliability.
         return (
-            1.0 if evaluation.active else 0.0,
+            float(evaluation.current_distance_score),
+            float(evaluation.support_quality_score),
+            float(evaluation.historical_rebound_score),
             float(len(evaluation.touches)),
-            float(successful_cycles),
-            avg_swing,
             evaluation.total,
-            avg_efficiency,
-            float(latest_touch_idx),
+            avg_swing,
         )
 
-    return max(evaluations, key=key)
+    return max(pool, key=key)
 
 
 def _build_support_touches(
@@ -525,6 +641,31 @@ def _merge_weak_retest_touches(weekly: pd.DataFrame, touches: list[SupportTouch]
         else:
             merged.append(touch)
     return merged
+
+
+def _filter_retest_touches(
+    weekly: pd.DataFrame,
+    touches: list[SupportTouch],
+    support: float,
+    source_label: str,
+) -> list[SupportTouch]:
+    if len(touches) <= 1 or support <= 0:
+        return touches
+
+    lookback = DAILY_PRE_TOUCH_LOOKBACK_BARS if source_label == "daily" else WEEKLY_PRE_TOUCH_LOOKBACK_BARS
+    valid: list[SupportTouch] = []
+    for touch in touches:
+        start = max(0, touch.index - lookback)
+        previous = weekly.iloc[start:touch.index]
+        if previous.empty:
+            continue
+        pre_high = float(previous["high"].max())
+        if not np.isfinite(pre_high):
+            continue
+        pre_rally_pct = (pre_high / support - 1.0) * 100.0
+        if pre_rally_pct >= MIN_PRE_TOUCH_RALLY_PCT:
+            valid.append(touch)
+    return valid
 
 
 def _touch_to_touch_swing_pct(weekly: pd.DataFrame, first: SupportTouch, second: SupportTouch) -> float:
@@ -633,6 +774,231 @@ def _volume_contraction_ratio(weekly: pd.DataFrame, touches: list[SupportTouch])
     return float(late.mean()) / early_mean
 
 
+def _historical_rebound_stats(weekly: pd.DataFrame, touches: list[SupportTouch]) -> dict[str, float | int | None]:
+    rebounds_by_window: dict[int, list[float]] = {window: [] for window in REBOUND_WINDOWS}
+    best_rebounds: list[float] = []
+    for touch in touches:
+        future_bars = len(weekly) - touch.index - 1
+        if touch.low <= 0 or future_bars < min(REBOUND_WINDOWS):
+            continue
+        per_touch: list[float] = []
+        for window in REBOUND_WINDOWS:
+            if future_bars < window:
+                continue
+            segment = weekly.iloc[touch.index : touch.index + window + 1]
+            if segment.empty:
+                continue
+            high = float(segment["high"].max())
+            if not np.isfinite(high) or high <= touch.low:
+                continue
+            rebound = (high / touch.low - 1.0) * 100.0
+            rebounds_by_window[window].append(rebound)
+            per_touch.append(rebound)
+        if per_touch:
+            best_rebounds.append(max(per_touch))
+
+    success_count = sum(1 for value in best_rebounds if value >= MIN_CANDIDATE_AVG_SWING_PCT)
+    return {
+        "avg_5d": _mean(rebounds_by_window[5]),
+        "avg_10d": _mean(rebounds_by_window[10]),
+        "avg_20d": _mean(rebounds_by_window[20]),
+        "success_rate": (success_count / len(best_rebounds) * 100.0 if best_rebounds else None),
+        "sample_count": len(best_rebounds),
+    }
+
+
+def _approach_energy_pct(weekly: pd.DataFrame, latest_low: float) -> float | None:
+    if weekly.empty or latest_low <= 0:
+        return None
+    recent = weekly.tail(min(RECENT_APPROACH_LOOKBACK_BARS, len(weekly)))
+    if recent.empty:
+        return None
+    recent_high = float(recent["high"].max())
+    if not np.isfinite(recent_high):
+        return None
+    return max(0.0, (recent_high / latest_low - 1.0) * 100.0)
+
+
+def _pullback_volume_ratio(weekly: pd.DataFrame) -> float | None:
+    if "volume" not in weekly.columns or len(weekly) < PULLBACK_VOLUME_RECENT_BARS + 5:
+        return None
+    recent = weekly.tail(PULLBACK_VOLUME_RECENT_BARS)["volume"].dropna()
+    baseline_start = max(0, len(weekly) - PULLBACK_VOLUME_RECENT_BARS - PULLBACK_VOLUME_BASELINE_BARS)
+    baseline = weekly.iloc[baseline_start : len(weekly) - PULLBACK_VOLUME_RECENT_BARS]["volume"].dropna()
+    if recent.empty or baseline.empty:
+        return None
+    baseline_mean = float(baseline.mean())
+    if baseline_mean <= 0:
+        return None
+    return float(recent.mean()) / baseline_mean
+
+
+def _score_support_quality(
+    touches: list[SupportTouch],
+    avg_penetration_pct: float | None,
+    duration_bars: int,
+    source_label: str,
+) -> float:
+    touch_count = len(touches)
+    if touch_count >= 4:
+        touch_component = 16.0
+    elif touch_count == 3:
+        touch_component = 14.0
+    elif touch_count == 2:
+        touch_component = 11.0
+    elif touch_count == 1:
+        touch_component = 3.0
+    else:
+        touch_component = 0.0
+
+    penetration_component = min(_score_penetration(avg_penetration_pct) / 15.0 * 8.0, 8.0)
+
+    interval_component = 0.0
+    if touch_count >= 2:
+        interval_bars = duration_bars / max(touch_count - 1, 1)
+        interval_weeks = _duration_in_weeks(int(round(interval_bars)), source_label)
+        if interval_weeks >= 24:
+            interval_component = 6.0
+        elif interval_weeks >= 12:
+            interval_component = 5.0
+        elif interval_weeks >= 6:
+            interval_component = 3.0
+        elif interval_weeks >= 3:
+            interval_component = 1.5
+        else:
+            interval_component = 0.5
+
+    return min(30.0, touch_component + penetration_component + interval_component)
+
+
+def _score_historical_rebound(stats: dict[str, float | int | None]) -> float:
+    avg_candidates = [
+        stats.get("avg_10d"),
+        stats.get("avg_20d"),
+        stats.get("avg_5d"),
+    ]
+    avg_rebound = next((float(value) for value in avg_candidates if value is not None), None)
+    if avg_rebound is None:
+        return 0.0
+
+    if avg_rebound >= 25.0:
+        strength_component = 17.0
+    elif avg_rebound >= 18.0:
+        strength_component = 15.0
+    elif avg_rebound >= 12.0:
+        strength_component = 11.0
+    elif avg_rebound >= 8.0:
+        strength_component = 7.0
+    elif avg_rebound >= 5.0:
+        strength_component = 4.0
+    else:
+        strength_component = max(0.0, avg_rebound / 5.0 * 4.0)
+
+    success_rate = stats.get("success_rate")
+    if success_rate is None:
+        reliability_component = 0.0
+    elif float(success_rate) >= 80.0:
+        reliability_component = 6.0
+    elif float(success_rate) >= 60.0:
+        reliability_component = 4.5
+    elif float(success_rate) >= 40.0:
+        reliability_component = 2.5
+    elif float(success_rate) > 0.0:
+        reliability_component = 1.0
+    else:
+        reliability_component = 0.0
+
+    sample_count = int(stats.get("sample_count") or 0)
+    if sample_count >= 3:
+        sample_component = 2.0
+    elif sample_count == 2:
+        sample_component = 1.5
+    elif sample_count == 1:
+        sample_component = 0.75
+    else:
+        sample_component = 0.0
+
+    return min(25.0, strength_component + reliability_component + sample_component)
+
+
+def _score_current_distance(gap_pct: float | None, energy_pct: float | None) -> float:
+    if gap_pct is None:
+        return 0.0
+
+    if gap_pct <= 0.0:
+        distance_component = 22.0
+    elif gap_pct <= 1.0:
+        distance_component = 20.0
+    elif gap_pct <= 2.0:
+        distance_component = 18.0
+    elif gap_pct <= 4.0:
+        distance_component = 14.0
+    elif gap_pct <= 6.0:
+        distance_component = 10.0
+    elif gap_pct <= 8.0:
+        distance_component = 7.0
+    elif gap_pct <= 10.0:
+        distance_component = 4.0
+    elif gap_pct <= 12.0:
+        distance_component = 1.0
+    else:
+        distance_component = 0.0
+
+    energy_component = 0.0
+    if energy_pct is not None:
+        if 8.0 <= energy_pct <= 25.0:
+            energy_component = 8.0
+        elif 5.0 <= energy_pct < 8.0 or 25.0 < energy_pct <= 35.0:
+            energy_component = 6.0
+        elif 2.0 <= energy_pct < 5.0 or 35.0 < energy_pct <= 50.0:
+            energy_component = 3.0
+        elif energy_pct > 0.0:
+            energy_component = 1.0
+
+    return min(30.0, distance_component + energy_component)
+
+
+def _score_pullback_volume(
+    pullback_ratio: float | None,
+    base_contraction_ratio: float | None,
+) -> float:
+    ratio = pullback_ratio if pullback_ratio is not None else base_contraction_ratio
+    if ratio is None:
+        return 0.0
+    if ratio <= 0.65:
+        return 10.0
+    if ratio <= 0.8:
+        return 8.0
+    if ratio <= 0.95:
+        return 5.5
+    if ratio <= 1.1:
+        return 2.5
+    return 0.0
+
+
+def _score_trend_filter(weekly: pd.DataFrame) -> float:
+    closes = weekly["close"].dropna().astype(float)
+    if len(closes) < 60:
+        return 2.0
+    span = min(150, max(30, len(closes) // 2))
+    ema = closes.ewm(span=span, adjust=False).mean()
+    latest_close = float(closes.iloc[-1])
+    latest_ema = float(ema.iloc[-1])
+    if latest_ema <= 0:
+        return 0.0
+    lookback = min(20, len(ema) - 1)
+    ema_slope_pct = (latest_ema / float(ema.iloc[-lookback - 1]) - 1.0) * 100.0 if lookback > 0 else 0.0
+    if latest_close >= latest_ema and ema_slope_pct >= 0.0:
+        return 5.0
+    if latest_close >= latest_ema * 0.95 and ema_slope_pct >= -3.0:
+        return 3.5
+    if latest_close >= latest_ema * 0.9:
+        return 2.0
+    if latest_close >= latest_ema * 0.85:
+        return 1.0
+    return 0.0
+
+
 def _score_touch_count(touch_count: int) -> float:
     if touch_count >= 5:
         return 20.0
@@ -733,20 +1099,6 @@ def _score_duration(duration_weeks: int) -> float:
     return 0.0
 
 
-def _score_volume_contraction(ratio: float | None) -> float:
-    if ratio is None:
-        return 0.0
-    if ratio <= 0.65:
-        return 5.0
-    if ratio <= 0.8:
-        return 4.0
-    if ratio <= 0.95:
-        return 2.5
-    if ratio <= 1.1:
-        return 1.0
-    return 0.0
-
-
 def _touch_span_bars(touches: list[SupportTouch]) -> int:
     if len(touches) < 2:
         return 0
@@ -791,10 +1143,24 @@ def _build_reason(
     duration_weeks: int,
     pending_count: int,
     latest_break_pct: float,
+    approach_gap_pct: float | None,
+    approach_decline_pct: float | None,
+    approach_energy_pct: float | None,
+    support_quality_score: float,
+    historical_rebound_score: float,
+    current_distance_score: float,
+    volume_score: float,
+    trend_filter_score: float,
 ) -> str:
-    parts = [f"{grade} base {total:.0f}", f"touches {touch_count}", f"cycles {swing_count}"]
+    parts = [
+        f"{grade} demand {total:.0f}",
+        f"supportQ {support_quality_score:.1f}",
+        f"rebound {historical_rebound_score:.1f}",
+        f"distance {current_distance_score:.1f}",
+    ]
+    parts.append(f"touches {touch_count}")
     if avg_swing is not None:
-        parts.append(f"avg swing {avg_swing:.1f}%")
+        parts.append(f"aux swing {avg_swing:.1f}%")
     if rebound_efficiency is not None:
         parts.append(f"eff {rebound_efficiency:.2f}")
     if avg_penetration is not None:
@@ -803,6 +1169,14 @@ def _build_reason(
         parts.append(f"top stable {top_stability_pct:.1f}%")
     if duration_weeks:
         parts.append(f"{duration_weeks}w")
+    if approach_gap_pct is not None:
+        parts.append(f"approach {approach_gap_pct:.1f}%")
+    if approach_decline_pct is not None:
+        parts.append(f"5d decline {approach_decline_pct:.1f}%")
+    if approach_energy_pct is not None:
+        parts.append(f"20d energy {approach_energy_pct:.1f}%")
+    parts.append(f"vol {volume_score:.1f}")
+    parts.append(f"trend {trend_filter_score:.1f}")
     if latest_break_pct > 0:
         parts.append(f"broken {latest_break_pct:.1f}%")
     if pending_count:

@@ -56,6 +56,7 @@ QUASI_GATE_LABELS = {
 
 
 OVERVIEW_SNAPSHOT_VERSION = 7
+BOX_BACKTEST_SNAPSHOT_VERSION = 1
 
 
 class DashboardService:
@@ -66,6 +67,7 @@ class DashboardService:
         self.watchlist_store = WatchlistStore(self.config.duckdb_path)
         self.price_monitor_store = PriceMonitorStore(self.config.duckdb_path)
         self.overview_store = OverviewStore(self.config.logs_dir / "overview_rankings")
+        self.box_backtest_store = OverviewStore(self.config.logs_dir / "box_backtest_rankings")
         self._router: DataSourceRouter | None = None
         self._results: pd.DataFrame | None = None
         self._stage1: pd.DataFrame | None = None
@@ -566,6 +568,22 @@ class DashboardService:
             return
         self.overview_store.save(target_date, {**payload, "snapshot_version": OVERVIEW_SNAPSHOT_VERSION})
 
+    def load_box_backtest_snapshot(self, target_date: str) -> dict[str, object] | None:
+        payload = self.box_backtest_store.load(target_date)
+        if not isinstance(payload, dict):
+            return None
+        if int(payload.get("snapshot_version") or 0) != BOX_BACKTEST_SNAPSHOT_VERSION:
+            return None
+        items = payload.get("items")
+        if not isinstance(items, list):
+            return None
+        return payload
+
+    def save_box_backtest_snapshot(self, target_date: str, payload: dict[str, object]) -> None:
+        if not isinstance(payload, dict) or not isinstance(payload.get("items"), list):
+            return
+        self.box_backtest_store.save(target_date, {**payload, "snapshot_version": BOX_BACKTEST_SNAPSHOT_VERSION})
+
     def run_backtest_payload(
         self,
         symbols_str: str,
@@ -588,6 +606,28 @@ class DashboardService:
         )
         return self.annotate_backtest_scan_payload(payload, target_date)
 
+    def run_box_backtest_payload(
+        self,
+        symbols_str: str,
+        target_date: str,
+        reuse_scan: bool = False,
+        force_refresh: bool = False,
+    ) -> dict[str, object]:
+        from winstan.dashboard.box_backtest_handler import run_box_backtest_for_symbols
+
+        payload = run_box_backtest_for_symbols(
+            self.parquet_store,
+            self.config,
+            symbols_str,
+            target_date,
+            reuse_scan=reuse_scan,
+            force_refresh=force_refresh,
+            name_lookup=self._lookup_stock_name,
+            snapshot_loader=self.load_box_backtest_snapshot,
+            snapshot_saver=self.save_box_backtest_snapshot,
+        )
+        return self.annotate_box_backtest_scan_payload(payload, target_date)
+
     def annotate_backtest_scan_payload(
         self,
         payload: dict[str, object],
@@ -609,6 +649,29 @@ class DashboardService:
         payload["new_hit_count"] = new_hit_count
         if target:
             self.save_overview_snapshot(target, payload)
+        return payload
+
+    def annotate_box_backtest_scan_payload(
+        self,
+        payload: dict[str, object],
+        fallback_target_date: str = "",
+    ) -> dict[str, object]:
+        if not isinstance(payload, dict) or payload.get("mode") != "scan":
+            return payload
+
+        target = _to_text(payload.get("target_date")) or _to_text(fallback_target_date)
+        comparison_date, previous_payload = self._previous_box_backtest_snapshot(target)
+        previous_items = []
+        if isinstance(previous_payload, dict) and isinstance(previous_payload.get("items"), list):
+            previous_items = previous_payload["items"]
+        current_items = payload.get("items") if isinstance(payload.get("items"), list) else []
+        if not current_items:
+            return payload
+        new_hit_count = self._annotate_new_hits(current_items, previous_items)
+        payload["comparison_date"] = comparison_date
+        payload["new_hit_count"] = new_hit_count
+        if target:
+            self.save_box_backtest_snapshot(target, payload)
         return payload
 
     @staticmethod
@@ -638,6 +701,12 @@ class DashboardService:
         for snapshot_date in self.overview_store.list_dates():
             if snapshot_date and snapshot_date < target_date:
                 return snapshot_date, self.load_overview_snapshot(snapshot_date)
+        return "", None
+
+    def _previous_box_backtest_snapshot(self, target_date: str) -> tuple[str, dict[str, object] | None]:
+        for snapshot_date in self.box_backtest_store.list_dates():
+            if snapshot_date and snapshot_date < target_date:
+                return snapshot_date, self.load_box_backtest_snapshot(snapshot_date)
         return "", None
 
     def _previous_screening_snapshot_date(self) -> str:
@@ -695,6 +764,20 @@ class DashboardService:
                 "demand_support_rebound_efficiency": _to_float(r.get("demand_support_rebound_efficiency")),
                 "demand_support_box_utilization_pct": _to_float(r.get("demand_support_box_utilization_pct")),
                 "demand_support_volume_contraction_ratio": _to_float(r.get("demand_support_volume_contraction_ratio")),
+                "demand_support_approach_gap_pct": _to_float(r.get("demand_support_approach_gap_pct")),
+                "demand_support_approach_decline_pct": _to_float(r.get("demand_support_approach_decline_pct")),
+                "demand_support_approach_energy_pct": _to_float(r.get("demand_support_approach_energy_pct")),
+                "demand_support_pullback_volume_ratio": _to_float(r.get("demand_support_pullback_volume_ratio")),
+                "demand_support_score_approach": _to_float(r.get("demand_support_score_approach")),
+                "demand_support_score_support_quality": _to_float(r.get("demand_support_score_support_quality")),
+                "demand_support_score_historical_rebound": _to_float(r.get("demand_support_score_historical_rebound")),
+                "demand_support_score_current_distance": _to_float(r.get("demand_support_score_current_distance")),
+                "demand_support_score_trend_filter": _to_float(r.get("demand_support_score_trend_filter")),
+                "demand_support_avg_5d_rebound_pct": _to_float(r.get("demand_support_avg_5d_rebound_pct")),
+                "demand_support_avg_10d_rebound_pct": _to_float(r.get("demand_support_avg_10d_rebound_pct")),
+                "demand_support_avg_20d_rebound_pct": _to_float(r.get("demand_support_avg_20d_rebound_pct")),
+                "demand_support_rebound_success_rate": _to_float(r.get("demand_support_rebound_success_rate")),
+                "demand_support_rebound_sample_count": _to_int(r.get("demand_support_rebound_sample_count")),
                 "demand_support_score_cycle": _to_float(r.get("demand_support_score_cycle")),
                 "demand_support_score_volume": _to_float(r.get("demand_support_score_volume")),
                 "demand_support_active": bool(r.get("demand_support_active", True)),

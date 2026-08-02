@@ -1364,6 +1364,34 @@ function SearchPanel({ onOpenDetail }) {
 
 function MonitorPage({ loading, statusText, data, onRefresh, onDelete, onOpenDetail }) {
   const items = data?.items || [];
+  const simulatedTrades = data?.simulated_trades || [];
+  const simulatedSummary = useMemo(() => {
+    const counts = { pending: 0, holding: 0, closed: 0 };
+    simulatedTrades.forEach((item) => {
+      const status = item.status || "pending";
+      if (Object.prototype.hasOwnProperty.call(counts, status)) {
+        counts[status] += 1;
+      }
+    });
+    return counts;
+  }, [simulatedTrades]);
+
+  const statusTag = (status) => {
+    const map = {
+      pending: { color: "default", label: "等待成交" },
+      holding: { color: "green", label: "持仓中" },
+      closed: { color: "red", label: "已清仓" },
+    };
+    const item = map[status] || map.pending;
+    return html`<${Tag} color=${item.color}>${item.label}<//>`;
+  };
+
+  const signedClassName = (value) => {
+    const text = String(value || "");
+    if (text.startsWith("-")) return "negative-text";
+    if (text.startsWith("+")) return "positive-text";
+    return "";
+  };
 
   const columns = [
     {
@@ -1429,6 +1457,95 @@ function MonitorPage({ loading, statusText, data, onRefresh, onDelete, onOpenDet
     },
   ];
 
+  const simulatedColumns = [
+    {
+      title: "股票",
+      dataIndex: "symbol",
+      key: "symbol",
+      width: 170,
+      render: (_, row) => html`
+        <div className="symbol-cell">
+          <div className="symbol-code">${row.symbol}</div>
+          <div className="symbol-name">${row.name || "--"}</div>
+        </div>
+      `,
+    },
+    {
+      title: "状态",
+      dataIndex: "status",
+      key: "status",
+      width: 100,
+      render: (value) => statusTag(value),
+    },
+    {
+      title: "挂单",
+      key: "order",
+      width: 150,
+      render: (_, row) => html`
+        <div>${row.order_price || "--"}</div>
+        <div className="muted-text">${row.order_date || "--"}</div>
+      `,
+    },
+    {
+      title: "买入",
+      key: "entry",
+      width: 150,
+      render: (_, row) => html`
+        <div>${row.entry_price || "--"}</div>
+        <div className="muted-text">${row.entry_date || "--"}</div>
+      `,
+    },
+    {
+      title: "止损价",
+      dataIndex: "stop_loss_price",
+      key: "stop_loss_price",
+      width: 110,
+    },
+    {
+      title: "最新/清仓",
+      key: "latest",
+      width: 150,
+      render: (_, row) => html`
+        <div>${row.status === "closed" ? row.close_price || "--" : row.latest_close || "--"}</div>
+        <div className="muted-text">${row.status === "closed" ? row.close_date || "--" : row.latest_trade_date || "--"}</div>
+      `,
+    },
+    {
+      title: "当前收益",
+      dataIndex: "current_return_pct",
+      key: "current_return_pct",
+      width: 120,
+      render: (value) => html`<span className=${signedClassName(value)}>${value || "--"}</span>`,
+    },
+    {
+      title: "最大涨幅",
+      dataIndex: "max_gain_pct",
+      key: "max_gain_pct",
+      width: 120,
+      render: (value) => html`<span className=${signedClassName(value)}>${value || "--"}</span>`,
+    },
+    {
+      title: "最大跌幅",
+      dataIndex: "max_drawdown_pct",
+      key: "max_drawdown_pct",
+      width: 120,
+      render: (value) => html`<span className=${signedClassName(value)}>${value || "--"}</span>`,
+    },
+    {
+      title: "持仓天数",
+      dataIndex: "holding_days",
+      key: "holding_days",
+      width: 110,
+      render: (value) => formatInt(value),
+    },
+    {
+      title: "备注",
+      dataIndex: "close_reason",
+      key: "close_reason",
+      render: (value, row) => value || (row.status === "pending" ? "Low触达挂单价后模拟买入" : "--"),
+    },
+  ];
+
   return html`
     <div className="page-shell">
       <${Card} className="hero-card">
@@ -1453,6 +1570,14 @@ function MonitorPage({ loading, statusText, data, onRefresh, onDelete, onOpenDet
             <div className="status-block">
               <div className="status-label">监控数量</div>
               <div className="status-value">${formatInt(data?.count || 0)}</div>
+            </div>
+            <div className="status-block">
+              <div className="status-label">模拟持仓</div>
+              <div className="status-value">${formatInt(simulatedSummary.holding)}</div>
+            </div>
+            <div className="status-block">
+              <div className="status-label">已清仓</div>
+              <div className="status-value">${formatInt(simulatedSummary.closed)}</div>
             </div>
             <div className="status-block">
               <div className="status-label">更新日期</div>
@@ -1481,6 +1606,39 @@ function MonitorPage({ loading, statusText, data, onRefresh, onDelete, onOpenDet
             }}
             onRow=${(record) => ({
               onClick: () => onOpenDetail(record.symbol, items),
+              style: { cursor: "pointer" },
+            })}
+          />
+        <//>
+
+        <${Card} className="panel-card table-card">
+          <div className="toolbar-row" style=${{ marginBottom: 16 }}>
+            <div>
+              <h2 className="section-title">模拟交易账户</h2>
+              <div className="toolbar-copy">
+                目标价视为挂单价；日线最低价触达后按挂单价买入，买入后触及 -6% 止损价即模拟清仓。
+              </div>
+            </div>
+            <div className="toolbar-actions">
+              <${Tag} color="default">等待成交 ${formatInt(simulatedSummary.pending)}<//>
+              <${Tag} color="green">持仓中 ${formatInt(simulatedSummary.holding)}<//>
+              <${Tag} color="red">已清仓 ${formatInt(simulatedSummary.closed)}<//>
+            </div>
+          </div>
+
+          <${Table}
+            className="backtest-table"
+            columns=${simulatedColumns}
+            dataSource=${simulatedTrades}
+            rowKey=${(row) => row.id || row.monitor_id || row.symbol}
+            pagination=${{ pageSize: 20, showSizeChanger: false, hideOnSinglePage: true }}
+            loading=${loading}
+            scroll=${{ x: 1480 }}
+            locale=${{
+              emptyText: html`<div className="empty-block">暂无模拟交易记录</div>`,
+            }}
+            onRow=${(record) => ({
+              onClick: () => onOpenDetail(record.symbol, simulatedTrades),
               style: { cursor: "pointer" },
             })}
           />

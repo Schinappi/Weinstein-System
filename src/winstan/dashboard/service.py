@@ -29,6 +29,7 @@ from winstan.scoring.ranker import build_quasi_stage2_top_n, build_stage2_top_n,
 from winstan.storage.duckdb_store import DuckDBStore
 from winstan.storage.parquet_store import ParquetStore
 from winstan.storage.price_monitor_store import PriceMonitorStore
+from winstan.storage.simulated_trade_store import SimulatedTradeStore
 from winstan.storage.watchlist_store import WatchlistStore
 from winstan.signals.trade_watch import (
     build_trade_watch_signal,
@@ -67,6 +68,7 @@ class DashboardService:
         self.duckdb_store = DuckDBStore(self.config.duckdb_path)
         self.watchlist_store = WatchlistStore(self.config.duckdb_path)
         self.price_monitor_store = PriceMonitorStore(self.config.duckdb_path)
+        self.simulated_trade_store = SimulatedTradeStore(self.config.duckdb_path)
         self.overview_store = OverviewStore(self.config.logs_dir / "overview_rankings")
         self.box_backtest_store = OverviewStore(self.config.logs_dir / "box_backtest_rankings")
         self._router: DataSourceRouter | None = None
@@ -827,7 +829,13 @@ class DashboardService:
     def get_price_monitor_payload(self) -> dict[str, object]:
         frame = self.price_monitor_store.list_items()
         if frame.empty:
-            return {"items": [], "count": 0}
+            simulated = self.simulated_trade_store.list_items()
+            return {
+                "items": [],
+                "count": 0,
+                "simulated_trades": self._serialize_simulated_trades(simulated),
+                "simulated_trade_count": int(len(simulated)),
+            }
 
         refreshed_rows: list[dict[str, object]] = []
         for _, row in frame.iterrows():
@@ -848,9 +856,12 @@ class DashboardService:
             refreshed_rows.append(item)
 
         refreshed = pd.DataFrame(refreshed_rows)
+        simulated = self._refresh_simulated_trades(refreshed)
         return {
             "count": int(len(refreshed)),
             "items": self._serialize_price_monitors(refreshed),
+            "simulated_trades": self._serialize_simulated_trades(simulated),
+            "simulated_trade_count": int(len(simulated)),
         }
 
     def add_price_monitor(self, symbol: str, target_price: float) -> dict[str, object]:
@@ -883,6 +894,107 @@ class DashboardService:
         if not ok:
             raise ValueError(f"未找到监控记录: {item_id}")
         return {"deleted": True, "id": item_id}
+
+    def _refresh_simulated_trades(self, monitors: pd.DataFrame) -> pd.DataFrame:
+        if monitors.empty:
+            return self.simulated_trade_store.list_items()
+
+        for _, row in monitors.iterrows():
+            item = row.to_dict()
+            symbol = _to_text(item.get("symbol")).upper()
+            monitor_id = _to_text(item.get("id"))
+            target_price = _to_float(item.get("target_price"))
+            if not symbol or not monitor_id or target_price is None or target_price <= 0:
+                continue
+            daily = self._ensure_daily_bars(symbol)
+            trade = self._build_simulated_trade_from_monitor(item, daily)
+            self.simulated_trade_store.upsert_for_monitor(monitor_id, trade)
+
+        return self.simulated_trade_store.list_items()
+
+    def _build_simulated_trade_from_monitor(self, monitor: dict[str, object], daily: pd.DataFrame) -> dict[str, object]:
+        symbol = _to_text(monitor.get("symbol")).upper()
+        target_price = _to_float(monitor.get("target_price")) or 0.0
+        monitor_id = _to_text(monitor.get("id"))
+        order_date = _monitor_order_date(monitor)
+        payload: dict[str, object] = {
+            "monitor_id": monitor_id,
+            "symbol": symbol,
+            "name": _to_text(monitor.get("name")) or self._lookup_stock_name(symbol),
+            "order_date": order_date,
+            "order_price": target_price,
+            "status": "pending",
+            "stop_loss_price": target_price * 0.94 if target_price > 0 else None,
+        }
+        if daily.empty or target_price <= 0:
+            return payload
+
+        frame = daily.copy()
+        frame["trade_date"] = pd.to_datetime(frame["trade_date"], errors="coerce")
+        for column in ["low", "high", "close"]:
+            frame[column] = pd.to_numeric(frame[column], errors="coerce")
+        frame = frame.dropna(subset=["trade_date"]).sort_values("trade_date").reset_index(drop=True)
+        if order_date:
+            order_ts = pd.to_datetime(order_date, errors="coerce")
+            if not pd.isna(order_ts):
+                frame = frame[frame["trade_date"] >= order_ts].copy()
+        if frame.empty:
+            return payload
+
+        touched = frame[frame["low"] <= target_price]
+        if touched.empty:
+            latest = frame.iloc[-1]
+            payload.update({
+                "latest_trade_date": latest.get("trade_date"),
+                "latest_close": _to_float(latest.get("close")),
+            })
+            return payload
+
+        entry = touched.iloc[0]
+        entry_date = entry.get("trade_date")
+        stop_loss_price = target_price * 0.94
+        post_entry = frame[frame["trade_date"] >= entry_date].copy()
+        stopped = post_entry[post_entry["low"] <= stop_loss_price]
+        close_date = None
+        close_price = None
+        close_reason = ""
+        status = "holding"
+        eval_window = post_entry
+        if not stopped.empty:
+            stop_row = stopped.iloc[0]
+            close_date = stop_row.get("trade_date")
+            close_price = stop_loss_price
+            close_reason = "止损-6%"
+            status = "closed"
+            eval_window = post_entry[post_entry["trade_date"] <= close_date].copy()
+
+        latest = eval_window.iloc[-1]
+        latest_close = close_price if close_price is not None else _to_float(latest.get("close"))
+        max_high = _to_float(eval_window["high"].max())
+        min_low = _to_float(eval_window["low"].min())
+        current_return_pct = (
+            (latest_close / target_price - 1.0) * 100.0
+            if latest_close is not None and target_price
+            else None
+        )
+        payload.update({
+            "status": status,
+            "entry_date": entry_date,
+            "entry_price": target_price,
+            "entry_low": _to_float(entry.get("low")),
+            "stop_loss_price": stop_loss_price,
+            "close_date": close_date,
+            "close_price": close_price,
+            "close_reason": close_reason,
+            "latest_trade_date": latest.get("trade_date"),
+            "latest_close": latest_close,
+            "current_return_pct": current_return_pct,
+            "realized_return_pct": current_return_pct if status == "closed" else None,
+            "max_gain_pct": (max_high / target_price - 1.0) * 100.0 if max_high is not None and target_price else None,
+            "max_drawdown_pct": (min_low / target_price - 1.0) * 100.0 if min_low is not None and target_price else None,
+            "holding_days": int(len(eval_window)),
+        })
+        return payload
 
     def _get_fundamental_data(self, row: pd.Series, symbol: str) -> dict[str, object]:
         """Return fundamental data from row cache, or fetch live from Tushare if missing.
@@ -1573,6 +1685,46 @@ class DashboardService:
             )
         return rows
 
+    def _serialize_simulated_trades(self, frame: pd.DataFrame) -> list[dict[str, object]]:
+        if frame.empty:
+            return []
+        status_order = {"holding": 0, "pending": 1, "closed": 2}
+        working = frame.copy()
+        working["_status_order"] = working["status"].map(lambda value: status_order.get(_to_text(value), 9))
+        working["_sort_date"] = pd.to_datetime(
+            working["entry_date"].where(working["entry_date"].notna(), working["order_date"]),
+            errors="coerce",
+        )
+        working = working.sort_values(["_status_order", "_sort_date", "symbol"], ascending=[True, False, True])
+        rows: list[dict[str, object]] = []
+        for _, row in working.iterrows():
+            rows.append(
+                {
+                    "id": _to_text(row.get("id")),
+                    "monitor_id": _to_text(row.get("monitor_id")),
+                    "symbol": _to_text(row.get("symbol")),
+                    "name": _to_text(row.get("name")),
+                    "order_date": _format_date(row.get("order_date")),
+                    "order_price": _format_number(row.get("order_price")),
+                    "status": _to_text(row.get("status")) or "pending",
+                    "entry_date": _format_date(row.get("entry_date")),
+                    "entry_price": _format_number(row.get("entry_price")),
+                    "entry_low": _format_number(row.get("entry_low")),
+                    "stop_loss_price": _format_number(row.get("stop_loss_price")),
+                    "close_date": _format_date(row.get("close_date")),
+                    "close_price": _format_number(row.get("close_price")),
+                    "close_reason": _to_text(row.get("close_reason")),
+                    "latest_trade_date": _format_date(row.get("latest_trade_date")),
+                    "latest_close": _format_number(row.get("latest_close")),
+                    "current_return_pct": _format_signed_percent(row.get("current_return_pct")),
+                    "realized_return_pct": _format_signed_percent(row.get("realized_return_pct")),
+                    "max_gain_pct": _format_signed_percent(row.get("max_gain_pct")),
+                    "max_drawdown_pct": _format_signed_percent(row.get("max_drawdown_pct")),
+                    "holding_days": _to_int(row.get("holding_days")),
+                }
+            )
+        return rows
+
     def _sync_auto_watch_candidates(self) -> None:
         candidates = self._default_stage2_watch_pool()
         if candidates.empty:
@@ -1930,6 +2082,17 @@ def _to_text(value: object) -> str:
 def _is_demand_screen_symbol_allowed(symbol: object) -> bool:
     code = _to_text(symbol).split(".", 1)[0].strip().upper()
     return not (code and code.startswith(DEMAND_SCREEN_EXCLUDED_SYMBOL_PREFIXES))
+
+
+def _monitor_order_date(monitor: dict[str, object]) -> str:
+    for key in ["created_at", "latest_trade_date"]:
+        value = monitor.get(key)
+        if value is None or pd.isna(value):
+            continue
+        parsed = pd.to_datetime(value, errors="coerce")
+        if not pd.isna(parsed):
+            return parsed.strftime("%Y-%m-%d")
+    return ""
 
 
 def _first_text(*values: object) -> str:

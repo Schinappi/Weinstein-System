@@ -14,7 +14,8 @@ def build_weekly_bars(daily_bars: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame(columns=WEEKLY_COLUMNS)
 
     frame = daily_bars.copy()
-    frame["trade_date"] = pd.to_datetime(frame["trade_date"])
+    frame["trade_date"] = pd.to_datetime(frame["trade_date"], format="mixed", errors="coerce")
+    frame = frame.dropna(subset=["trade_date"])
     frame = frame.sort_values(["symbol", "trade_date"])
     unique_symbols = frame["symbol"].dropna().unique()
 

@@ -32,7 +32,7 @@ const { TextArea } = Input;
 const { Title, Paragraph, Text } = Typography;
 
 const TODAY = dayjs().format("YYYY-MM-DD");
-const APP_VERSION = "v2026.07.31.1";
+const APP_VERSION = "v2026.08.02.1";
 const PAGE_OVERVIEW = "overview";
 const PAGE_BACKTEST = "backtest";
 const PAGE_MONITOR = "monitor";
@@ -41,6 +41,51 @@ const PAGE_DEMAND_BACKTEST = "demand-backtest";
 const PAGE_BOX_BACKTEST = "box-backtest";
 const SCAN_RULE_LABEL = "通过生命周期/减速/成熟度门槛后，按结构分排序显示前100个";
 const BOX_SCAN_RULE_LABEL = "按日线Demand支撑质量 + 历史反弹 + 当前距离排序显示前100个";
+const DEMAND_VIEWED_STORAGE_KEY = "winstan-demand-viewed-v1";
+const DEMAND_VIEWED_TTL_MS = 15 * 24 * 60 * 60 * 1000;
+
+function normalizeSymbolKey(symbol) {
+  return String(symbol || "").trim().toUpperCase();
+}
+
+function readDemandViewedMap(now = Date.now()) {
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(DEMAND_VIEWED_STORAGE_KEY) || "{}");
+    const cleaned = {};
+    Object.entries(parsed || {}).forEach(([symbol, timestamp]) => {
+      const key = normalizeSymbolKey(symbol);
+      const viewedAt = Number(timestamp);
+      if (key && Number.isFinite(viewedAt) && now - viewedAt <= DEMAND_VIEWED_TTL_MS) {
+        cleaned[key] = viewedAt;
+      }
+    });
+    if (JSON.stringify(cleaned) !== JSON.stringify(parsed || {})) {
+      window.localStorage.setItem(DEMAND_VIEWED_STORAGE_KEY, JSON.stringify(cleaned));
+    }
+    return cleaned;
+  } catch (_error) {
+    return {};
+  }
+}
+
+function writeDemandViewedMap(viewedMap) {
+  try {
+    window.localStorage.setItem(DEMAND_VIEWED_STORAGE_KEY, JSON.stringify(viewedMap || {}));
+  } catch (_error) {
+    // Ignore storage failures, e.g. private browsing quota.
+  }
+}
+
+function isDemandViewed(viewedMap, symbol) {
+  return Boolean(viewedMap?.[normalizeSymbolKey(symbol)]);
+}
+
+function demandRowClassName(record, viewedMap) {
+  return [
+    record?.is_new_hit ? "ranking-row-new-hit" : "",
+    isDemandViewed(viewedMap, record?.symbol) ? "ranking-row-viewed" : "",
+  ].filter(Boolean).join(" ");
+}
 
 function formatNumber(value, digits = 1, fallback = "--") {
   return Number.isFinite(Number(value)) ? Number(value).toFixed(digits) : fallback;
@@ -979,6 +1024,7 @@ function DemandSupportPage({
   statusText,
   onRefresh,
   onOpenDetail,
+  viewedMap,
 }) {
   const items = data?.items || [];
   const metrics = useMemo(() => {
@@ -1185,6 +1231,7 @@ function DemandSupportPage({
               <${Button} type="primary" size="large" onClick=${onRefresh} loading=${loading}>刷新榜单<//>
               <${Tag} color="green">Demand支撑<//>
               <${Tag} color="cyan">当前回踩<//>
+              <${Tag} color="geekblue">已查看保留15天<//>
             </div>
           </div>
         <//>
@@ -1240,7 +1287,7 @@ function DemandSupportPage({
             columns=${columns}
             dataSource=${items}
             rowKey=${(row) => row.symbol}
-            rowClassName=${(record) => record.is_new_hit ? "ranking-row-new-hit" : ""}
+            rowClassName=${(record) => demandRowClassName(record, viewedMap)}
             pagination=${{ pageSize: 20, showSizeChanger: false, hideOnSinglePage: true }}
             loading=${loading}
             scroll=${{ x: 2200 }}
@@ -1715,6 +1762,7 @@ function BoxBacktestPage({
   scanModeText = "全市场扫描",
   manualModeText = "单股回测",
   emptyText = "输入参数后运行回测",
+  viewedMap = null,
 }) {
   const items = data?.items || [];
   const isScanMode = data?.mode === "scan";
@@ -1978,6 +2026,7 @@ function BoxBacktestPage({
             <div className="toolbar-actions">
               <${Tag} color=${isScanMode ? "cyan" : "blue"}>${isScanMode ? scanModeText : manualModeText}<//>
               <${Tag} color="default">目标日期 ${data?.target_date || formState.date || TODAY}<//>
+              ${viewedMap ? html`<${Tag} color="geekblue">已查看保留15天<//>` : null}
               ${isScanMode ? html`<${Tag} color="green">${BOX_SCAN_RULE_LABEL}<//>` : null}
             </div>
           </div>
@@ -2001,7 +2050,9 @@ function BoxBacktestPage({
             columns=${columns}
             dataSource=${filteredItems}
             rowKey=${(row) => `${row.symbol}-${row.latest_date || ""}`}
-            rowClassName=${(record) => record.is_new_hit ? "ranking-row-new-hit" : ""}
+            rowClassName=${(record) => viewedMap
+              ? demandRowClassName(record, viewedMap)
+              : record.is_new_hit ? "ranking-row-new-hit" : ""}
             pagination=${isScanMode ? { pageSize: 20, showSizeChanger: false, hideOnSinglePage: true } : false}
             loading=${loading}
             scroll=${{ x: 2400 }}
@@ -2045,19 +2096,45 @@ function AppContent() {
   const [formState, setFormState] = useState({ symbols: "", date: TODAY });
   const [demandBacktestFormState, setDemandBacktestFormState] = useState({ symbols: "", date: TODAY });
   const [boxFormState, setBoxFormState] = useState({ symbols: "", date: TODAY });
-  const [detailState, setDetailState] = useState({ open: false, symbol: "", symbols: [] });
+  const [detailState, setDetailState] = useState({ open: false, symbol: "", symbols: [], viewScope: "" });
+  const [demandViewedMap, setDemandViewedMap] = useState(() => readDemandViewedMap());
   const polling = usePollingBacktestJob();
   const demandBacktestPolling = usePollingBacktestJob();
   const boxPolling = usePollingBacktestJob();
   const latestDetailListRef = useRef([]);
 
-  const openDetail = (symbol, sourceItems) => {
+  const markDemandViewed = (symbol) => {
+    const key = normalizeSymbolKey(symbol);
+    if (!key) return;
+    setDemandViewedMap((previous) => {
+      const now = Date.now();
+      const next = {};
+      Object.entries(previous || {}).forEach(([savedSymbol, timestamp]) => {
+        const savedKey = normalizeSymbolKey(savedSymbol);
+        const viewedAt = Number(timestamp);
+        if (savedKey && Number.isFinite(viewedAt) && now - viewedAt <= DEMAND_VIEWED_TTL_MS) {
+          next[savedKey] = viewedAt;
+        }
+      });
+      next[key] = now;
+      writeDemandViewedMap(next);
+      return next;
+    });
+  };
+
+  const openDetail = (symbol, sourceItems, viewScope = "") => {
     latestDetailListRef.current = (sourceItems || []).map((item) => item.symbol).filter(Boolean);
     setDetailState({
       open: true,
       symbol,
       symbols: latestDetailListRef.current,
+      viewScope,
     });
+  };
+
+  const openDemandDetail = (symbol, sourceItems) => {
+    markDemandViewed(symbol);
+    openDetail(symbol, sourceItems, "demand");
   };
 
   const navigateDetail = (direction) => {
@@ -2066,7 +2143,11 @@ function AppContent() {
     if (currentIndex < 0) return;
     const nextIndex = direction === "next" ? currentIndex + 1 : currentIndex - 1;
     if (nextIndex < 0 || nextIndex >= list.length) return;
-    setDetailState((prev) => ({ ...prev, symbol: list[nextIndex] }));
+    const nextSymbol = list[nextIndex];
+    if (detailState.viewScope === "demand") {
+      markDemandViewed(nextSymbol);
+    }
+    setDetailState((prev) => ({ ...prev, symbol: nextSymbol }));
   };
 
   const loadMonitors = async () => {
@@ -2244,8 +2325,12 @@ function AppContent() {
       const newHitText = payload.comparison_date
         ? `，较 ${payload.comparison_date} 新增命中 ${formatInt(payload.new_hit_count || 0, "0")} 只`
         : "";
+      const dataDate = payload.ranking_trade_date || payload.latest_daily_trade_date || "--";
+      const refreshText = payload.stale_screening_results
+        ? `；筛选结果日期 ${payload.screening_results_trade_date || "--"} 落后于最新日线 ${payload.latest_daily_trade_date || "--"}，等待日终筛选更新`
+        : `；数据日 ${dataDate}`;
       setDemandStatus(payload.count
-        ? `当前展示 ${payload.items?.length || 0} 条Demand回踩候选${newHitText}。`
+        ? `当前展示 ${payload.items?.length || 0} 条Demand回踩候选${newHitText}${refreshText}。`
         : "暂无Demand回踩候选。");
     } catch (error) {
       setDemandStatus(error.message || "加载Demand支撑回踩榜失败");
@@ -2313,7 +2398,8 @@ function AppContent() {
             data=${demandData}
             statusText=${demandStatus}
             onRefresh=${loadDemandSupport}
-            onOpenDetail=${openDetail}
+            onOpenDetail=${openDemandDetail}
+            viewedMap=${demandViewedMap}
           />
         `
     : activePage === PAGE_DEMAND_BACKTEST
@@ -2325,8 +2411,9 @@ function AppContent() {
             formState=${demandBacktestFormState}
             onChangeForm=${updateDemandBacktestForm}
             onRun=${handleRunDemandBacktest}
-            onOpenDetail=${openDetail}
+            onOpenDetail=${openDemandDetail}
             data=${demandBacktestData}
+            viewedMap=${demandViewedMap}
             pageKicker="Demand Backtest"
             pageTitle="Demand回踩回测页"
             pageCopy="按目标日期切片日线，回到当时重新识别Demand支撑区，评估支撑质量、历史反弹能力、当前距离和回踩缩量，用来验证某一天是否已经值得观察或挂单。"
@@ -2415,7 +2502,7 @@ function AppContent() {
         open=${detailState.open}
         symbol=${detailState.symbol}
         symbolList=${detailState.symbols}
-        onClose=${() => setDetailState({ open: false, symbol: "", symbols: [] })}
+        onClose=${() => setDetailState({ open: false, symbol: "", symbols: [], viewScope: "" })}
         onNavigate=${navigateDetail}
         onAddMonitor=${handleAddMonitor}
       />
@@ -2495,4 +2582,3 @@ function App() {
 
 const root = ReactDOM.createRoot(document.getElementById("root"));
 root.render(html`<${App} />`);
-

@@ -642,6 +642,14 @@ body {
   background: rgba(253, 230, 138, 0.58);
 }
 
+.backtest-table .ant-table-tbody > tr.ranking-row-viewed > td {
+  background: rgba(226, 232, 240, 0.62);
+}
+
+.backtest-table .ant-table-tbody > tr.ranking-row-viewed:hover > td {
+  background: rgba(203, 213, 225, 0.72);
+}
+
 .modal-shell .ant-modal-content {
   border-radius: 30px;
   overflow: hidden;

@@ -27,7 +27,7 @@ def clean_daily_bars(frame: pd.DataFrame) -> pd.DataFrame:
 
     if "adj_factor" not in cleaned.columns:
         cleaned["adj_factor"] = 1.0
-    cleaned["trade_date"] = pd.to_datetime(cleaned["trade_date"]).dt.normalize()
+    cleaned["trade_date"] = pd.to_datetime(cleaned["trade_date"], format="mixed", errors="coerce").dt.normalize()
     cleaned = cleaned.dropna(subset=["symbol", "trade_date", "close"])
     cleaned = cleaned.drop_duplicates(subset=["symbol", "trade_date"], keep="last")
     cleaned = cleaned.sort_values(["symbol", "trade_date"]).reset_index(drop=True)

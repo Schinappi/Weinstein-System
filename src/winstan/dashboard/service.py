@@ -57,6 +57,7 @@ QUASI_GATE_LABELS = {
 
 OVERVIEW_SNAPSHOT_VERSION = 7
 BOX_BACKTEST_SNAPSHOT_VERSION = 1
+DEMAND_SCREEN_EXCLUDED_SYMBOL_PREFIXES = ("920",)
 
 
 class DashboardService:
@@ -376,17 +377,22 @@ class DashboardService:
         rows: list[dict[str, object]] = []
         comparison_date = ""
         new_hit_count = 0
+        latest_daily_date = self._latest_cached_daily_trade_date()
+        screening_date = ""
         try:
             with store.connect() as conn:
+                screening_date = _format_date(conn.execute("SELECT MAX(trade_date) FROM screening_results").fetchone()[0])
                 df = conn.execute("""
                     SELECT *
                     FROM screening_results
                     WHERE demand_support_candidate = TRUE
+                      AND symbol NOT LIKE '920%'
                     ORDER BY demand_support_score DESC,
                              demand_support_touch_count DESC,
                              demand_support_duration_weeks DESC
                     LIMIT 50
                 """).fetchdf()
+
             rows = self._serialize_demand_support_rows(df)
             comparison_date = self._previous_screening_snapshot_date()
             previous_rows: list[dict[str, object]] = []
@@ -403,7 +409,33 @@ class DashboardService:
             "error": "",
             "comparison_date": comparison_date if rows else "",
             "new_hit_count": new_hit_count if rows else 0,
+            "data_source": "screening_results",
+            "ranking_trade_date": screening_date,
+            "screening_results_trade_date": screening_date,
+            "latest_daily_trade_date": latest_daily_date,
+            "stale_screening_results": bool(
+                latest_daily_date and (not screening_date or screening_date < latest_daily_date)
+            ),
         }
+
+    def _latest_cached_daily_trade_date(self) -> str:
+        dataset_dir = self.config.parquet_root / "daily_bars"
+        files = [str(path).replace("\\", "/") for path in dataset_dir.glob("*.parquet")]
+        if not files:
+            return ""
+        try:
+            with DuckDBStore(Path(":memory:")).connect() as conn:
+                value = conn.execute(
+                    """
+                    SELECT CAST(MAX(TRY_CAST(trade_date AS TIMESTAMP)) AS DATE)
+                    FROM read_parquet($1, union_by_name=true)
+                    WHERE trade_date IS NOT NULL
+                    """,
+                    [files],
+                ).fetchone()[0]
+            return _format_date(value)
+        except Exception:
+            return ""
 
     def get_stage2_watchlist_payload(self) -> dict[str, object]:
         self.refresh_stage2_tracking()
@@ -720,6 +752,8 @@ class DashboardService:
         local = frame.copy()
         if "demand_support_candidate" in local.columns:
             local = local[local["demand_support_candidate"].fillna(False).astype(bool)]
+        if "symbol" in local.columns:
+            local = local[local["symbol"].map(_is_demand_screen_symbol_allowed)]
         if local.empty:
             return rows
         sort_columns = [
@@ -1891,6 +1925,11 @@ def _to_text(value: object) -> str:
     if value is None or pd.isna(value):
         return ""
     return str(value)
+
+
+def _is_demand_screen_symbol_allowed(symbol: object) -> bool:
+    code = _to_text(symbol).split(".", 1)[0].strip().upper()
+    return not (code and code.startswith(DEMAND_SCREEN_EXCLUDED_SYMBOL_PREFIXES))
 
 
 def _first_text(*values: object) -> str:

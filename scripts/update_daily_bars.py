@@ -207,15 +207,66 @@ def _load_latest_trade_dates(parquet_store: ParquetStore, dataset: str) -> dict[
     return latest_by_symbol
 
 
+def _load_latest_bar_states(
+    parquet_store: ParquetStore,
+    dataset: str,
+) -> dict[str, tuple[str, float | None]]:
+    dataset_dir = parquet_store.root / dataset
+    files = [str(path).replace("\\", "/") for path in dataset_dir.glob("*.parquet")]
+    if not files:
+        return {}
+
+    query = (
+        "SELECT symbol, "
+        "CAST(MAX(TRY_CAST(trade_date AS TIMESTAMP)) AS DATE) AS latest_trade_date, "
+        "arg_max(TRY_CAST(close AS DOUBLE), TRY_CAST(trade_date AS TIMESTAMP)) AS latest_close "
+        "FROM read_parquet($1, union_by_name=true) "
+        "WHERE symbol IS NOT NULL AND trade_date IS NOT NULL "
+        "GROUP BY symbol"
+    )
+    with DuckDBStore(Path(":memory:")).connect() as conn:
+        frame = conn.execute(query, [files]).fetchdf()
+    if frame.empty:
+        return {}
+
+    states: dict[str, tuple[str, float | None]] = {}
+    for row in frame.itertuples(index=False):
+        symbol = str(getattr(row, "symbol", "") or "").strip()
+        latest_date = _to_iso_date(getattr(row, "latest_trade_date", None))
+        latest_close = getattr(row, "latest_close", None)
+        try:
+            close = float(latest_close) if latest_close is not None and not pd.isna(latest_close) else None
+        except (TypeError, ValueError):
+            close = None
+        if symbol and latest_date:
+            states[symbol] = (latest_date, close)
+    return states
+
+
+def _needs_weekly_rebuild(
+    daily_state: tuple[str, float | None],
+    weekly_state: tuple[str, float | None] | None,
+) -> bool:
+    daily_date, daily_close = daily_state
+    if weekly_state is None:
+        return True
+    weekly_date, weekly_close = weekly_state
+    if daily_date != weekly_date:
+        return daily_date > weekly_date
+    if daily_close is None or weekly_close is None:
+        return daily_close != weekly_close
+    return abs(daily_close - weekly_close) > 1e-8
+
+
 def _sync_weekly_bars_from_daily(parquet_store: ParquetStore) -> dict[str, object]:
     """Rebuild stale weekly parquet files from the local daily cache."""
     started_counter = time.perf_counter()
-    latest_daily = _load_latest_trade_dates(parquet_store, "daily_bars")
-    latest_weekly = _load_latest_trade_dates(parquet_store, "weekly_bars")
+    latest_daily = _load_latest_bar_states(parquet_store, "daily_bars")
+    latest_weekly = _load_latest_bar_states(parquet_store, "weekly_bars")
     stale_symbols = sorted(
         symbol
-        for symbol, daily_date in latest_daily.items()
-        if daily_date and daily_date > latest_weekly.get(symbol, "")
+        for symbol, daily_state in latest_daily.items()
+        if _needs_weekly_rebuild(daily_state, latest_weekly.get(symbol))
     )
     summary: dict[str, object] = {
         "weekly_symbols_scanned": len(latest_daily),
@@ -223,7 +274,7 @@ def _sync_weekly_bars_from_daily(parquet_store: ParquetStore) -> dict[str, objec
         "weekly_symbols_updated": 0,
         "weekly_symbols_failed": 0,
         "weekly_sync_runtime_seconds": 0.0,
-        "weekly_latest_trade_date": max(latest_daily.values()) if latest_daily else None,
+        "weekly_latest_trade_date": max((state[0] for state in latest_daily.values()), default=None),
     }
     if not stale_symbols:
         return summary
@@ -873,6 +924,15 @@ def _rerun_screener(config) -> dict[str, object]:
     }
 
 
+def _screening_results_latest_trade_date(config) -> str | None:
+    try:
+        with DuckDBStore(config.duckdb_path).connect() as conn:
+            value = conn.execute("SELECT MAX(trade_date) FROM screening_results").fetchone()[0]
+        return _to_iso_date(value)
+    except Exception:
+        return None
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Incrementally update cached stock and index daily bars.")
     parser.add_argument("--config", default="config/strategy.yaml", help="Path to strategy config file.")
@@ -966,7 +1026,18 @@ def main() -> None:
             }
 
         phase1_requested = not args.dry_run and not args.skip_phase1
-        should_run_phase1 = phase1_requested and (stock_summary["stock_symbols_updated"] > 0 or bool(index_summary["index_updated"]))
+        latest_daily_trade_date = _to_iso_date(weekly_summary.get("weekly_latest_trade_date"))
+        screening_trade_date = _screening_results_latest_trade_date(config)
+        screening_is_stale = bool(
+            latest_daily_trade_date
+            and (not screening_trade_date or screening_trade_date < latest_daily_trade_date)
+        )
+        should_run_phase1 = phase1_requested and (
+            stock_summary["stock_symbols_updated"] > 0
+            or bool(index_summary["index_updated"])
+            or int(weekly_summary.get("weekly_symbols_updated") or 0) > 0
+            or screening_is_stale
+        )
         phase1_started_counter = time.perf_counter()
         if should_run_phase1:
             phase1_summary = _rerun_screener(config)
@@ -1002,6 +1073,9 @@ def main() -> None:
             "phase1_requested": phase1_requested,
             "phase1_skipped_reason": phase1_skipped_reason,
             "end_date": config.data.effective_end_date,
+            "latest_daily_trade_date": latest_daily_trade_date,
+            "screening_results_trade_date_before_refresh": screening_trade_date,
+            "screening_results_was_stale": screening_is_stale,
             "stock_update_runtime_seconds": stock_runtime_seconds,
             "index_update_runtime_seconds": index_runtime_seconds,
             "phase1_runtime_seconds": phase1_runtime_seconds,

@@ -18,7 +18,8 @@ _box_scan_jobs_by_date: dict[str, str] = {}
 _box_scan_result_cache: dict[str, dict] = {}
 _box_scan_lock = threading.Lock()
 BOX_SCAN_TOP_N = 100
-BOX_SCAN_RESULT_VERSION = 1
+BOX_SCAN_RESULT_VERSION = 2
+DEMAND_SCAN_EXCLUDED_SYMBOL_PREFIXES = ("920",)
 
 
 def _is_current_box_scan_result(payload: dict | None) -> bool:
@@ -406,7 +407,8 @@ def _normalize_symbol(symbol: str) -> str:
 
 def _is_scan_symbol_allowed(symbol: str, config: AppConfig) -> bool:
     code = str(symbol or "").split(".", 1)[0]
-    excluded = tuple(str(prefix) for prefix in getattr(config.universe, "excluded_symbol_prefixes", []) or [])
+    excluded = tuple(str(prefix) for prefix in getattr(config.universe, "excluded_symbol_prefixes", []) or ())
+    excluded = excluded + DEMAND_SCAN_EXCLUDED_SYMBOL_PREFIXES
     return not (excluded and code.startswith(excluded))
 
 

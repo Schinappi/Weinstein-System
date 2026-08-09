@@ -1430,6 +1430,14 @@ function MonitorPage({ loading, statusText, data, onRefresh, onDelete, onOpenDet
       dataIndex: "distance_pct",
       key: "distance_pct",
       width: 120,
+      sorter: (left, right) => {
+        const leftValue = Number.parseFloat(String(left.distance_pct || "").replace("%", ""));
+        const rightValue = Number.parseFloat(String(right.distance_pct || "").replace("%", ""));
+        if (!Number.isFinite(leftValue)) return Number.isFinite(rightValue) ? 1 : 0;
+        if (!Number.isFinite(rightValue)) return -1;
+        return leftValue - rightValue;
+      },
+      sortDirections: ["ascend", "descend"],
       render: (value) => html`<span className=${String(value).startsWith("-") ? "negative-text" : "positive-text"}>${value || "--"}</span>`,
     },
     {

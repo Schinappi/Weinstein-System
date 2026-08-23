@@ -32,15 +32,18 @@ const { TextArea } = Input;
 const { Title, Paragraph, Text } = Typography;
 
 const TODAY = dayjs().format("YYYY-MM-DD");
-const APP_VERSION = "v2026.08.02.1";
+const APP_VERSION = "v2026.08.16.2";
 const PAGE_OVERVIEW = "overview";
 const PAGE_BACKTEST = "backtest";
 const PAGE_MONITOR = "monitor";
 const PAGE_DEMAND_SUPPORT = "demand-support";
 const PAGE_DEMAND_BACKTEST = "demand-backtest";
+const PAGE_CRASH_REBOUND = "crash-rebound";
+const PAGE_CRASH_REBOUND_BACKTEST = "crash-rebound-backtest";
 const PAGE_BOX_BACKTEST = "box-backtest";
 const SCAN_RULE_LABEL = "通过生命周期/减速/成熟度门槛后，按结构分排序显示前100个";
 const BOX_SCAN_RULE_LABEL = "按日线Demand支撑质量 + 历史反弹 + 当前距离排序显示前100个";
+const CRASH_REBOUND_RULE_LABEL = "按急涨幅度 + 急跌幅度 + 两段流畅度排序显示前100个";
 const DEMAND_VIEWED_STORAGE_KEY = "winstan-demand-viewed-v1";
 const DEMAND_VIEWED_TTL_MS = 15 * 24 * 60 * 60 * 1000;
 
@@ -213,10 +216,14 @@ async function fetchJson(url, options = {}) {
   const response = await fetch(url, options);
   const payload = await response.json().catch(() => ({}));
   if (!response.ok || payload.error) {
-    throw new Error(payload.error || `请求失败: ${response.status}`);
+    const error = new Error(payload.error || `请求失败: ${response.status}`);
+    error.status = response.status;
+    throw error;
   }
   return payload;
 }
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function usePollingBacktestJob() {
   const timeoutRef = useRef(null);
@@ -234,8 +241,9 @@ function usePollingBacktestJob() {
     }
   };
 
-  const poll = ({ jobId, endpoint = "/api/backtest", onProgress, onDone, onError, intervalMs = 5000, maxAttempts = 360 }) => {
+  const poll = ({ jobId, endpoint = "/api/backtest", onProgress, onDone, onError, intervalMs = 5000, maxAttempts = 4320 }) => {
     let attempts = 0;
+    let transientFailures = 0;
     stop();
 
     const tick = async () => {
@@ -255,6 +263,24 @@ function usePollingBacktestJob() {
         stop();
         onDone?.(payload);
       } catch (error) {
+        const transientStatus = [502, 503, 504].includes(Number(error?.status));
+        if (transientStatus || error instanceof TypeError) {
+          attempts += 1;
+          transientFailures += 1;
+          onProgress?.(attempts, {
+            status: "running",
+            processed: null,
+            total: null,
+            candidates_total: null,
+            elapsed_seconds: attempts * intervalMs / 1000,
+            transient_error: error.message,
+            transient_failures: transientFailures,
+          });
+          if (attempts < maxAttempts) {
+            timeoutRef.current = setTimeout(tick, Math.min(intervalMs * 2, 15000));
+            return;
+          }
+        }
         stop();
         onError?.(error);
       }
@@ -1909,6 +1935,318 @@ function BacktestPage({
   `;
 }
 
+function CrashReboundResultPage({
+  loading,
+  runningLabel,
+  statusText,
+  formState,
+  onChangeForm,
+  onRun,
+  onOpenDetail,
+  data,
+  pageKicker = "Crash Rebound",
+  pageTitle = "暴跌回弹榜",
+  pageCopy = "识别先经历极速拉升、随后又大幅顺畅下跌，并且当前仍靠近跌后低点的股票。评分越高，说明上涨和下跌幅度越大、路径越流畅。",
+  parameterCopy = "留空代码执行全市场扫描；每行也支持 code + date 做单股历史回测。",
+  textareaPlaceholder = "000603.SZ 2026-07-20\n000603.SZ 2026-08-10",
+  idleDescription = "点击运行，扫描暴跌回弹形态。",
+  resultTitle = "暴跌回弹结果",
+  scanModeText = "全市场暴跌回弹扫描",
+  manualModeText = "单股暴跌回弹回测",
+  emptyText = "运行后展示暴跌回弹结果",
+  showParameters = true,
+}) {
+  const items = data?.items || [];
+  const isScanMode = data?.mode === "scan";
+  const [symbolFilter, setSymbolFilter] = useState("");
+  const normalizedFilter = symbolFilter.trim().toUpperCase();
+  const filteredItems = useMemo(() => {
+    if (!normalizedFilter) return items;
+    return items.filter((item) => {
+      const symbol = String(item.symbol || "").toUpperCase();
+      const name = String(item.name || "").toUpperCase();
+      return symbol.includes(normalizedFilter) || name.includes(normalizedFilter);
+    });
+  }, [items, normalizedFilter]);
+
+  useEffect(() => {
+    setSymbolFilter("");
+  }, [data?.target_date, data?.mode, items.length]);
+
+  const metrics = useMemo(() => {
+    const maxScore = items.length ? Math.max(...items.map((item) => Number(item.crash_rebound_score || 0))) : 0;
+    const avgRally = items.length
+      ? items.reduce((sum, item) => sum + Number(item.crash_rebound_rally_pct || 0), 0) / items.length
+      : 0;
+    const avgCrash = items.length
+      ? items.reduce((sum, item) => sum + Number(item.crash_rebound_crash_pct || 0), 0) / items.length
+      : 0;
+    return [
+      { label: "结果数量", value: formatInt(data?.count || items.length || 0), extra: isScanMode ? "全市场候选 Top 100" : "手动回测结果" },
+      { label: "最高分", value: formatNumber(maxScore, 1), extra: "涨幅 + 跌幅 + 流畅度" },
+      { label: "平均涨幅", value: formatPercent(avgRally, 1), extra: "极速拉升段涨幅" },
+      { label: "平均跌幅", value: formatPercent(avgCrash, 1), extra: "高点至跌后低点跌幅" },
+    ];
+  }, [data, items, isScanMode]);
+
+  const columns = [
+    {
+      title: "股票",
+      dataIndex: "symbol",
+      key: "symbol",
+      width: 170,
+      render: (_, row) => renderStockCell(row),
+    },
+    {
+      title: "候选",
+      dataIndex: "crash_rebound_candidate",
+      key: "crash_rebound_candidate",
+      width: 90,
+      render: (value) => html`<${Tag} color=${value ? "green" : "default"}>${formatBoolean(value)}<//>`,
+    },
+    {
+      title: "总分",
+      dataIndex: "crash_rebound_score",
+      key: "crash_rebound_score",
+      width: 95,
+      render: (value) => html`<span className=${Number(value) >= 80 ? "positive-text" : ""}>${formatNumber(value, 1)}</span>`,
+    },
+    {
+      title: "等级",
+      dataIndex: "crash_rebound_grade",
+      key: "crash_rebound_grade",
+      width: 86,
+      render: (value) => {
+        const colorMap = { S: "gold", A: "green", B: "blue", C: "default" };
+        return html`<${Tag} color=${colorMap[value] || "default"}>${value || "--"}<//>`;
+      },
+    },
+    {
+      title: "上涨分",
+      dataIndex: "crash_rebound_score_rally",
+      key: "crash_rebound_score_rally",
+      width: 96,
+      render: (value) => formatNumber(value, 1),
+    },
+      {
+        title: "下跌分",
+        dataIndex: "crash_rebound_score_crash",
+        key: "crash_rebound_score_crash",
+        width: 96,
+        render: (value) => formatNumber(value, 1),
+      },
+      {
+        title: "基底分",
+        dataIndex: "crash_rebound_score_base",
+        key: "crash_rebound_score_base",
+        width: 90,
+        render: (value) => formatNumber(value, 1),
+      },
+    {
+      title: "上涨幅度",
+      dataIndex: "crash_rebound_rally_pct",
+      key: "crash_rebound_rally_pct",
+      width: 110,
+      render: (value) => formatPercent(value, 1),
+    },
+    {
+      title: "下跌幅度",
+      dataIndex: "crash_rebound_crash_pct",
+      key: "crash_rebound_crash_pct",
+      width: 110,
+      render: (value) => formatPercent(value, 1),
+    },
+    {
+      title: "上涨流畅",
+      dataIndex: "crash_rebound_rally_smoothness_pct",
+      key: "crash_rebound_rally_smoothness_pct",
+      width: 110,
+      render: (value) => formatPercent(value, 0),
+    },
+    {
+      title: "下跌流畅",
+      dataIndex: "crash_rebound_crash_smoothness_pct",
+      key: "crash_rebound_crash_smoothness_pct",
+      width: 110,
+      render: (value) => formatPercent(value, 0),
+    },
+    {
+      title: "上涨区间",
+      key: "rally_range",
+      width: 220,
+      render: (_, row) => `${row.crash_rebound_rally_start_date || "--"} → ${row.crash_rebound_peak_date || "--"} (${formatInt(row.crash_rebound_rally_days)}日)`,
+    },
+      {
+        title: "下跌区间",
+        key: "crash_range",
+        width: 220,
+        render: (_, row) => `${row.crash_rebound_peak_date || "--"} → ${row.crash_rebound_crash_low_date || "--"} (${formatInt(row.crash_rebound_crash_days)}日)`,
+      },
+      {
+        title: "基底区间",
+        key: "base_range",
+        width: 220,
+        render: (_, row) => row.crash_rebound_base_start_date
+          ? `${row.crash_rebound_base_start_date} → ${row.crash_rebound_base_end_date} (${formatInt(row.crash_rebound_base_days)}日)`
+          : "--",
+      },
+      {
+        title: "建议挂单价",
+        dataIndex: "crash_rebound_limit_price",
+        key: "crash_rebound_limit_price",
+        width: 120,
+        render: (value) => value == null ? "--" : html`<span className="positive-text">${formatNumber(value, 2)}</span>`,
+      },
+      {
+        title: "距跌后低点",
+      dataIndex: "crash_rebound_bottom_distance_pct",
+      key: "crash_rebound_bottom_distance_pct",
+      width: 120,
+      render: (value) => formatPercent(value, 1),
+    },
+    {
+      title: "数据日",
+      dataIndex: "latest_date",
+      key: "latest_date",
+      width: 120,
+    },
+    {
+      title: "原因",
+      dataIndex: "crash_rebound_reason",
+      key: "crash_rebound_reason",
+      render: (value, row) => html`
+        <span className="reason-text" title=${value || row.error || ""}>${value || row.error || "--"}</span>
+      `,
+    },
+  ];
+
+  return html`
+    <div className="page-shell">
+      <${Card} className="hero-card">
+        <div className="toolbar-row">
+          <div>
+            <div className="hero-kicker">${pageKicker}</div>
+            <div className="hero-title" style=${{ fontSize: "34px", marginTop: 16 }}>${pageTitle}</div>
+            <div className="hero-copy">${pageCopy}</div>
+          </div>
+        </div>
+      <//>
+
+      <div className="page-grid">
+        <div className="cards-grid">
+          ${metrics.map(
+            (item) => html`
+              <${Card} className="metric-card" key=${item.label}>
+                <div className="metric-label">${item.label}</div>
+                <div className="metric-value">${item.value}</div>
+                <div className="metric-extra">${item.extra}</div>
+              <//>
+            `
+          )}
+        </div>
+
+        ${showParameters
+          ? html`
+              <${Card} className="panel-card">
+                <div className="toolbar-row" style=${{ marginBottom: 16 }}>
+                  <div>
+                    <h2 className="section-title">运行参数</h2>
+                    <div className="toolbar-copy">${parameterCopy}</div>
+                  </div>
+                </div>
+                <${Form} layout="vertical">
+                  <${Row} gutter=${16}>
+                    <${Col} xs=${24} lg=${16}>
+                      <${Form.Item} label="股票代码和目标日期">
+                        <${TextArea}
+                          rows=${6}
+                          value=${formState.symbols}
+                          onChange=${(event) => onChangeForm("symbols", event.target.value)}
+                          placeholder=${textareaPlaceholder}
+                        />
+                        <div className="text-area-hint" style=${{ marginTop: 8 }}>
+                          示例：每行一只股票。只输入代码时，会默认使用统一目标日期。
+                        </div>
+                      <//>
+                    <//>
+                    <${Col} xs=${24} lg=${8}>
+                      <${Form.Item} label="统一目标日期">
+                        <${DatePicker}
+                          style=${{ width: "100%" }}
+                          value=${formState.date ? dayjs(formState.date) : null}
+                          onChange=${(value) => onChangeForm("date", value ? value.format("YYYY-MM-DD") : "")}
+                        />
+                      <//>
+                      <${Space} direction="vertical" size="middle" style=${{ width: "100%" }}>
+                        <${Button} type="primary" size="large" onClick=${onRun} loading=${loading} block>
+                          ${runningLabel}
+                        <//>
+                        <${Alert}
+                          className="floating-alert"
+                          type=${loading ? "info" : "success"}
+                          showIcon=${true}
+                          message=${loading ? "任务执行中" : "任务等待运行"}
+                          description=${statusText || idleDescription}
+                        />
+                      <//>
+                    <//>
+                  <//>
+                <//>
+              <//>
+            `
+          : null}
+
+        <${Card} className="panel-card table-card">
+          <div className="toolbar-row" style=${{ marginBottom: 16 }}>
+            <div>
+              <h2 className="section-title">${resultTitle}</h2>
+              <div className="toolbar-copy">
+                ${statusText || "点击行可查看个股详情。"}
+              </div>
+            </div>
+            <div className="toolbar-actions">
+              <${Tag} color=${isScanMode ? "cyan" : "blue"}>${isScanMode ? scanModeText : manualModeText}<//>
+              <${Tag} color="default">目标日期 ${data?.target_date || formState.date || TODAY}<//>
+              ${isScanMode ? html`<${Tag} color="green">${CRASH_REBOUND_RULE_LABEL}<//>` : null}
+            </div>
+          </div>
+          <div className="toolbar-row" style=${{ marginBottom: 16, gap: 12 }}>
+            <div className="toolbar-copy">
+              ${normalizedFilter ? `当前筛选后 ${filteredItems.length} 条结果` : `当前共 ${items.length} 条结果`}
+            </div>
+            <div className="toolbar-actions" style=${{ minWidth: "min(100%, 360px)" }}>
+              <${Input}
+                allowClear=${true}
+                value=${symbolFilter}
+                onChange=${(event) => setSymbolFilter(event.target.value)}
+                placeholder="按股票代码或名称筛选结果"
+                size="large"
+              />
+            </div>
+          </div>
+          <${Table}
+            className="backtest-table"
+            columns=${columns}
+            dataSource=${filteredItems}
+            rowKey=${(row) => `${row.symbol}-${row.latest_date || ""}`}
+            rowClassName=${(record) => record.is_new_hit ? "ranking-row-new-hit" : ""}
+            pagination=${isScanMode ? { pageSize: 20, showSizeChanger: false, hideOnSinglePage: true } : false}
+            loading=${loading}
+            scroll=${{ x: 2100 }}
+            locale=${{
+              emptyText: html`<div className="empty-block">${normalizedFilter ? "没有匹配的股票结果" : emptyText}</div>`,
+            }}
+            onRow=${(record) => ({
+              onClick: () => onOpenDetail(record.symbol, filteredItems),
+              style: { cursor: "pointer" },
+            })}
+          />
+        <//>
+      </div>
+    </div>
+  `;
+}
+
 function BoxBacktestPage({
   loading,
   runningLabel,
@@ -2238,12 +2576,12 @@ function BoxBacktestPage({
 
 function AppContent() {
   const [activePage, setActivePage] = useState(PAGE_OVERVIEW);
-  const [overviewLoading, setOverviewLoading] = useState(false);
-  const [overviewStatus, setOverviewStatus] = useState("正在准备今日排行榜。");
-  const [overviewData, setOverviewData] = useState({ items: [], target_date: TODAY });
   const [demandLoading, setDemandLoading] = useState(false);
   const [demandStatus, setDemandStatus] = useState("正在准备Demand支撑回踩榜。");
   const [demandData, setDemandData] = useState({ items: [], count: 0 });
+  const [crashReboundLoading, setCrashReboundLoading] = useState(false);
+  const [crashReboundStatus, setCrashReboundStatus] = useState("点击刷新开始扫描暴跌回弹榜。");
+  const [crashReboundData, setCrashReboundData] = useState({ items: [], count: 0, target_date: TODAY });
   const [monitorLoading, setMonitorLoading] = useState(false);
   const [monitorStatus, setMonitorStatus] = useState("请从个股详情中添加价格监控。");
   const [monitorData, setMonitorData] = useState({ items: [], count: 0 });
@@ -2256,16 +2594,21 @@ function AppContent() {
   const [demandBacktestLoading, setDemandBacktestLoading] = useState(false);
   const [demandBacktestStatus, setDemandBacktestStatus] = useState("输入股票代码和日期后点击运行Demand回测。");
   const [demandBacktestData, setDemandBacktestData] = useState({ items: [], target_date: TODAY });
+  const [crashReboundBacktestLoading, setCrashReboundBacktestLoading] = useState(false);
+  const [crashReboundBacktestStatus, setCrashReboundBacktestStatus] = useState("输入股票代码和日期后点击运行暴跌回弹回测。");
+  const [crashReboundBacktestData, setCrashReboundBacktestData] = useState({ items: [], target_date: TODAY });
   const [boxBacktestLoading, setBoxBacktestLoading] = useState(false);
   const [boxBacktestStatus, setBoxBacktestStatus] = useState("输入股票代码和日期后点击运行箱体回测。");
   const [boxBacktestData, setBoxBacktestData] = useState({ items: [], target_date: TODAY });
   const [formState, setFormState] = useState({ symbols: "", date: TODAY });
   const [demandBacktestFormState, setDemandBacktestFormState] = useState({ symbols: "", date: TODAY });
+  const [crashReboundBacktestFormState, setCrashReboundBacktestFormState] = useState({ symbols: "", date: TODAY });
   const [boxFormState, setBoxFormState] = useState({ symbols: "", date: TODAY });
   const [detailState, setDetailState] = useState({ open: false, symbol: "", symbols: [], viewScope: "" });
   const [demandViewedMap, setDemandViewedMap] = useState(() => readDemandViewedMap());
   const polling = usePollingBacktestJob();
   const demandBacktestPolling = usePollingBacktestJob();
+  const crashReboundPolling = usePollingBacktestJob();
   const boxPolling = usePollingBacktestJob();
   const latestDetailListRef = useRef([]);
 
@@ -2382,6 +2725,10 @@ function AppContent() {
     setDemandBacktestFormState((prev) => ({ ...prev, [key]: value }));
   };
 
+  const updateCrashReboundBacktestForm = (key, value) => {
+    setCrashReboundBacktestFormState((prev) => ({ ...prev, [key]: value }));
+  };
+
   const updateBoxBacktestForm = (key, value) => {
     setBoxFormState((prev) => ({ ...prev, [key]: value }));
   };
@@ -2394,16 +2741,19 @@ function AppContent() {
     target = "backtest",
     endpoint = "/api/backtest",
   }) => {
-    const setters = target === "overview"
-      ? { setLoading: setOverviewLoading, setStatus: setOverviewStatus, setData: setOverviewData }
-      : target === "demandBacktest"
+    const setters = target === "demandBacktest"
         ? { setLoading: setDemandBacktestLoading, setStatus: setDemandBacktestStatus, setData: setDemandBacktestData }
+      : target === "crashRebound"
+        ? { setLoading: setCrashReboundLoading, setStatus: setCrashReboundStatus, setData: setCrashReboundData }
+      : target === "crashReboundBacktest"
+        ? { setLoading: setCrashReboundBacktestLoading, setStatus: setCrashReboundBacktestStatus, setData: setCrashReboundBacktestData }
       : target === "boxBacktest"
         ? { setLoading: setBoxBacktestLoading, setStatus: setBoxBacktestStatus, setData: setBoxBacktestData }
         : { setLoading: setBacktestLoading, setStatus: setBacktestStatus, setData: setBacktestData };
     const { setLoading, setStatus, setData } = setters;
     const isScan = !symbols.trim();
     const isDemandBacktest = target === "demandBacktest";
+    const isCrashRebound = target === "crashRebound" || target === "crashReboundBacktest";
     const isBoxBacktest = target === "boxBacktest";
 
     if (!date) {
@@ -2413,8 +2763,8 @@ function AppContent() {
 
     setLoading(true);
     setStatus(isScan
-      ? (isDemandBacktest ? "全市场Demand回踩扫描已启动，正在等待结果..." : isBoxBacktest ? "全市场箱体扫描已启动，正在等待结果..." : "全市场扫描已启动，正在等待结果...")
-      : (isDemandBacktest ? "正在计算Demand回测结果..." : isBoxBacktest ? "正在计算箱体回测结果..." : "正在计算回测结果..."));
+      ? (isDemandBacktest ? "全市场Demand回踩扫描已启动，正在等待结果..." : isCrashRebound ? "全市场暴跌回弹扫描已启动，正在等待结果..." : isBoxBacktest ? "全市场箱体扫描已启动，正在等待结果..." : "全市场扫描已启动，正在等待结果...")
+      : (isDemandBacktest ? "正在计算Demand回测结果..." : isCrashRebound ? "正在计算暴跌回弹回测结果..." : isBoxBacktest ? "正在计算箱体回测结果..." : "正在计算回测结果..."));
 
     try {
       const payload = await fetchJson(endpoint, {
@@ -2425,11 +2775,20 @@ function AppContent() {
 
       if (isScan && payload.job_id) {
         setStatus(`扫描中... (job=${payload.job_id})`);
-        const poller = target === "demandBacktest" ? demandBacktestPolling : target === "boxBacktest" ? boxPolling : polling;
+        const poller = target === "demandBacktest"
+          ? demandBacktestPolling
+          : target === "crashRebound" || target === "crashReboundBacktest"
+            ? crashReboundPolling
+          : target === "boxBacktest" ? boxPolling : polling;
         poller.poll({
           jobId: payload.job_id,
           endpoint,
           onProgress: (_attempts, pollPayload) => {
+            if (pollPayload?.transient_error) {
+              const failures = formatInt(pollPayload.transient_failures, "1");
+              setStatus(`扫描仍在等待后端响应... 临时错误 ${pollPayload.transient_error}，已重试 ${failures} 次 (job=${payload.job_id})`);
+              return;
+            }
             const processed = formatInt(pollPayload?.processed, "0");
             const total = formatInt(pollPayload?.total, "?");
             const candidates = formatInt(pollPayload?.candidates_total, "0");
@@ -2475,32 +2834,92 @@ function AppContent() {
     return `${formatInt(items.length, "0")} 条结果，目标日期 ${payload.target_date || TODAY}。${modernScanInfo}${newHitInfo}`.trim();
   };
 
-  const loadOverview = (forceRefresh = false) => runBacktestRequest({
+  const loadCrashRebound = (forceRefresh = false) => runBacktestRequest({
     symbols: "",
     date: TODAY,
     reuseScan: true,
     forceRefresh,
-    target: "overview",
+    target: "crashRebound",
+    endpoint: "/api/crash-rebound-backtest",
   });
+
+  const buildDemandSupportStatus = (payload) => {
+    const newHitText = payload.comparison_date
+      ? `，较 ${payload.comparison_date} 新增命中 ${formatInt(payload.new_hit_count || 0, "0")} 只`
+      : "";
+    const dataDate = payload.ranking_trade_date || payload.latest_daily_trade_date || "--";
+    const refreshText = payload.stale_screening_results
+      ? `；筛选结果日期 ${payload.screening_results_trade_date || "--"} 落后于最新日线 ${payload.latest_daily_trade_date || "--"}，等待日终筛选更新`
+      : `；数据日 ${dataDate}`;
+    const elapsedText = payload.elapsed_seconds != null ? `，本次刷新用时 ${formatElapsedSeconds(payload.elapsed_seconds)}` : "";
+    return payload.count
+      ? `当前展示 ${payload.items?.length || 0} 条Demand回踩候选${newHitText}${refreshText}${elapsedText}。`
+      : "暂无Demand回踩候选。";
+  };
+
+  const buildDemandRefreshProgressStatus = (payload) => {
+    const processed = formatInt(payload?.processed, "0");
+    const total = formatInt(payload?.total, "?");
+    const candidates = formatInt(payload?.candidates_total, "0");
+    const batch = payload?.total_batches
+      ? `，批次 ${formatInt(payload.current_batch || 0, "0")}/${formatInt(payload.total_batches, "?")}`
+      : "";
+    const elapsed = payload?.elapsed_seconds != null
+      ? `，已用时 ${formatElapsedSeconds(payload.elapsed_seconds)}`
+      : "";
+    return `${payload?.message || "Demand筛选进行中"}：已处理 ${processed}/${total}，当前命中 ${candidates} 只${batch}${elapsed}。`;
+  };
 
   const loadDemandSupport = async () => {
     setDemandLoading(true);
     try {
       const payload = await fetchJson("/api/demand-support/ranking");
       setDemandData(payload);
-      const newHitText = payload.comparison_date
-        ? `，较 ${payload.comparison_date} 新增命中 ${formatInt(payload.new_hit_count || 0, "0")} 只`
-        : "";
-      const dataDate = payload.ranking_trade_date || payload.latest_daily_trade_date || "--";
-      const refreshText = payload.stale_screening_results
-        ? `；筛选结果日期 ${payload.screening_results_trade_date || "--"} 落后于最新日线 ${payload.latest_daily_trade_date || "--"}，等待日终筛选更新`
-        : `；数据日 ${dataDate}`;
-      setDemandStatus(payload.count
-        ? `当前展示 ${payload.items?.length || 0} 条Demand回踩候选${newHitText}${refreshText}。`
-        : "暂无Demand回踩候选。");
+      setDemandStatus(buildDemandSupportStatus(payload));
     } catch (error) {
       setDemandStatus(error.message || "加载Demand支撑回踩榜失败");
       message.error(error.message || "加载Demand支撑回踩榜失败");
+    } finally {
+      setDemandLoading(false);
+    }
+  };
+
+  const refreshDemandSupport = async () => {
+    setDemandLoading(true);
+    setDemandStatus("正在启动全市场Demand回踩筛选...");
+    try {
+      const startPayload = await fetchJson("/api/demand-support/refresh", { method: "POST" });
+      if (startPayload.success === false) {
+        setDemandStatus(startPayload.message || "Demand回踩筛选刷新未完成");
+        message.warning(startPayload.message || "Demand回踩筛选刷新未完成");
+        return;
+      }
+
+      setDemandStatus(buildDemandRefreshProgressStatus(startPayload));
+      for (let attempt = 0; attempt < 4320; attempt += 1) {
+        await sleep(2000);
+        const statusPayload = await fetchJson("/api/demand-support/refresh-status");
+        if (statusPayload.status === "failed" || statusPayload.success === false) {
+          setDemandStatus(statusPayload.message || "Demand回踩筛选刷新失败");
+          message.error(statusPayload.message || "Demand回踩筛选刷新失败");
+          return;
+        }
+        if (statusPayload.status === "completed" || statusPayload.running === false) {
+          const finalPayload = Array.isArray(statusPayload.items)
+            ? statusPayload
+            : await fetchJson("/api/demand-support/ranking");
+          setDemandData(finalPayload);
+          setDemandStatus(buildDemandSupportStatus(finalPayload));
+          message.success(finalPayload.message || "Demand回踩筛选已刷新");
+          return;
+        }
+        setDemandStatus(buildDemandRefreshProgressStatus(statusPayload));
+      }
+      setDemandStatus("Demand回踩筛选轮询超时，请稍后刷新榜单查看结果。");
+      message.warning("Demand回踩筛选轮询超时");
+    } catch (error) {
+      setDemandStatus(error.message || "刷新Demand支撑回踩榜失败");
+      message.error(error.message || "刷新Demand支撑回踩榜失败");
     } finally {
       setDemandLoading(false);
     }
@@ -2519,6 +2938,13 @@ function AppContent() {
     endpoint: "/api/box-backtest",
   });
 
+  const handleRunCrashReboundBacktest = () => runBacktestRequest({
+    symbols: crashReboundBacktestFormState.symbols || "",
+    date: crashReboundBacktestFormState.date || TODAY,
+    target: "crashReboundBacktest",
+    endpoint: "/api/crash-rebound-backtest",
+  });
+
   const handleRunBoxBacktest = () => runBacktestRequest({
     symbols: boxFormState.symbols || "",
     date: boxFormState.date || TODAY,
@@ -2527,15 +2953,22 @@ function AppContent() {
   });
 
   useEffect(() => {
-    loadOverview(false);
     loadDemandSupport();
     loadMonitors();
   }, []);
+
+  useEffect(() => {
+    if (activePage === PAGE_CRASH_REBOUND && !(crashReboundData.items || []).length) {
+      loadCrashRebound(false);
+    }
+  }, [activePage]);
 
   const menuItems = [
     { key: PAGE_OVERVIEW, label: "总览页" },
     { key: PAGE_DEMAND_SUPPORT, label: "Demand回踩" },
     { key: PAGE_DEMAND_BACKTEST, label: "Demand回测" },
+    { key: PAGE_CRASH_REBOUND, label: "暴跌回弹" },
+    { key: PAGE_CRASH_REBOUND_BACKTEST, label: "暴跌回弹回测" },
     { key: PAGE_BOX_BACKTEST, label: "箱体回测" },
     { key: PAGE_BACKTEST, label: "回测页" },
   ];
@@ -2544,18 +2977,9 @@ function AppContent() {
 
   const activeView = activePage === PAGE_OVERVIEW
     ? html`
-        <${React.Fragment}>
-          <${OverviewPage}
-            loading=${overviewLoading}
-            data=${overviewData}
-            statusText=${overviewStatus}
-            onRefresh=${() => loadOverview(true)}
-            onOpenDetail=${openDetail}
-          />
-          <div className="page-shell" style=${{ paddingTop: 0 }}>
-            <${SearchPanel} onOpenDetail=${openDetail} />
-          </div>
-        <//>
+        <div className="page-shell" style=${{ paddingTop: 0 }}>
+          <${SearchPanel} onOpenDetail=${openDetail} />
+        </div>
       `
     : activePage === PAGE_DEMAND_SUPPORT
       ? html`
@@ -2563,7 +2987,7 @@ function AppContent() {
             loading=${demandLoading}
             data=${demandData}
             statusText=${demandStatus}
-            onRefresh=${loadDemandSupport}
+            onRefresh=${refreshDemandSupport}
             onOpenDetail=${openDemandDetail}
             viewedMap=${demandViewedMap}
           />
@@ -2590,6 +3014,50 @@ function AppContent() {
             scanModeText="全市场Demand扫描"
             manualModeText="单股Demand回测"
             emptyText="输入参数后运行Demand回测"
+          />
+        `
+    : activePage === PAGE_CRASH_REBOUND
+      ? html`
+          <${CrashReboundResultPage}
+            loading=${crashReboundLoading}
+            runningLabel="刷新暴跌回弹榜"
+            statusText=${crashReboundStatus}
+            formState=${{ symbols: "", date: TODAY }}
+            onChangeForm=${() => {}}
+            onRun=${() => loadCrashRebound(true)}
+            onOpenDetail=${openDetail}
+            data=${crashReboundData}
+            pageKicker="Crash Rebound"
+            pageTitle="暴跌回弹榜"
+            pageCopy="寻找先极速拉升、再极速大跌且当前仍贴近跌后低点的股票，按涨幅、跌幅和两段流畅度综合排序。"
+            resultTitle="暴跌回弹排行榜"
+            scanModeText="最新全市场扫描"
+            manualModeText="暴跌回弹"
+            emptyText="点击刷新后扫描暴跌回弹候选"
+            showParameters=${false}
+          />
+        `
+    : activePage === PAGE_CRASH_REBOUND_BACKTEST
+      ? html`
+          <${CrashReboundResultPage}
+            loading=${crashReboundBacktestLoading}
+            runningLabel=${!crashReboundBacktestFormState.symbols.trim() ? "运行全市场暴跌回弹扫描" : "运行暴跌回弹回测"}
+            statusText=${crashReboundBacktestStatus}
+            formState=${crashReboundBacktestFormState}
+            onChangeForm=${updateCrashReboundBacktestForm}
+            onRun=${handleRunCrashReboundBacktest}
+            onOpenDetail=${openDetail}
+            data=${crashReboundBacktestData}
+            pageKicker="Crash Rebound Backtest"
+            pageTitle="暴跌回弹回测页"
+            pageCopy="按目标日期切片日线，回到当时重新识别“极速拉升后极速大跌”的结构，用来验证某一天是否已经进入跌后低位观察区。"
+            parameterCopy="每行支持 code + date，也可以统一使用右侧日期输入框。留空代码即可执行全市场暴跌回弹扫描。"
+            textareaPlaceholder=${"000603.SZ 2026-07-20\n000603.SZ 2026-08-10"}
+            idleDescription="输入参数后点击运行暴跌回弹回测。"
+            resultTitle="暴跌回弹回测结果"
+            scanModeText="全市场暴跌回弹扫描"
+            manualModeText="单股暴跌回弹回测"
+            emptyText="输入参数后运行暴跌回弹回测"
           />
         `
     : activePage === PAGE_MONITOR
@@ -2638,7 +3106,7 @@ function AppContent() {
               <div className="brand-badge">Weinstein Console</div>
               <div className="brand-title">温斯坦回测看板</div>
               <div className="brand-copy">
-                总览页展示今日全市场回测排行榜，Demand回踩页展示当前榜单，箱体回测页按历史日期重算Demand支撑与回踩机会，普通回测页继续承载原有逻辑。
+                总览页保留个股搜索入口，Demand回踩页展示当前榜单，箱体回测页按历史日期重算Demand支撑与回踩机会，普通回测页继续承载原有逻辑。
               </div>
             </div>
 

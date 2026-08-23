@@ -19,6 +19,7 @@ from winstan.pipeline.screener import WeinsteinScreener
 from winstan.pipeline.universe import build_universe
 from winstan.resample.weekly_builder import build_weekly_bars
 from winstan.rules.breakout_rule import evaluate_breakout
+from winstan.rules.base_oscillation import LOOKBACK_DAYS
 from winstan.rules.demand_support import compute_demand_support_quality
 from winstan.rules.market_trend import evaluate_market_trend
 from winstan.rules.relative_strength_rule import evaluate_relative_strength
@@ -56,8 +57,9 @@ QUASI_GATE_LABELS = {
 }
 
 
-OVERVIEW_SNAPSHOT_VERSION = 7
-BOX_BACKTEST_SNAPSHOT_VERSION = 1
+OVERVIEW_SNAPSHOT_VERSION = 9
+BOX_BACKTEST_SNAPSHOT_VERSION = 8
+CRASH_REBOUND_SNAPSHOT_VERSION = 1
 DEMAND_SCREEN_EXCLUDED_SYMBOL_PREFIXES = ("920",)
 
 
@@ -71,6 +73,7 @@ class DashboardService:
         self.simulated_trade_store = SimulatedTradeStore(self.config.duckdb_path)
         self.overview_store = OverviewStore(self.config.logs_dir / "overview_rankings")
         self.box_backtest_store = OverviewStore(self.config.logs_dir / "box_backtest_rankings")
+        self.crash_rebound_store = OverviewStore(self.config.logs_dir / "crash_rebound_rankings")
         self._router: DataSourceRouter | None = None
         self._results: pd.DataFrame | None = None
         self._stage1: pd.DataFrame | None = None
@@ -83,6 +86,9 @@ class DashboardService:
         self._refresh_lock = RLock()
         self._refresh_running: bool = False
         self._refresh_result: dict[str, object] = {"status": "idle"}
+        self._demand_refresh_lock = RLock()
+        self._demand_refresh_running: bool = False
+        self._demand_refresh_result: dict[str, object] = {"status": "idle"}
 
     @property
     def router(self) -> DataSourceRouter:
@@ -420,6 +426,98 @@ class DashboardService:
             ),
         }
 
+    def refresh_demand_support_ranking(self) -> dict[str, object]:
+        """Run a fresh full-market Demand screening in the background."""
+        import time
+
+        with self._demand_refresh_lock:
+            if self._demand_refresh_running:
+                result = dict(self._demand_refresh_result)
+                result.update({"success": False, "status": "busy", "message": "Demand筛选正在运行中，请等待本次刷新完成"})
+                return result
+            self._demand_refresh_running = True
+            self._demand_refresh_result = {
+                "success": True,
+                "status": "started",
+                "running": True,
+                "started_at": time.time(),
+                "message": "Demand筛选已在后台启动",
+                "processed": 0,
+                "total": 0,
+                "candidates_total": 0,
+            }
+
+        script = Path(__file__).resolve().parent.parent.parent.parent / "scripts" / "run_batched_phase1.py"
+        Thread(target=self._refresh_demand_support_bg_worker, args=(script,), daemon=True).start()
+        return dict(self._demand_refresh_result)
+
+    def _refresh_demand_support_bg_worker(self, script: Path) -> None:
+        import runpy
+        import time
+
+        t0 = time.time()
+
+        def _progress(payload: dict[str, object]) -> None:
+            with self._demand_refresh_lock:
+                current = dict(self._demand_refresh_result)
+                current.update(payload)
+                current["running"] = True
+                current["elapsed_seconds"] = round(time.time() - t0, 1)
+                self._demand_refresh_result = current
+
+        try:
+            namespace = runpy.run_path(str(script))
+            runner = namespace.get("run_batched_screener")
+            if not callable(runner):
+                raise RuntimeError("run_batched_screener not found")
+            runner(progress_callback=_progress)
+        except Exception as exc:
+            with self._demand_refresh_lock:
+                self._demand_refresh_running = False
+                self._demand_refresh_result = {
+                    "success": False,
+                    "status": "failed",
+                    "running": False,
+                    "message": f"Demand筛选刷新异常: {exc}",
+                    "elapsed_seconds": round(time.time() - t0, 1),
+                }
+            return
+
+        elapsed = time.time() - t0
+        self.refresh_ranking_cache()
+        self._recommendations = None
+        payload = self.get_demand_support_ranking_payload()
+        payload.update({
+            "success": True,
+            "status": "completed",
+            "message": f"Demand筛选刷新完成: 当前命中 {payload.get('count', 0)} 只",
+            "elapsed_seconds": round(elapsed, 1),
+        })
+        with self._demand_refresh_lock:
+            self._demand_refresh_running = False
+            self._demand_refresh_result = payload
+
+    def get_demand_refresh_status(self) -> dict[str, object]:
+        import time
+
+        with self._demand_refresh_lock:
+            result = dict(self._demand_refresh_result)
+            running = self._demand_refresh_running
+        result["running"] = running
+        if running and result.get("started_at") and result.get("elapsed_seconds") is None:
+            result["elapsed_seconds"] = round(time.time() - float(result["started_at"]), 1)
+        return result
+
+    def get_crash_rebound_ranking_payload(self) -> dict[str, object]:
+        """Start or load the latest sharp-rally/sharp-crash scan."""
+        latest_daily_date = self._latest_cached_daily_trade_date() or date.today().isoformat()
+        return self.run_crash_rebound_payload(
+            "",
+            latest_daily_date,
+            reuse_scan=True,
+            force_refresh=False,
+        )
+
     def _latest_cached_daily_trade_date(self) -> str:
         dataset_dir = self.config.parquet_root / "daily_bars"
         files = [str(path).replace("\\", "/") for path in dataset_dir.glob("*.parquet")]
@@ -618,6 +716,22 @@ class DashboardService:
             return
         self.box_backtest_store.save(target_date, {**payload, "snapshot_version": BOX_BACKTEST_SNAPSHOT_VERSION})
 
+    def load_crash_rebound_snapshot(self, target_date: str) -> dict[str, object] | None:
+        payload = self.crash_rebound_store.load(target_date)
+        if not isinstance(payload, dict):
+            return None
+        if int(payload.get("snapshot_version") or 0) != CRASH_REBOUND_SNAPSHOT_VERSION:
+            return None
+        items = payload.get("items")
+        if not isinstance(items, list):
+            return None
+        return payload
+
+    def save_crash_rebound_snapshot(self, target_date: str, payload: dict[str, object]) -> None:
+        if not isinstance(payload, dict) or not isinstance(payload.get("items"), list):
+            return
+        self.crash_rebound_store.save(target_date, {**payload, "snapshot_version": CRASH_REBOUND_SNAPSHOT_VERSION})
+
     def run_backtest_payload(
         self,
         symbols_str: str,
@@ -661,6 +775,28 @@ class DashboardService:
             snapshot_saver=self.save_box_backtest_snapshot,
         )
         return self.annotate_box_backtest_scan_payload(payload, target_date)
+
+    def run_crash_rebound_payload(
+        self,
+        symbols_str: str,
+        target_date: str,
+        reuse_scan: bool = False,
+        force_refresh: bool = False,
+    ) -> dict[str, object]:
+        from winstan.dashboard.crash_rebound_handler import run_crash_rebound_for_symbols
+
+        payload = run_crash_rebound_for_symbols(
+            self.parquet_store,
+            self.config,
+            symbols_str,
+            target_date,
+            reuse_scan=reuse_scan,
+            force_refresh=force_refresh,
+            name_lookup=self._lookup_stock_name,
+            snapshot_loader=self.load_crash_rebound_snapshot,
+            snapshot_saver=self.save_crash_rebound_snapshot,
+        )
+        return self.annotate_crash_rebound_scan_payload(payload, target_date)
 
     def annotate_backtest_scan_payload(
         self,
@@ -708,6 +844,29 @@ class DashboardService:
             self.save_box_backtest_snapshot(target, payload)
         return payload
 
+    def annotate_crash_rebound_scan_payload(
+        self,
+        payload: dict[str, object],
+        fallback_target_date: str = "",
+    ) -> dict[str, object]:
+        if not isinstance(payload, dict) or payload.get("mode") != "scan":
+            return payload
+
+        target = _to_text(payload.get("target_date")) or _to_text(fallback_target_date)
+        comparison_date, previous_payload = self._previous_crash_rebound_snapshot(target)
+        previous_items = []
+        if isinstance(previous_payload, dict) and isinstance(previous_payload.get("items"), list):
+            previous_items = previous_payload["items"]
+        current_items = payload.get("items") if isinstance(payload.get("items"), list) else []
+        if not current_items:
+            return payload
+        new_hit_count = self._annotate_new_hits(current_items, previous_items)
+        payload["comparison_date"] = comparison_date
+        payload["new_hit_count"] = new_hit_count
+        if target:
+            self.save_crash_rebound_snapshot(target, payload)
+        return payload
+
     @staticmethod
     def _symbol_key(value: object) -> str:
         return _to_text(value).upper()
@@ -741,6 +900,12 @@ class DashboardService:
         for snapshot_date in self.box_backtest_store.list_dates():
             if snapshot_date and snapshot_date < target_date:
                 return snapshot_date, self.load_box_backtest_snapshot(snapshot_date)
+        return "", None
+
+    def _previous_crash_rebound_snapshot(self, target_date: str) -> tuple[str, dict[str, object] | None]:
+        for snapshot_date in self.crash_rebound_store.list_dates():
+            if snapshot_date and snapshot_date < target_date:
+                return snapshot_date, self.load_crash_rebound_snapshot(snapshot_date)
         return "", None
 
     def _previous_screening_snapshot_date(self) -> str:
@@ -818,6 +983,7 @@ class DashboardService:
                 "demand_support_score_volume": _to_float(r.get("demand_support_score_volume")),
                 "demand_support_active": bool(r.get("demand_support_active", True)),
                 "demand_support_latest_break_pct": _to_float(r.get("demand_support_latest_break_pct")),
+                "demand_support_recent_close_break_pct": _to_float(r.get("demand_support_recent_close_break_pct")),
                 "base_quality_score": _to_float(r.get("base_quality_score")),
                 "base_quality_grade": _to_text(r.get("base_quality_grade")),
                 "final_score": _to_float(r.get("final_score")),
@@ -1404,7 +1570,8 @@ class DashboardService:
             latest, self.config,
             base_breakout_price=stage_info.get("base_breakout_price"),
         )
-        demand_support_info = compute_demand_support_quality(recent, self.config, daily=daily)
+        demand_daily = daily.sort_values("trade_date").tail(LOOKBACK_DAYS).copy()
+        demand_support_info = compute_demand_support_quality(recent, self.config, daily=demand_daily)
 
         record = {
             "symbol": symbol,

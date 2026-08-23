@@ -75,8 +75,16 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._send_json(self.service.get_demand_support_ranking_payload())
             return
 
+        if path == "/api/crash-rebound/ranking":
+            self._send_json(self.service.get_crash_rebound_ranking_payload())
+            return
+
         if path == "/api/continuation/refresh-status":
             self._send_json(self.service.get_refresh_status())
+            return
+
+        if path == "/api/demand-support/refresh-status":
+            self._send_json(self.service.get_demand_refresh_status())
             return
 
         if path == "/api/search":
@@ -134,6 +142,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._send_json(result)
             return
 
+        if path == "/api/demand-support/refresh":
+            result = self.service.refresh_demand_support_ranking()
+            self._send_json(result)
+            return
+
         if path == "/api/backtest":
             symbols_str = str(payload.get("symbols", ""))
             target_date = str(payload.get("date", ""))
@@ -166,6 +179,25 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._send_json(self.service.annotate_box_backtest_scan_payload(result, target_date))
                 return
             self._send_json(self.service.run_box_backtest_payload(
+                symbols_str,
+                target_date,
+                reuse_scan=reuse_scan,
+                force_refresh=force_refresh,
+            ))
+            return
+
+        if path == "/api/crash-rebound-backtest":
+            symbols_str = str(payload.get("symbols", ""))
+            target_date = str(payload.get("date", ""))
+            reuse_scan = bool(payload.get("reuse_scan", False))
+            force_refresh = bool(payload.get("force_refresh", False))
+            from winstan.dashboard.crash_rebound_handler import get_crash_scan_status
+            job_id = parse_qs(parsed.query).get("job_id", [""])[0]
+            if job_id:
+                result = get_crash_scan_status(job_id)
+                self._send_json(self.service.annotate_crash_rebound_scan_payload(result, target_date))
+                return
+            self._send_json(self.service.run_crash_rebound_payload(
                 symbols_str,
                 target_date,
                 reuse_scan=reuse_scan,

@@ -28,6 +28,7 @@ from winstan.rules.relative_strength_rule import evaluate_relative_strength
 from winstan.rules.resistance_rule import evaluate_resistance, compute_overhead_supply
 from winstan.rules.stage_analysis import apply_stage2_scoring, detect_transition, evaluate_stage
 from winstan.rules.base_quality import compute_base_quality
+from winstan.rules.base_oscillation import LOOKBACK_DAYS
 from winstan.rules.demand_support import compute_demand_support_quality
 from winstan.rules.stage2_continuation import compute_continuation_quality
 from winstan.rules.volume_confirmation import evaluate_volume
@@ -39,13 +40,22 @@ from winstan.storage.parquet_store import ParquetStore
 BATCH_SIZE = 500  # process 500 stocks at a time
 
 
+def _report_progress(progress_callback, **payload) -> None:
+    if not callable(progress_callback):
+        return
+    try:
+        progress_callback(payload)
+    except Exception:
+        pass
+
+
 def _chunked(items: list[str], size: int):
     iterator = iter(items)
     while batch := list(islice(iterator, size)):
         yield batch
 
 
-def run_batched_screener():
+def run_batched_screener(progress_callback=None):
     config = load_config("config/strategy.yaml")
     router = DataSourceRouter(config)
     parquet_store = ParquetStore(config.parquet_root)
@@ -70,12 +80,49 @@ def run_batched_screener():
     # Collect rs_composite per stock for global RS ranking later
     rs_composite_map: dict[str, float] = {}
     total = len(symbols)
+    total_batches = (total + BATCH_SIZE - 1) // BATCH_SIZE
+    processed_symbols = 0
+    demand_support_total = 0
+    _report_progress(
+        progress_callback,
+        status="running",
+        phase="started",
+        message=f"Demand筛选开始: {total}只股票",
+        processed=0,
+        total=total,
+        candidates_total=0,
+        current_batch=0,
+        total_batches=total_batches,
+    )
 
     for batch_idx, batch in enumerate(_chunked(symbols, BATCH_SIZE)):
         print(f"[batch {batch_idx + 1}] Loading {len(batch)} stocks...")
+        _report_progress(
+            progress_callback,
+            status="running",
+            phase="loading",
+            message=f"正在加载第 {batch_idx + 1}/{total_batches} 批，共 {len(batch)} 只",
+            processed=processed_symbols,
+            total=total,
+            candidates_total=demand_support_total,
+            current_batch=batch_idx + 1,
+            total_batches=total_batches,
+        )
         weekly_bars = clean_daily_bars(parquet_store.read_many("weekly_bars", batch))
         if weekly_bars.empty:
             print(f"[batch {batch_idx + 1}] No weekly data, skipping")
+            processed_symbols += len(batch)
+            _report_progress(
+                progress_callback,
+                status="running",
+                phase="skipped",
+                message=f"第 {batch_idx + 1}/{total_batches} 批无周线数据，已跳过",
+                processed=processed_symbols,
+                total=total,
+                candidates_total=demand_support_total,
+                current_batch=batch_idx + 1,
+                total_batches=total_batches,
+            )
             continue
         weekly_bars = compute_weekly_indicators(weekly_bars, market_weekly, config)
         # Compute per-batch rs composite (raw value, not ranked)
@@ -106,7 +153,8 @@ def run_batched_screener():
 
             # Stage I 基底质量评分
             base_quality_info = compute_base_quality(recent, config, base_info=stage_info, daily=daily)
-            demand_support_info = compute_demand_support_quality(recent, config, daily=daily)
+            demand_daily = daily.sort_values("trade_date").tail(LOOKBACK_DAYS).copy()
+            demand_support_info = compute_demand_support_quality(recent, config, daily=demand_daily)
 
             # Stage2 续涨形态评分
             continuation_info = compute_continuation_quality(recent, config, daily=daily)
@@ -152,12 +200,40 @@ def run_batched_screener():
             records.append(record)
 
         all_records.extend(records)
+        demand_support_batch_count = sum(1 for record in records if record.get("demand_support_candidate"))
+        demand_support_total += int(demand_support_batch_count)
+        processed_symbols += len(batch)
         print(f"[batch {batch_idx + 1}] Done: {len(records)} evaluated ({len(all_records)}/{total} total)")
+        _report_progress(
+            progress_callback,
+            status="running",
+            phase="evaluating",
+            message=(
+                f"第 {batch_idx + 1}/{total_batches} 批完成: "
+                f"累计 {processed_symbols}/{total}，Demand命中 {demand_support_total} 只"
+            ),
+            processed=processed_symbols,
+            total=total,
+            candidates_total=demand_support_total,
+            current_batch=batch_idx + 1,
+            total_batches=total_batches,
+        )
         del weekly_bars, records
         gc.collect()
 
     # Compute global RS ranking across all stocks
     print(f"\nComputing global RS ranking across {len(rs_composite_map)} stocks...")
+    _report_progress(
+        progress_callback,
+        status="running",
+        phase="ranking",
+        message="正在计算全市场RS排名并写入结果",
+        processed=processed_symbols,
+        total=total,
+        candidates_total=demand_support_total,
+        current_batch=total_batches,
+        total_batches=total_batches,
+    )
     rs_df = pd.DataFrame(list(rs_composite_map.items()), columns=["symbol", "rs_composite"])
     rs_df["rs_rank_pct"] = rs_df["rs_composite"].rank(method="dense", pct=True, ascending=False) * 100.0
     rs_lookup = rs_df.set_index("symbol")["rs_rank_pct"].to_dict()
@@ -218,6 +294,17 @@ def run_batched_screener():
     print(f"Stage II candidates: {summary['stage2_count']}")
     print(f"Stage II Top N: {summary['stage2_top_count']}")
     print(f"Candidates: {summary['candidate_count']}")
+    _report_progress(
+        progress_callback,
+        status="completed",
+        phase="completed",
+        message=f"Demand筛选完成: 命中 {summary['demand_support_count']} 只",
+        processed=total,
+        total=total,
+        candidates_total=summary["demand_support_count"],
+        current_batch=total_batches,
+        total_batches=total_batches,
+    )
 
 
 if __name__ == "__main__":

@@ -17,6 +17,7 @@ from winstan.rules.relative_strength_rule import evaluate_relative_strength
 from winstan.rules.resistance_rule import evaluate_resistance, compute_overhead_supply
 from winstan.rules.stage_analysis import apply_stage2_scoring, detect_transition, evaluate_stage
 from winstan.rules.base_quality import compute_base_quality
+from winstan.rules.base_oscillation import LOOKBACK_DAYS
 from winstan.rules.demand_support import compute_demand_support_quality
 from winstan.rules.stage2_continuation import compute_continuation_quality
 from winstan.rules.volume_confirmation import evaluate_volume
@@ -210,7 +211,8 @@ class WeinsteinScreener:
             base_quality_info = compute_base_quality(recent, self.config,
                                                       base_info=stage_info,
                                                       daily=daily_df)
-            demand_support_info = compute_demand_support_quality(recent, self.config, daily=daily_df)
+            demand_daily = daily_df.sort_values("trade_date").tail(LOOKBACK_DAYS).copy()
+            demand_support_info = compute_demand_support_quality(recent, self.config, daily=demand_daily)
 
             # Stage2 续涨形态评分（暴涨后回踩MA30w紧凑整理）
             continuation_info = compute_continuation_quality(recent, self.config, daily=daily_df)

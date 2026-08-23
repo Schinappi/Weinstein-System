@@ -10,6 +10,7 @@ import pandas as pd
 from winstan.calendar.trading_calendar import clean_daily_bars
 from winstan.config import AppConfig
 from winstan.resample.weekly_builder import build_weekly_bars
+from winstan.rules.base_oscillation import LOOKBACK_DAYS
 from winstan.rules.demand_support import compute_demand_support_quality
 
 
@@ -18,7 +19,7 @@ _box_scan_jobs_by_date: dict[str, str] = {}
 _box_scan_result_cache: dict[str, dict] = {}
 _box_scan_lock = threading.Lock()
 BOX_SCAN_TOP_N = 100
-BOX_SCAN_RESULT_VERSION = 2
+BOX_SCAN_RESULT_VERSION = 11
 DEMAND_SCAN_EXCLUDED_SYMBOL_PREFIXES = ("920",)
 
 
@@ -203,6 +204,8 @@ def _evaluate_symbol(
             "available_days": len(daily),
         }
 
+    available_days_total = len(daily)
+    daily = daily.sort_values("trade_date").tail(LOOKBACK_DAYS).copy()
     weekly_cut = build_weekly_bars(daily)
     if len(weekly_cut) < 16:
         return {
@@ -223,6 +226,7 @@ def _evaluate_symbol(
         "name": _lookup_name(symbol, name_lookup=name_lookup),
         "latest_date": str(daily["trade_date"].max().date()),
         "available_days": len(daily),
+        "available_days_total": available_days_total,
         "available_weeks": len(weekly_cut),
         "close": _optional_float(daily.sort_values("trade_date").iloc[-1].get("close")),
         "error": "",
@@ -277,6 +281,12 @@ def _serialize_box_result(result: dict[str, object]) -> dict[str, object]:
         "demand_support_score_support_quality": _optional_float(result.get("demand_support_score_support_quality")),
         "demand_support_score_historical_rebound": _optional_float(result.get("demand_support_score_historical_rebound")),
         "demand_support_score_current_distance": _optional_float(result.get("demand_support_score_current_distance")),
+        "demand_support_score_support_quality_raw": _optional_float(result.get("demand_support_score_support_quality_raw")),
+        "demand_support_score_historical_rebound_raw": _optional_float(result.get("demand_support_score_historical_rebound_raw")),
+        "demand_support_score_current_distance_raw": _optional_float(result.get("demand_support_score_current_distance_raw")),
+        "demand_support_score_support_quality_norm": _optional_float(result.get("demand_support_score_support_quality_norm")),
+        "demand_support_score_historical_rebound_norm": _optional_float(result.get("demand_support_score_historical_rebound_norm")),
+        "demand_support_score_current_distance_norm": _optional_float(result.get("demand_support_score_current_distance_norm")),
         "demand_support_score_trend_filter": _optional_float(result.get("demand_support_score_trend_filter")),
         "demand_support_avg_5d_rebound_pct": _optional_float(result.get("demand_support_avg_5d_rebound_pct")),
         "demand_support_avg_10d_rebound_pct": _optional_float(result.get("demand_support_avg_10d_rebound_pct")),
@@ -285,6 +295,7 @@ def _serialize_box_result(result: dict[str, object]) -> dict[str, object]:
         "demand_support_rebound_sample_count": int(result.get("demand_support_rebound_sample_count") or 0),
         "demand_support_active": bool(result.get("demand_support_active")),
         "demand_support_latest_break_pct": _optional_float(result.get("demand_support_latest_break_pct")),
+        "demand_support_recent_close_break_pct": _optional_float(result.get("demand_support_recent_close_break_pct")),
     }
 
 

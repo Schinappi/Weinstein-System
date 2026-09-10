@@ -75,6 +75,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._send_json(self.service.get_demand_support_ranking_payload())
             return
 
+        if path == "/api/low-base/ranking":
+            self._send_json(self.service.get_low_base_ranking_payload())
+            return
+
         if path == "/api/crash-rebound/ranking":
             self._send_json(self.service.get_crash_rebound_ranking_payload())
             return
@@ -85,6 +89,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
         if path == "/api/demand-support/refresh-status":
             self._send_json(self.service.get_demand_refresh_status())
+            return
+
+        if path == "/api/low-base/refresh-status":
+            self._send_json(self.service.get_low_base_refresh_status())
             return
 
         if path == "/api/search":
@@ -147,6 +155,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._send_json(result)
             return
 
+        if path == "/api/low-base/refresh":
+            result = self.service.refresh_low_base_ranking()
+            self._send_json(result)
+            return
+
         if path == "/api/backtest":
             symbols_str = str(payload.get("symbols", ""))
             target_date = str(payload.get("date", ""))
@@ -179,6 +192,25 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._send_json(self.service.annotate_box_backtest_scan_payload(result, target_date))
                 return
             self._send_json(self.service.run_box_backtest_payload(
+                symbols_str,
+                target_date,
+                reuse_scan=reuse_scan,
+                force_refresh=force_refresh,
+            ))
+            return
+
+        if path == "/api/low-base-backtest":
+            symbols_str = str(payload.get("symbols", ""))
+            target_date = str(payload.get("date", ""))
+            reuse_scan = bool(payload.get("reuse_scan", False))
+            force_refresh = bool(payload.get("force_refresh", False))
+            from winstan.dashboard.low_base_backtest_handler import get_low_base_scan_status
+            job_id = parse_qs(parsed.query).get("job_id", [""])[0]
+            if job_id:
+                result = get_low_base_scan_status(job_id)
+                self._send_json(self.service.annotate_low_base_backtest_scan_payload(result, target_date))
+                return
+            self._send_json(self.service.run_low_base_backtest_payload(
                 symbols_str,
                 target_date,
                 reuse_scan=reuse_scan,

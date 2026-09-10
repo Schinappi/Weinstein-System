@@ -30,6 +30,7 @@ from winstan.rules.stage_analysis import apply_stage2_scoring, detect_transition
 from winstan.rules.base_quality import compute_base_quality
 from winstan.rules.base_oscillation import LOOKBACK_DAYS
 from winstan.rules.demand_support import compute_demand_support_quality
+from winstan.rules.low_base import compute_low_base_quality
 from winstan.rules.stage2_continuation import compute_continuation_quality
 from winstan.rules.volume_confirmation import evaluate_volume
 from winstan.scoring.ranker import build_stage2_top_n, score_and_rank
@@ -83,14 +84,16 @@ def run_batched_screener(progress_callback=None):
     total_batches = (total + BATCH_SIZE - 1) // BATCH_SIZE
     processed_symbols = 0
     demand_support_total = 0
+    low_base_total = 0
     _report_progress(
         progress_callback,
         status="running",
         phase="started",
-        message=f"Demand筛选开始: {total}只股票",
+        message=f"全市场结构筛选开始: {total}只股票",
         processed=0,
         total=total,
         candidates_total=0,
+        low_base_candidates_total=0,
         current_batch=0,
         total_batches=total_batches,
     )
@@ -105,6 +108,7 @@ def run_batched_screener(progress_callback=None):
             processed=processed_symbols,
             total=total,
             candidates_total=demand_support_total,
+            low_base_candidates_total=low_base_total,
             current_batch=batch_idx + 1,
             total_batches=total_batches,
         )
@@ -120,6 +124,7 @@ def run_batched_screener(progress_callback=None):
                 processed=processed_symbols,
                 total=total,
                 candidates_total=demand_support_total,
+                low_base_candidates_total=low_base_total,
                 current_batch=batch_idx + 1,
                 total_batches=total_batches,
             )
@@ -155,6 +160,7 @@ def run_batched_screener(progress_callback=None):
             base_quality_info = compute_base_quality(recent, config, base_info=stage_info, daily=daily)
             demand_daily = daily.sort_values("trade_date").tail(LOOKBACK_DAYS).copy()
             demand_support_info = compute_demand_support_quality(recent, config, daily=demand_daily)
+            low_base_info = compute_low_base_quality(recent, config, daily=demand_daily)
 
             # Stage2 续涨形态评分
             continuation_info = compute_continuation_quality(recent, config, daily=daily)
@@ -180,6 +186,7 @@ def run_batched_screener(progress_callback=None):
                 **transition_info,
                 **base_quality_info,
                 **demand_support_info,
+                **low_base_info,
                 **continuation_info,
                 "price_vs_ma_pct": float(latest["price_vs_ma_pct"]) if pd.notna(latest["price_vs_ma_pct"]) else None,
                 "ma_30w": float(latest["ma_30w"]) if pd.notna(latest["ma_30w"]) else None,
@@ -202,6 +209,8 @@ def run_batched_screener(progress_callback=None):
         all_records.extend(records)
         demand_support_batch_count = sum(1 for record in records if record.get("demand_support_candidate"))
         demand_support_total += int(demand_support_batch_count)
+        low_base_batch_count = sum(1 for record in records if record.get("low_base_candidate"))
+        low_base_total += int(low_base_batch_count)
         processed_symbols += len(batch)
         print(f"[batch {batch_idx + 1}] Done: {len(records)} evaluated ({len(all_records)}/{total} total)")
         _report_progress(
@@ -210,11 +219,12 @@ def run_batched_screener(progress_callback=None):
             phase="evaluating",
             message=(
                 f"第 {batch_idx + 1}/{total_batches} 批完成: "
-                f"累计 {processed_symbols}/{total}，Demand命中 {demand_support_total} 只"
+                f"累计 {processed_symbols}/{total}，Demand命中 {demand_support_total} 只，低位吸筹命中 {low_base_total} 只"
             ),
             processed=processed_symbols,
             total=total,
             candidates_total=demand_support_total,
+            low_base_candidates_total=low_base_total,
             current_batch=batch_idx + 1,
             total_batches=total_batches,
         )
@@ -231,6 +241,7 @@ def run_batched_screener(progress_callback=None):
         processed=processed_symbols,
         total=total,
         candidates_total=demand_support_total,
+        low_base_candidates_total=low_base_total,
         current_batch=total_batches,
         total_batches=total_batches,
     )
@@ -281,6 +292,7 @@ def run_batched_screener(progress_callback=None):
         "rs_ok_count": int(results["rs_ok"].sum()) if not results.empty else 0,
         "resistance_ok_count": int(results["resistance_ok"].sum()) if not results.empty else 0,
         "demand_support_count": int(results["demand_support_candidate"].sum()) if not results.empty and "demand_support_candidate" in results.columns else 0,
+        "low_base_count": int(results["low_base_candidate"].sum()) if not results.empty and "low_base_candidate" in results.columns else 0,
         "candidate_count": len(candidates),
     }
 
@@ -298,10 +310,14 @@ def run_batched_screener(progress_callback=None):
         progress_callback,
         status="completed",
         phase="completed",
-        message=f"Demand筛选完成: 命中 {summary['demand_support_count']} 只",
+        message=(
+            f"全市场结构筛选完成: Demand命中 {summary['demand_support_count']} 只，"
+            f"低位吸筹命中 {summary['low_base_count']} 只"
+        ),
         processed=total,
         total=total,
         candidates_total=summary["demand_support_count"],
+        low_base_candidates_total=summary["low_base_count"],
         current_batch=total_batches,
         total_batches=total_batches,
     )

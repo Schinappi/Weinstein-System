@@ -19,6 +19,7 @@ from winstan.rules.stage_analysis import apply_stage2_scoring, detect_transition
 from winstan.rules.base_quality import compute_base_quality
 from winstan.rules.base_oscillation import LOOKBACK_DAYS
 from winstan.rules.demand_support import compute_demand_support_quality
+from winstan.rules.low_base import compute_low_base_quality
 from winstan.rules.stage2_continuation import compute_continuation_quality
 from winstan.rules.volume_confirmation import evaluate_volume
 from winstan.scoring.fundamental import fetch_supplemental_data
@@ -213,6 +214,7 @@ class WeinsteinScreener:
                                                       daily=daily_df)
             demand_daily = daily_df.sort_values("trade_date").tail(LOOKBACK_DAYS).copy()
             demand_support_info = compute_demand_support_quality(recent, self.config, daily=demand_daily)
+            low_base_info = compute_low_base_quality(recent, self.config, daily=demand_daily)
 
             # Stage2 续涨形态评分（暴涨后回踩MA30w紧凑整理）
             continuation_info = compute_continuation_quality(recent, self.config, daily=daily_df)
@@ -238,6 +240,7 @@ class WeinsteinScreener:
                 **transition_info,
                 **base_quality_info,
                 **demand_support_info,
+                **low_base_info,
                 **continuation_info,
                 "price_vs_ma_pct": float(latest["price_vs_ma_pct"]) if pd.notna(latest["price_vs_ma_pct"]) else None,
                 "ma_30w": float(latest["ma_30w"]) if pd.notna(latest["ma_30w"]) else None,

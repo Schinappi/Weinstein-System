@@ -21,6 +21,7 @@ from winstan.resample.weekly_builder import build_weekly_bars
 from winstan.rules.breakout_rule import evaluate_breakout
 from winstan.rules.base_oscillation import LOOKBACK_DAYS
 from winstan.rules.demand_support import compute_demand_support_quality
+from winstan.rules.low_base import compute_low_base_quality
 from winstan.rules.market_trend import evaluate_market_trend
 from winstan.rules.relative_strength_rule import evaluate_relative_strength
 from winstan.rules.resistance_rule import evaluate_resistance, compute_overhead_supply
@@ -60,6 +61,7 @@ QUASI_GATE_LABELS = {
 OVERVIEW_SNAPSHOT_VERSION = 9
 BOX_BACKTEST_SNAPSHOT_VERSION = 8
 CRASH_REBOUND_SNAPSHOT_VERSION = 1
+LOW_BASE_BACKTEST_SNAPSHOT_VERSION = 3
 DEMAND_SCREEN_EXCLUDED_SYMBOL_PREFIXES = ("920",)
 
 
@@ -74,6 +76,7 @@ class DashboardService:
         self.overview_store = OverviewStore(self.config.logs_dir / "overview_rankings")
         self.box_backtest_store = OverviewStore(self.config.logs_dir / "box_backtest_rankings")
         self.crash_rebound_store = OverviewStore(self.config.logs_dir / "crash_rebound_rankings")
+        self.low_base_backtest_store = OverviewStore(self.config.logs_dir / "low_base_backtest_rankings")
         self._router: DataSourceRouter | None = None
         self._results: pd.DataFrame | None = None
         self._stage1: pd.DataFrame | None = None
@@ -89,6 +92,9 @@ class DashboardService:
         self._demand_refresh_lock = RLock()
         self._demand_refresh_running: bool = False
         self._demand_refresh_result: dict[str, object] = {"status": "idle"}
+        self._low_base_refresh_lock = RLock()
+        self._low_base_refresh_running: bool = False
+        self._low_base_refresh_result: dict[str, object] = {"status": "idle"}
 
     @property
     def router(self) -> DataSourceRouter:
@@ -508,6 +514,137 @@ class DashboardService:
             result["elapsed_seconds"] = round(time.time() - float(result["started_at"]), 1)
         return result
 
+    def get_low_base_ranking_payload(self) -> dict[str, object]:
+        """Read post-decline quiet-base candidates from screening_results."""
+        store = DuckDBStore(self.config.duckdb_path)
+        rows: list[dict[str, object]] = []
+        comparison_date = ""
+        new_hit_count = 0
+        latest_daily_date = self._latest_cached_daily_trade_date()
+        screening_date = ""
+        try:
+            with store.connect() as conn:
+                screening_date = _format_date(conn.execute("SELECT MAX(trade_date) FROM screening_results").fetchone()[0])
+                df = conn.execute("SELECT * FROM screening_results").fetchdf()
+            if "low_base_candidate" not in df.columns:
+                return {
+                    "items": [],
+                    "count": 0,
+                    "error": "",
+                    "message": "筛选结果尚未包含低位吸筹字段，请点击刷新榜单重新生成。",
+                    "data_source": "screening_results",
+                    "ranking_trade_date": screening_date,
+                    "screening_results_trade_date": screening_date,
+                    "latest_daily_trade_date": latest_daily_date,
+                    "stale_screening_results": True,
+                }
+            rows = self._serialize_low_base_rows(df)
+            comparison_date = self._previous_screening_snapshot_date()
+            previous_rows: list[dict[str, object]] = []
+            if comparison_date:
+                previous_frame = self.duckdb_store.read_snapshot(comparison_date)
+                if not previous_frame.empty and "low_base_candidate" in previous_frame.columns:
+                    previous_rows = self._serialize_low_base_rows(previous_frame, limit=None)
+            new_hit_count = self._annotate_new_hits(rows, previous_rows)
+        except Exception as exc:
+            return {"items": rows, "error": str(exc), "count": 0}
+        return {
+            "items": rows,
+            "count": len(rows),
+            "error": "",
+            "comparison_date": comparison_date if rows else "",
+            "new_hit_count": new_hit_count if rows else 0,
+            "data_source": "screening_results",
+            "ranking_trade_date": screening_date,
+            "screening_results_trade_date": screening_date,
+            "latest_daily_trade_date": latest_daily_date,
+            "stale_screening_results": bool(
+                latest_daily_date and (not screening_date or screening_date < latest_daily_date)
+            ),
+        }
+
+    def refresh_low_base_ranking(self) -> dict[str, object]:
+        """Run a fresh full-market low-base screening in the background."""
+        import time
+
+        with self._low_base_refresh_lock:
+            if self._low_base_refresh_running:
+                result = dict(self._low_base_refresh_result)
+                result.update({"success": False, "status": "busy", "message": "低位吸筹筛选正在运行中，请等待本次刷新完成"})
+                return result
+            self._low_base_refresh_running = True
+            self._low_base_refresh_result = {
+                "success": True,
+                "status": "started",
+                "running": True,
+                "started_at": time.time(),
+                "message": "低位吸筹筛选已在后台启动",
+                "processed": 0,
+                "total": 0,
+                "candidates_total": 0,
+            }
+
+        script = Path(__file__).resolve().parent.parent.parent.parent / "scripts" / "run_batched_phase1.py"
+        Thread(target=self._refresh_low_base_bg_worker, args=(script,), daemon=True).start()
+        return dict(self._low_base_refresh_result)
+
+    def _refresh_low_base_bg_worker(self, script: Path) -> None:
+        import runpy
+        import time
+
+        t0 = time.time()
+
+        def _progress(payload: dict[str, object]) -> None:
+            with self._low_base_refresh_lock:
+                current = dict(self._low_base_refresh_result)
+                current.update(payload)
+                current["running"] = True
+                current["elapsed_seconds"] = round(time.time() - t0, 1)
+                self._low_base_refresh_result = current
+
+        try:
+            namespace = runpy.run_path(str(script))
+            runner = namespace.get("run_batched_screener")
+            if not callable(runner):
+                raise RuntimeError("run_batched_screener not found")
+            runner(progress_callback=_progress)
+        except Exception as exc:
+            with self._low_base_refresh_lock:
+                self._low_base_refresh_running = False
+                self._low_base_refresh_result = {
+                    "success": False,
+                    "status": "failed",
+                    "running": False,
+                    "message": f"低位吸筹筛选刷新异常: {exc}",
+                    "elapsed_seconds": round(time.time() - t0, 1),
+                }
+            return
+
+        elapsed = time.time() - t0
+        self.refresh_ranking_cache()
+        self._recommendations = None
+        payload = self.get_low_base_ranking_payload()
+        payload.update({
+            "success": True,
+            "status": "completed",
+            "message": f"低位吸筹筛选刷新完成: 当前命中 {payload.get('count', 0)} 只",
+            "elapsed_seconds": round(elapsed, 1),
+        })
+        with self._low_base_refresh_lock:
+            self._low_base_refresh_running = False
+            self._low_base_refresh_result = payload
+
+    def get_low_base_refresh_status(self) -> dict[str, object]:
+        import time
+
+        with self._low_base_refresh_lock:
+            result = dict(self._low_base_refresh_result)
+            running = self._low_base_refresh_running
+        result["running"] = running
+        if running and result.get("started_at") and result.get("elapsed_seconds") is None:
+            result["elapsed_seconds"] = round(time.time() - float(result["started_at"]), 1)
+        return result
+
     def get_crash_rebound_ranking_payload(self) -> dict[str, object]:
         """Start or load the latest sharp-rally/sharp-crash scan."""
         latest_daily_date = self._latest_cached_daily_trade_date() or date.today().isoformat()
@@ -716,6 +853,22 @@ class DashboardService:
             return
         self.box_backtest_store.save(target_date, {**payload, "snapshot_version": BOX_BACKTEST_SNAPSHOT_VERSION})
 
+    def load_low_base_backtest_snapshot(self, target_date: str) -> dict[str, object] | None:
+        payload = self.low_base_backtest_store.load(target_date)
+        if not isinstance(payload, dict):
+            return None
+        if int(payload.get("snapshot_version") or 0) != LOW_BASE_BACKTEST_SNAPSHOT_VERSION:
+            return None
+        items = payload.get("items")
+        if not isinstance(items, list):
+            return None
+        return payload
+
+    def save_low_base_backtest_snapshot(self, target_date: str, payload: dict[str, object]) -> None:
+        if not isinstance(payload, dict) or not isinstance(payload.get("items"), list):
+            return
+        self.low_base_backtest_store.save(target_date, {**payload, "snapshot_version": LOW_BASE_BACKTEST_SNAPSHOT_VERSION})
+
     def load_crash_rebound_snapshot(self, target_date: str) -> dict[str, object] | None:
         payload = self.crash_rebound_store.load(target_date)
         if not isinstance(payload, dict):
@@ -775,6 +928,28 @@ class DashboardService:
             snapshot_saver=self.save_box_backtest_snapshot,
         )
         return self.annotate_box_backtest_scan_payload(payload, target_date)
+
+    def run_low_base_backtest_payload(
+        self,
+        symbols_str: str,
+        target_date: str,
+        reuse_scan: bool = False,
+        force_refresh: bool = False,
+    ) -> dict[str, object]:
+        from winstan.dashboard.low_base_backtest_handler import run_low_base_backtest_for_symbols
+
+        payload = run_low_base_backtest_for_symbols(
+            self.parquet_store,
+            self.config,
+            symbols_str,
+            target_date,
+            reuse_scan=reuse_scan,
+            force_refresh=force_refresh,
+            name_lookup=self._lookup_stock_name,
+            snapshot_loader=self.load_low_base_backtest_snapshot,
+            snapshot_saver=self.save_low_base_backtest_snapshot,
+        )
+        return self.annotate_low_base_backtest_scan_payload(payload, target_date)
 
     def run_crash_rebound_payload(
         self,
@@ -844,6 +1019,29 @@ class DashboardService:
             self.save_box_backtest_snapshot(target, payload)
         return payload
 
+    def annotate_low_base_backtest_scan_payload(
+        self,
+        payload: dict[str, object],
+        fallback_target_date: str = "",
+    ) -> dict[str, object]:
+        if not isinstance(payload, dict) or payload.get("mode") != "scan":
+            return payload
+
+        target = _to_text(payload.get("target_date")) or _to_text(fallback_target_date)
+        comparison_date, previous_payload = self._previous_low_base_backtest_snapshot(target)
+        previous_items = []
+        if isinstance(previous_payload, dict) and isinstance(previous_payload.get("items"), list):
+            previous_items = previous_payload["items"]
+        current_items = payload.get("items") if isinstance(payload.get("items"), list) else []
+        if not current_items:
+            return payload
+        new_hit_count = self._annotate_new_hits(current_items, previous_items)
+        payload["comparison_date"] = comparison_date
+        payload["new_hit_count"] = new_hit_count
+        if target:
+            self.save_low_base_backtest_snapshot(target, payload)
+        return payload
+
     def annotate_crash_rebound_scan_payload(
         self,
         payload: dict[str, object],
@@ -900,6 +1098,12 @@ class DashboardService:
         for snapshot_date in self.box_backtest_store.list_dates():
             if snapshot_date and snapshot_date < target_date:
                 return snapshot_date, self.load_box_backtest_snapshot(snapshot_date)
+        return "", None
+
+    def _previous_low_base_backtest_snapshot(self, target_date: str) -> tuple[str, dict[str, object] | None]:
+        for snapshot_date in self.low_base_backtest_store.list_dates():
+            if snapshot_date and snapshot_date < target_date:
+                return snapshot_date, self.load_low_base_backtest_snapshot(snapshot_date)
         return "", None
 
     def _previous_crash_rebound_snapshot(self, target_date: str) -> tuple[str, dict[str, object] | None]:
@@ -984,6 +1188,97 @@ class DashboardService:
                 "demand_support_active": bool(r.get("demand_support_active", True)),
                 "demand_support_latest_break_pct": _to_float(r.get("demand_support_latest_break_pct")),
                 "demand_support_recent_close_break_pct": _to_float(r.get("demand_support_recent_close_break_pct")),
+                "base_quality_score": _to_float(r.get("base_quality_score")),
+                "base_quality_grade": _to_text(r.get("base_quality_grade")),
+                "final_score": _to_float(r.get("final_score")),
+                "rs_rank_pct": _to_float(r.get("rs_rank_pct")),
+                "headroom_pct": _to_float(r.get("headroom_pct")),
+            })
+        return rows
+
+    def _serialize_low_base_rows(self, frame: pd.DataFrame, limit: int | None = 50) -> list[dict[str, object]]:
+        rows: list[dict[str, object]] = []
+        if frame.empty:
+            return rows
+        local = frame.copy()
+        if "low_base_candidate" in local.columns:
+            local = local[local["low_base_candidate"].fillna(False).astype(bool)]
+        if "symbol" in local.columns:
+            local = local[local["symbol"].map(_is_demand_screen_symbol_allowed)]
+        if local.empty:
+            return rows
+        sort_columns = [
+            col
+            for col in ["low_base_score", "low_base_score_volatility", "low_base_score_bottom_stability"]
+            if col in local.columns
+        ]
+        if sort_columns:
+            local = local.sort_values(sort_columns, ascending=[False] * len(sort_columns))
+        if limit is not None:
+            local = local.head(limit)
+        local = local.reset_index(drop=True)
+
+        for _, r in local.iterrows():
+            rows.append({
+                "symbol": _to_text(r.get("symbol")),
+                "name": _to_text(r.get("name")),
+                "close": _to_float(r.get("close")),
+                "stage_label": _to_text(r.get("stage_label")),
+                "low_base_score": _to_float(r.get("low_base_score")),
+                "low_base_grade": _to_text(r.get("low_base_grade")),
+                "low_base_reason": _to_text(r.get("low_base_reason")),
+                "low_base_candidate": _to_optional_bool(r.get("low_base_candidate")),
+                "low_base_support_price": _to_float(r.get("low_base_support_price")),
+                "low_base_lower": _to_float(r.get("low_base_lower")),
+                "low_base_upper": _to_float(r.get("low_base_upper")),
+                "low_base_top_price": _to_float(r.get("low_base_top_price")),
+                "low_base_base_start_date": _to_text(r.get("low_base_base_start_date")),
+                "low_base_base_end_date": _to_text(r.get("low_base_base_end_date")),
+                "low_base_base_range": _to_text(r.get("low_base_base_range")),
+                "low_base_duration_bars": _to_int(r.get("low_base_duration_bars")),
+                "low_base_duration_weeks": _to_int(r.get("low_base_duration_weeks")),
+                "low_base_duration_unit": _to_text(r.get("low_base_duration_unit")),
+                "low_base_score_prior_decline": _to_float(r.get("low_base_score_prior_decline")),
+                "low_base_score_duration": _to_float(r.get("low_base_score_duration")),
+                "low_base_score_volatility": _to_float(r.get("low_base_score_volatility")),
+                "low_base_score_volume": _to_float(r.get("low_base_score_volume")),
+                "low_base_score_bottom_stability": _to_float(r.get("low_base_score_bottom_stability")),
+                "low_base_score_breakout_readiness": _to_float(r.get("low_base_score_breakout_readiness")),
+                "low_base_prior_decline_pct": _to_float(r.get("low_base_prior_decline_pct")),
+                "low_base_prior_decline_start_date": _to_text(r.get("low_base_prior_decline_start_date")),
+                "low_base_prior_decline_end_date": _to_text(r.get("low_base_prior_decline_end_date")),
+                "low_base_prior_decline_range": _to_text(r.get("low_base_prior_decline_range")),
+                "low_base_volatility_contraction_ratio": _to_float(r.get("low_base_volatility_contraction_ratio")),
+                "low_base_volatility_recent_pct": _to_float(r.get("low_base_volatility_recent_pct")),
+                "low_base_volatility_baseline_pct": _to_float(r.get("low_base_volatility_baseline_pct")),
+                "low_base_volatility_range": _to_text(r.get("low_base_volatility_range")),
+                "low_base_volume_decay_ratio": _to_float(r.get("low_base_volume_decay_ratio")),
+                "low_base_volume_recent_avg": _to_float(r.get("low_base_volume_recent_avg")),
+                "low_base_volume_baseline_avg": _to_float(r.get("low_base_volume_baseline_avg")),
+                "low_base_volume_range": _to_text(r.get("low_base_volume_range")),
+                "low_base_recent_amount_avg": _to_float(r.get("low_base_recent_amount_avg")),
+                "low_base_liquidity_threshold": _to_float(r.get("low_base_liquidity_threshold")),
+                "low_base_liquidity_ok": _to_optional_bool(r.get("low_base_liquidity_ok")),
+                "low_base_liquidity_range": _to_text(r.get("low_base_liquidity_range")),
+                "low_base_direction_volume_ratio": _to_float(r.get("low_base_direction_volume_ratio")),
+                "low_base_direction_latest_volume": _to_float(r.get("low_base_direction_latest_volume")),
+                "low_base_direction_base_avg_volume": _to_float(r.get("low_base_direction_base_avg_volume")),
+                "low_base_score_direction_volume": _to_float(r.get("low_base_score_direction_volume")),
+                "low_base_direction_volume_range": _to_text(r.get("low_base_direction_volume_range")),
+                "low_base_touch_count": _to_int(r.get("low_base_touch_count")),
+                "low_base_touch_low_progress_pct": _to_float(r.get("low_base_touch_low_progress_pct")),
+                "low_base_recent_intraday_break_pct": _to_float(r.get("low_base_recent_intraday_break_pct")),
+                "low_base_recent_close_break_pct": _to_float(r.get("low_base_recent_close_break_pct")),
+                "low_base_false_break_count": _to_int(r.get("low_base_false_break_count")),
+                "low_base_bottom_stability_range": _to_text(r.get("low_base_bottom_stability_range")),
+                "low_base_distance_to_top_pct": _to_float(r.get("low_base_distance_to_top_pct")),
+                "low_base_ema_slope_20_pct": _to_float(r.get("low_base_ema_slope_20_pct")),
+                "low_base_abnormal_volume_ratio": _to_float(r.get("low_base_abnormal_volume_ratio")),
+                "low_base_breakout_readiness_range": _to_text(r.get("low_base_breakout_readiness_range")),
+                "low_base_approach_gap_pct": _to_float(r.get("low_base_approach_gap_pct")),
+                "low_base_avg_penetration_pct": _to_float(r.get("low_base_avg_penetration_pct")),
+                "low_base_avg_swing_pct": _to_float(r.get("low_base_avg_swing_pct")),
+                "low_base_support_active": _to_optional_bool(r.get("low_base_support_active")),
                 "base_quality_score": _to_float(r.get("base_quality_score")),
                 "base_quality_grade": _to_text(r.get("base_quality_grade")),
                 "final_score": _to_float(r.get("final_score")),
@@ -2231,6 +2526,18 @@ def _to_float(value: object) -> float | None:
 def _to_bool(value: object) -> bool:
     if value is None or pd.isna(value):
         return False
+    return bool(value)
+
+
+def _to_optional_bool(value: object) -> bool | None:
+    if value is None or pd.isna(value):
+        return None
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "1", "yes", "y"}:
+            return True
+        if normalized in {"false", "0", "no", "n"}:
+            return False
     return bool(value)
 
 

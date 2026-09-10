@@ -16,6 +16,7 @@ const {
   List,
   Menu,
   Modal,
+  Progress,
   Row,
   Segmented,
   Space,
@@ -38,11 +39,14 @@ const PAGE_BACKTEST = "backtest";
 const PAGE_MONITOR = "monitor";
 const PAGE_DEMAND_SUPPORT = "demand-support";
 const PAGE_DEMAND_BACKTEST = "demand-backtest";
+const PAGE_LOW_BASE_SUPPORT = "low-base-support";
+const PAGE_LOW_BASE_BACKTEST = "low-base-backtest";
 const PAGE_CRASH_REBOUND = "crash-rebound";
 const PAGE_CRASH_REBOUND_BACKTEST = "crash-rebound-backtest";
 const PAGE_BOX_BACKTEST = "box-backtest";
 const SCAN_RULE_LABEL = "通过生命周期/减速/成熟度门槛后，按结构分排序显示前100个";
 const BOX_SCAN_RULE_LABEL = "按日线Demand支撑质量 + 历史反弹 + 当前距离排序显示前100个";
+const LOW_BASE_SCAN_RULE_LABEL = "按完整低位吸筹评分排序显示前100个，并保留候选标记；量能仅展示不计分";
 const CRASH_REBOUND_RULE_LABEL = "按急涨幅度 + 急跌幅度 + 两段流畅度排序显示前100个";
 const DEMAND_VIEWED_STORAGE_KEY = "winstan-demand-viewed-v1";
 const DEMAND_VIEWED_TTL_MS = 15 * 24 * 60 * 60 * 1000;
@@ -110,6 +114,14 @@ function formatBoolean(value) {
   return value ? "是" : "否";
 }
 
+function formatAmount(value, fallback = "--") {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return fallback;
+  if (Math.abs(numeric) >= 100000000) return `${(numeric / 100000000).toFixed(2)}亿`;
+  if (Math.abs(numeric) >= 10000) return `${(numeric / 10000).toFixed(0)}万`;
+  return numeric.toFixed(0);
+}
+
 function renderStockCell(row) {
   const isNewHit = Boolean(row?.is_new_hit);
   return html`
@@ -121,6 +133,193 @@ function renderStockCell(row) {
       <div className="symbol-name">${row.name || "--"}</div>
     </div>
   `;
+}
+
+function renderLowBaseScoreDetail(score, maxScore, detail) {
+  return html`
+    <div className="score-detail">
+      <div className=${Number(score) >= Number(maxScore) * 0.75 ? "positive-text" : ""}>
+        ${formatNumber(score, 1)} / ${maxScore}
+      </div>
+      <div className="score-detail-copy" title=${detail || ""}>${detail || "--"}</div>
+    </div>
+  `;
+}
+
+function lowBaseGradeTag(value) {
+  const colorMap = { S: "gold", A: "green", B: "blue", C: "default" };
+  return html`<${Tag} color=${colorMap[value] || "default"}>${value || "--"}<//>`;
+}
+
+function buildLowBaseColumns({ includeRank = true } = {}) {
+  const rankColumn = includeRank
+    ? [{
+        title: "排名",
+        key: "rank",
+        width: 84,
+        render: (_, __, index) => html`<span className="rank-chip">#${index + 1}</span>`,
+      }]
+    : [];
+  return [
+    ...rankColumn,
+    {
+      title: "股票",
+      dataIndex: "symbol",
+      key: "symbol",
+      width: 170,
+      render: (_, row) => renderStockCell(row),
+    },
+    {
+      title: "候选",
+      dataIndex: "low_base_candidate",
+      key: "low_base_candidate",
+      width: 86,
+      render: (value) => html`<${Tag} color=${value ? "green" : "default"}>${formatBoolean(value)}<//>`,
+    },
+    {
+      title: "基底分",
+      dataIndex: "low_base_score",
+      key: "low_base_score",
+      width: 100,
+      render: (value) => html`<span className=${Number(value) >= 75 ? "positive-text" : ""}>${formatNumber(value, 1)}</span>`,
+    },
+    {
+      title: "等级",
+      dataIndex: "low_base_grade",
+      key: "low_base_grade",
+      width: 82,
+      render: lowBaseGradeTag,
+    },
+    {
+      title: "前期下跌",
+      dataIndex: "low_base_score_prior_decline",
+      key: "low_base_score_prior_decline",
+      width: 220,
+      render: (_, row) => renderLowBaseScoreDetail(
+        row.low_base_score_prior_decline,
+        15,
+        `${row.low_base_prior_decline_range || "--"} / 跌幅 ${formatPercent(row.low_base_prior_decline_pct, 1)}`
+      ),
+    },
+    {
+      title: "横盘静默",
+      dataIndex: "low_base_score_volatility",
+      key: "low_base_score_volatility",
+      width: 190,
+      render: (_, row) => renderLowBaseScoreDetail(
+        row.low_base_score_volatility,
+        25,
+        `${row.low_base_volatility_range || "--"} / 全区 ${formatPercent(row.low_base_volatility_contraction_ratio, 1)} / 近10 ${formatPercent(row.low_base_volatility_recent_pct, 1)} / 单根 ${formatPercent(row.low_base_volatility_baseline_pct, 1)}`
+      ),
+    },
+    {
+      title: "量能参考",
+      dataIndex: "low_base_score_volume",
+      key: "low_base_score_volume",
+      width: 190,
+      render: (_, row) => html`
+        <div className="score-detail">
+          <div>${formatNumber(row.low_base_volume_decay_ratio, 2)}x</div>
+          <div className="score-detail-copy" title=${`${row.low_base_volume_range || "--"} / 仅展示不计分`}>
+            ${row.low_base_volume_range || "--"} / 仅展示不计分
+          </div>
+        </div>
+      `,
+    },
+    {
+      title: "底部稳定加分",
+      dataIndex: "low_base_score_bottom_stability",
+      key: "low_base_score_bottom_stability",
+      width: 260,
+      render: (_, row) => renderLowBaseScoreDetail(
+        row.low_base_score_bottom_stability,
+        25,
+        row.low_base_bottom_stability_range
+      ),
+    },
+    {
+      title: "横盘持续",
+      dataIndex: "low_base_score_duration",
+      key: "low_base_score_duration",
+      width: 220,
+      render: (_, row) => renderLowBaseScoreDetail(
+        row.low_base_score_duration,
+        20,
+        `${row.low_base_base_range || "--"} / ${formatInt(row.low_base_duration_weeks)}周`
+      ),
+    },
+    {
+      title: "突破准备",
+      dataIndex: "low_base_score_breakout_readiness",
+      key: "low_base_score_breakout_readiness",
+      width: 230,
+      render: (_, row) => renderLowBaseScoreDetail(
+        row.low_base_score_breakout_readiness,
+        15,
+        row.low_base_breakout_readiness_range
+      ),
+    },
+    {
+      title: "方向量能",
+      dataIndex: "low_base_score_direction_volume",
+      key: "low_base_score_direction_volume",
+      width: 220,
+      render: (_, row) => renderLowBaseScoreDetail(
+        row.low_base_score_direction_volume,
+        5,
+        `${row.low_base_direction_volume_range || "--"} / ${formatNumber(row.low_base_direction_volume_ratio, 2)}x`
+      ),
+    },
+    {
+      title: "近20成交额",
+      dataIndex: "low_base_recent_amount_avg",
+      key: "low_base_recent_amount_avg",
+      width: 120,
+      render: (value) => formatAmount(value),
+    },
+    {
+      title: "底部区",
+      key: "low_base_zone",
+      width: 150,
+      render: (_, row) => `${formatNumber(row.low_base_lower, 2)} - ${formatNumber(row.low_base_upper, 2)}`,
+    },
+    {
+      title: "距底部",
+      dataIndex: "low_base_approach_gap_pct",
+      key: "low_base_approach_gap_pct",
+      width: 100,
+      render: (value) => formatPercent(value, 1),
+    },
+    {
+      title: "距箱顶",
+      dataIndex: "low_base_distance_to_top_pct",
+      key: "low_base_distance_to_top_pct",
+      width: 100,
+      render: (value) => formatPercent(value, 1),
+    },
+    {
+      title: "触底",
+      dataIndex: "low_base_touch_count",
+      key: "low_base_touch_count",
+      width: 86,
+      render: (value) => formatInt(value),
+    },
+    {
+      title: "低点进展",
+      dataIndex: "low_base_touch_low_progress_pct",
+      key: "low_base_touch_low_progress_pct",
+      width: 110,
+      render: (value) => formatPercent(value, 1),
+    },
+    {
+      title: "信号解读",
+      dataIndex: "low_base_reason",
+      key: "low_base_reason",
+      render: (value, row) => html`
+        <span className="reason-text" title=${value || row.error || ""}>${value || row.error || "--"}</span>
+      `,
+    },
+  ];
 }
 
 function escapeHtml(value) {
@@ -1319,6 +1518,154 @@ function DemandSupportPage({
             scroll=${{ x: 2200 }}
             locale=${{
               emptyText: html`<div className="empty-block">${loading ? "正在加载" : "暂无Demand回踩候选"}</div>`,
+            }}
+            onRow=${(record) => ({
+              onClick: () => onOpenDetail(record.symbol, items),
+              style: { cursor: "pointer" },
+            })}
+          />
+        <//>
+      </div>
+    </div>
+  `;
+}
+
+function LowBaseSupportPage({
+  loading,
+  data,
+  statusText,
+  progress,
+  onRefresh,
+  onOpenDetail,
+}) {
+  const items = data?.items || [];
+  const progressTotal = Number(progress?.total || 0);
+  const progressProcessed = Number(progress?.processed || 0);
+  const progressPercent = progressTotal > 0
+    ? Math.min(100, Math.round(progressProcessed / progressTotal * 100))
+    : loading ? 1 : 0;
+  const showProgress = loading || progress?.status === "started" || progress?.status === "running";
+  const metrics = useMemo(() => {
+    const avgScore = items.length
+      ? items.reduce((sum, item) => sum + Number(item.low_base_score || 0), 0) / items.length
+      : 0;
+    const avgDecline = items.length
+      ? items.reduce((sum, item) => sum + Number(item.low_base_prior_decline_pct || 0), 0) / items.length
+      : 0;
+    const avgVolRatio = items.length
+      ? items.reduce((sum, item) => sum + Number(item.low_base_volatility_contraction_ratio || 0), 0) / items.length
+      : 0;
+    const avgVolumeRatio = items.length
+      ? items.reduce((sum, item) => sum + Number(item.low_base_volume_decay_ratio || 0), 0) / items.length
+      : 0;
+    return [
+      { label: "候选数量", value: formatInt(data?.count || items.length || 0), extra: "低位静默基底 Top 50" },
+      { label: "平均基底分", value: formatNumber(avgScore, 1), extra: "六项加权总分" },
+      { label: "平均前跌", value: formatPercent(avgDecline, 1), extra: "确认不是高位横盘" },
+      { label: "振幅/量能", value: `${formatPercent(avgVolRatio, 1)} / ${formatNumber(avgVolumeRatio, 2)}x`, extra: "横盘全区收盘振幅 / 量能仅展示不计分" },
+    ];
+  }, [data, items]);
+
+  const columns = useMemo(() => buildLowBaseColumns({ includeRank: true }), []);
+
+  return html`
+    <div className="page-shell">
+      <div className="hero-grid">
+        <${Card} className="hero-card">
+          <div className="hero-panel">
+            <div className="hero-kicker">Quiet Base</div>
+            <div className="hero-title">低位吸筹回踩榜</div>
+            <div className="hero-copy">
+              这里量化的是“大跌后的低位长期收缩整理”，不是证明庄家行为。模型按前期下跌、横盘持续至少 6 周、
+              横盘静默、底部稳定加分和突破准备共同构成主要评分；量能只作为参考展示不计分，其中底部稳定主档位按横盘收盘振幅落在 6%/8%/10%/12% 四档加分，
+              当前量相对横盘期均量放大时，会作为选择方向的关注加分。
+            </div>
+            <div className="hero-actions">
+              <${Button} type="primary" size="large" onClick=${onRefresh} loading=${loading}>刷新榜单<//>
+              <${Tag} color="green">低位静默基底<//>
+              <${Tag} color="cyan">回踩观察池<//>
+              <${Tag} color="geekblue">非买入信号<//>
+            </div>
+          </div>
+        <//>
+
+        <${Card} className="hero-card">
+          <div className="hero-meta">
+            <div className="meta-pill">
+              <div className="meta-pill-label">前期下跌</div>
+              <div className="meta-pill-value">15分</div>
+            </div>
+            <div className="meta-pill">
+              <div className="meta-pill-label">横盘静默</div>
+              <div className="meta-pill-value">20分</div>
+            </div>
+            <div className="meta-pill">
+              <div className="meta-pill-label">量能参考</div>
+              <div className="meta-pill-value">不计分</div>
+            </div>
+            <div className="meta-pill">
+              <div className="meta-pill-label">底部稳定加分</div>
+              <div className="meta-pill-value">20分</div>
+            </div>
+          </div>
+        <//>
+      </div>
+
+      <div className="page-grid">
+        <div className="cards-grid">
+          ${metrics.map(
+            (item) => html`
+              <${Card} className="metric-card" key=${item.label}>
+                <div className="metric-label">${item.label}</div>
+                <div className="metric-value">${item.value}</div>
+                <div className="metric-extra">${item.extra}</div>
+              <//>
+            `
+          )}
+        </div>
+
+        ${showProgress
+          ? html`
+              <${Card} className="panel-card">
+                <div className="refresh-progress-head">
+                  <div>
+                    <h2 className="section-title">筛选进度</h2>
+                    <div className="toolbar-copy">${statusText || "正在扫描全市场低位静默基底。"}</div>
+                  </div>
+                  <${Tag} color="processing">运行中<//>
+                </div>
+                <${Progress} percent=${progressPercent} status="active" />
+                <div className="refresh-progress-metrics">
+                  <span>已处理 ${formatInt(progress?.processed, "0")} / ${formatInt(progress?.total, "?")}</span>
+                  <span>当前命中 ${formatInt(progress?.low_base_candidates_total ?? progress?.candidates_total, "0")} 只</span>
+                  <span>已用时 ${formatElapsedSeconds(progress?.elapsed_seconds)}</span>
+                </div>
+              <//>
+            `
+          : null}
+
+        <${Card} className="panel-card table-card">
+          <div className="toolbar-row" style=${{ marginBottom: 18 }}>
+            <div>
+              <h2 className="section-title">低位静默基底排行榜</h2>
+              <div className="toolbar-copy">${statusText || LOW_BASE_SCAN_RULE_LABEL}</div>
+            </div>
+            <div className="toolbar-actions">
+              <${Tag} color=${loading ? "processing" : "success"}>${loading ? "筛选中" : "已就绪"}<//>
+              <${Tag} color="default">点击行查看个股详情<//>
+            </div>
+          </div>
+          <${Table}
+            className="backtest-table"
+            columns=${columns}
+            dataSource=${items}
+            rowKey=${(row) => row.symbol}
+            rowClassName=${(record) => record.is_new_hit ? "ranking-row-new-hit" : ""}
+            pagination=${{ pageSize: 20, showSizeChanger: false, hideOnSinglePage: true }}
+            loading=${loading}
+            scroll=${{ x: 3100 }}
+            locale=${{
+              emptyText: html`<div className="empty-block">${loading ? "正在筛选" : "暂无低位吸筹回踩候选"}</div>`,
             }}
             onRow=${(record) => ({
               onClick: () => onOpenDetail(record.symbol, items),
@@ -2574,11 +2921,176 @@ function BoxBacktestPage({
   `;
 }
 
+function LowBaseBacktestPage({
+  loading,
+  runningLabel,
+  statusText,
+  formState,
+  onChangeForm,
+  onRun,
+  onOpenDetail,
+  data,
+}) {
+  const items = data?.items || [];
+  const isScanMode = data?.mode === "scan";
+  const [symbolFilter, setSymbolFilter] = useState("");
+  const normalizedFilter = symbolFilter.trim().toUpperCase();
+  const filteredItems = useMemo(() => {
+    if (!normalizedFilter) return items;
+    return items.filter((item) => {
+      const symbol = String(item.symbol || "").toUpperCase();
+      const name = String(item.name || "").toUpperCase();
+      return symbol.includes(normalizedFilter) || name.includes(normalizedFilter);
+    });
+  }, [items, normalizedFilter]);
+
+  useEffect(() => {
+    setSymbolFilter("");
+  }, [data?.target_date, data?.mode, items.length]);
+
+  const columns = useMemo(() => [
+    ...buildLowBaseColumns({ includeRank: isScanMode }),
+    {
+      title: "数据日",
+      dataIndex: "latest_date",
+      key: "latest_date",
+      width: 120,
+    },
+    {
+      title: "可用日",
+      dataIndex: "available_days",
+      key: "available_days",
+      width: 90,
+      render: (value) => formatInt(value),
+    },
+  ], [isScanMode]);
+
+  return html`
+    <div className="page-shell">
+      <${Card} className="hero-card">
+        <div className="toolbar-row">
+          <div>
+            <div className="hero-kicker">Quiet Base Backtest</div>
+            <div className="hero-title" style=${{ fontSize: "34px", marginTop: 16 }}>低位吸筹回测页</div>
+            <div className="hero-copy">
+              按目标日期回到历史截面，重新计算低位静默基底五项主评分和量能参考。它用于验证“大跌后卖压衰竭痕迹”
+              在当时是否已经出现，不把低量低波动直接解释为确定的庄家吸筹。
+            </div>
+          </div>
+        </div>
+      <//>
+
+      <div className="page-grid">
+        <${Card} className="panel-card">
+          <div className="toolbar-row" style=${{ marginBottom: 16 }}>
+            <div>
+              <h2 className="section-title">运行参数</h2>
+              <div className="toolbar-copy">每行支持 code + date，也可以统一使用右侧日期输入框。留空代码即可执行全市场低位吸筹扫描。</div>
+            </div>
+          </div>
+
+          <${Form} layout="vertical">
+            <${Row} gutter=${16}>
+              <${Col} xs=${24} lg=${16}>
+                <${Form.Item} label="股票代码和目标日期">
+                  <${TextArea}
+                    rows=${6}
+                    value=${formState.symbols}
+                    onChange=${(event) => onChangeForm("symbols", event.target.value)}
+                    placeholder=${"601127.SH 2024-04-30\n000831.SZ 2026-07-24\n300142.SZ 2026-06-09"}
+                  />
+                  <div className="text-area-hint" style=${{ marginTop: 8 }}>
+                    示例：每行一只股票。只输入代码时，会默认使用统一目标日期。
+                  </div>
+                <//>
+              <//>
+              <${Col} xs=${24} lg=${8}>
+                <${Form.Item} label="统一目标日期">
+                  <${DatePicker}
+                    style=${{ width: "100%" }}
+                    value=${formState.date ? dayjs(formState.date) : null}
+                    onChange=${(value) => onChangeForm("date", value ? value.format("YYYY-MM-DD") : "")}
+                  />
+                <//>
+                <${Space} direction="vertical" size="middle" style=${{ width: "100%" }}>
+                  <${Button} type="primary" size="large" onClick=${onRun} loading=${loading} block>
+                    ${runningLabel}
+                  <//>
+                  <${Alert}
+                    className="floating-alert"
+                    type=${loading ? "info" : "success"}
+                    showIcon=${true}
+                    message=${loading ? "任务执行中" : "任务等待运行"}
+                    description=${statusText || "输入参数后点击运行低位吸筹回测。"}
+                  />
+                <//>
+              <//>
+            <//>
+          <//>
+        <//>
+
+        <${Card} className="panel-card table-card">
+          <div className="toolbar-row" style=${{ marginBottom: 16 }}>
+            <div>
+              <h2 className="section-title">低位吸筹回测结果</h2>
+              <div className="toolbar-copy">
+                ${isScanMode
+                  ? `全市场扫描${LOW_BASE_SCAN_RULE_LABEL}，点击行可查看个股详情。`
+                  : "手动模式会展示候选与非候选的五项主评分、量能参考、横盘区间细节和方向量能加分。"}
+              </div>
+            </div>
+            <div className="toolbar-actions">
+              <${Tag} color=${isScanMode ? "cyan" : "blue"}>${isScanMode ? "全市场低位吸筹扫描" : "单股低位吸筹回测"}<//>
+              <${Tag} color="default">目标日期 ${data?.target_date || formState.date || TODAY}<//>
+              ${isScanMode ? html`<${Tag} color="green">${LOW_BASE_SCAN_RULE_LABEL}<//>` : null}
+            </div>
+          </div>
+          <div className="toolbar-row" style=${{ marginBottom: 16, gap: 12 }}>
+            <div className="toolbar-copy">
+              ${normalizedFilter ? `当前筛选后 ${filteredItems.length} 条结果` : `当前共 ${items.length} 条结果`}
+            </div>
+            <div className="toolbar-actions" style=${{ minWidth: "min(100%, 360px)" }}>
+              <${Input}
+                allowClear=${true}
+                value=${symbolFilter}
+                onChange=${(event) => setSymbolFilter(event.target.value)}
+                placeholder="按股票代码或名称筛选结果"
+                size="large"
+              />
+            </div>
+          </div>
+          <${Table}
+            className="backtest-table"
+            columns=${columns}
+            dataSource=${filteredItems}
+            rowKey=${(row) => `${row.symbol}-${row.latest_date || ""}`}
+            rowClassName=${(record) => record.is_new_hit ? "ranking-row-new-hit" : ""}
+            pagination=${isScanMode ? { pageSize: 20, showSizeChanger: false, hideOnSinglePage: true } : false}
+            loading=${loading}
+            scroll=${{ x: 3300 }}
+            locale=${{
+              emptyText: html`<div className="empty-block">${normalizedFilter ? "没有匹配的股票结果" : "输入参数后运行低位吸筹回测"}</div>`,
+            }}
+            onRow=${(record) => ({
+              onClick: () => onOpenDetail(record.symbol, filteredItems),
+              style: { cursor: "pointer" },
+            })}
+          />
+        <//>
+      </div>
+    </div>
+  `;
+}
+
 function AppContent() {
   const [activePage, setActivePage] = useState(PAGE_OVERVIEW);
   const [demandLoading, setDemandLoading] = useState(false);
   const [demandStatus, setDemandStatus] = useState("正在准备Demand支撑回踩榜。");
   const [demandData, setDemandData] = useState({ items: [], count: 0 });
+  const [lowBaseLoading, setLowBaseLoading] = useState(false);
+  const [lowBaseStatus, setLowBaseStatus] = useState("正在准备低位吸筹回踩榜。");
+  const [lowBaseData, setLowBaseData] = useState({ items: [], count: 0 });
+  const [lowBaseRefreshProgress, setLowBaseRefreshProgress] = useState({ status: "idle" });
   const [crashReboundLoading, setCrashReboundLoading] = useState(false);
   const [crashReboundStatus, setCrashReboundStatus] = useState("点击刷新开始扫描暴跌回弹榜。");
   const [crashReboundData, setCrashReboundData] = useState({ items: [], count: 0, target_date: TODAY });
@@ -2594,6 +3106,9 @@ function AppContent() {
   const [demandBacktestLoading, setDemandBacktestLoading] = useState(false);
   const [demandBacktestStatus, setDemandBacktestStatus] = useState("输入股票代码和日期后点击运行Demand回测。");
   const [demandBacktestData, setDemandBacktestData] = useState({ items: [], target_date: TODAY });
+  const [lowBaseBacktestLoading, setLowBaseBacktestLoading] = useState(false);
+  const [lowBaseBacktestStatus, setLowBaseBacktestStatus] = useState("输入股票代码和日期后点击运行低位吸筹回测。");
+  const [lowBaseBacktestData, setLowBaseBacktestData] = useState({ items: [], target_date: TODAY });
   const [crashReboundBacktestLoading, setCrashReboundBacktestLoading] = useState(false);
   const [crashReboundBacktestStatus, setCrashReboundBacktestStatus] = useState("输入股票代码和日期后点击运行暴跌回弹回测。");
   const [crashReboundBacktestData, setCrashReboundBacktestData] = useState({ items: [], target_date: TODAY });
@@ -2602,12 +3117,14 @@ function AppContent() {
   const [boxBacktestData, setBoxBacktestData] = useState({ items: [], target_date: TODAY });
   const [formState, setFormState] = useState({ symbols: "", date: TODAY });
   const [demandBacktestFormState, setDemandBacktestFormState] = useState({ symbols: "", date: TODAY });
+  const [lowBaseBacktestFormState, setLowBaseBacktestFormState] = useState({ symbols: "", date: TODAY });
   const [crashReboundBacktestFormState, setCrashReboundBacktestFormState] = useState({ symbols: "", date: TODAY });
   const [boxFormState, setBoxFormState] = useState({ symbols: "", date: TODAY });
   const [detailState, setDetailState] = useState({ open: false, symbol: "", symbols: [], viewScope: "" });
   const [demandViewedMap, setDemandViewedMap] = useState(() => readDemandViewedMap());
   const polling = usePollingBacktestJob();
   const demandBacktestPolling = usePollingBacktestJob();
+  const lowBaseBacktestPolling = usePollingBacktestJob();
   const crashReboundPolling = usePollingBacktestJob();
   const boxPolling = usePollingBacktestJob();
   const latestDetailListRef = useRef([]);
@@ -2725,6 +3242,10 @@ function AppContent() {
     setDemandBacktestFormState((prev) => ({ ...prev, [key]: value }));
   };
 
+  const updateLowBaseBacktestForm = (key, value) => {
+    setLowBaseBacktestFormState((prev) => ({ ...prev, [key]: value }));
+  };
+
   const updateCrashReboundBacktestForm = (key, value) => {
     setCrashReboundBacktestFormState((prev) => ({ ...prev, [key]: value }));
   };
@@ -2743,6 +3264,8 @@ function AppContent() {
   }) => {
     const setters = target === "demandBacktest"
         ? { setLoading: setDemandBacktestLoading, setStatus: setDemandBacktestStatus, setData: setDemandBacktestData }
+      : target === "lowBaseBacktest"
+        ? { setLoading: setLowBaseBacktestLoading, setStatus: setLowBaseBacktestStatus, setData: setLowBaseBacktestData }
       : target === "crashRebound"
         ? { setLoading: setCrashReboundLoading, setStatus: setCrashReboundStatus, setData: setCrashReboundData }
       : target === "crashReboundBacktest"
@@ -2753,6 +3276,7 @@ function AppContent() {
     const { setLoading, setStatus, setData } = setters;
     const isScan = !symbols.trim();
     const isDemandBacktest = target === "demandBacktest";
+    const isLowBaseBacktest = target === "lowBaseBacktest";
     const isCrashRebound = target === "crashRebound" || target === "crashReboundBacktest";
     const isBoxBacktest = target === "boxBacktest";
 
@@ -2763,8 +3287,8 @@ function AppContent() {
 
     setLoading(true);
     setStatus(isScan
-      ? (isDemandBacktest ? "全市场Demand回踩扫描已启动，正在等待结果..." : isCrashRebound ? "全市场暴跌回弹扫描已启动，正在等待结果..." : isBoxBacktest ? "全市场箱体扫描已启动，正在等待结果..." : "全市场扫描已启动，正在等待结果...")
-      : (isDemandBacktest ? "正在计算Demand回测结果..." : isCrashRebound ? "正在计算暴跌回弹回测结果..." : isBoxBacktest ? "正在计算箱体回测结果..." : "正在计算回测结果..."));
+      ? (isDemandBacktest ? "全市场Demand回踩扫描已启动，正在等待结果..." : isLowBaseBacktest ? "全市场低位吸筹扫描已启动，正在等待结果..." : isCrashRebound ? "全市场暴跌回弹扫描已启动，正在等待结果..." : isBoxBacktest ? "全市场箱体扫描已启动，正在等待结果..." : "全市场扫描已启动，正在等待结果...")
+      : (isDemandBacktest ? "正在计算Demand回测结果..." : isLowBaseBacktest ? "正在计算低位吸筹回测结果..." : isCrashRebound ? "正在计算暴跌回弹回测结果..." : isBoxBacktest ? "正在计算箱体回测结果..." : "正在计算回测结果..."));
 
     try {
       const payload = await fetchJson(endpoint, {
@@ -2777,6 +3301,8 @@ function AppContent() {
         setStatus(`扫描中... (job=${payload.job_id})`);
         const poller = target === "demandBacktest"
           ? demandBacktestPolling
+          : target === "lowBaseBacktest"
+            ? lowBaseBacktestPolling
           : target === "crashRebound" || target === "crashReboundBacktest"
             ? crashReboundPolling
           : target === "boxBacktest" ? boxPolling : polling;
@@ -2870,6 +3396,34 @@ function AppContent() {
     return `${payload?.message || "Demand筛选进行中"}：已处理 ${processed}/${total}，当前命中 ${candidates} 只${batch}${elapsed}。`;
   };
 
+  const buildLowBaseStatus = (payload) => {
+    const newHitText = payload.comparison_date
+      ? `，较 ${payload.comparison_date} 新增命中 ${formatInt(payload.new_hit_count || 0, "0")} 只`
+      : "";
+    const dataDate = payload.ranking_trade_date || payload.latest_daily_trade_date || "--";
+    const refreshText = payload.stale_screening_results
+      ? `；筛选结果日期 ${payload.screening_results_trade_date || "--"} 落后于最新日线 ${payload.latest_daily_trade_date || "--"}，请刷新后重算低位吸筹字段`
+      : `；数据日 ${dataDate}`;
+    const elapsedText = payload.elapsed_seconds != null ? `，本次刷新用时 ${formatElapsedSeconds(payload.elapsed_seconds)}` : "";
+    if (payload.message && !payload.count) return payload.message;
+    return payload.count
+      ? `当前展示 ${payload.items?.length || 0} 条低位吸筹回踩候选${newHitText}${refreshText}${elapsedText}。`
+      : "暂无低位吸筹回踩候选。";
+  };
+
+  const buildLowBaseRefreshProgressStatus = (payload) => {
+    const processed = formatInt(payload?.processed, "0");
+    const total = formatInt(payload?.total, "?");
+    const candidates = formatInt(payload?.low_base_candidates_total ?? payload?.candidates_total, "0");
+    const batch = payload?.total_batches
+      ? `，批次 ${formatInt(payload.current_batch || 0, "0")}/${formatInt(payload.total_batches, "?")}`
+      : "";
+    const elapsed = payload?.elapsed_seconds != null
+      ? `，已用时 ${formatElapsedSeconds(payload.elapsed_seconds)}`
+      : "";
+    return `低位吸筹筛选进行中：已处理 ${processed}/${total}，当前命中 ${candidates} 只${batch}${elapsed}。`;
+  };
+
   const loadDemandSupport = async () => {
     setDemandLoading(true);
     try {
@@ -2925,6 +3479,65 @@ function AppContent() {
     }
   };
 
+  const loadLowBaseSupport = async () => {
+    setLowBaseLoading(true);
+    try {
+      const payload = await fetchJson("/api/low-base/ranking");
+      setLowBaseData(payload);
+      setLowBaseStatus(buildLowBaseStatus(payload));
+    } catch (error) {
+      setLowBaseStatus(error.message || "加载低位吸筹回踩榜失败");
+      message.error(error.message || "加载低位吸筹回踩榜失败");
+    } finally {
+      setLowBaseLoading(false);
+    }
+  };
+
+  const refreshLowBaseSupport = async () => {
+    setLowBaseLoading(true);
+    setLowBaseStatus("正在启动全市场低位吸筹筛选...");
+    setLowBaseRefreshProgress({ status: "started", processed: 0, total: 0, candidates_total: 0, low_base_candidates_total: 0 });
+    try {
+      const startPayload = await fetchJson("/api/low-base/refresh", { method: "POST" });
+      setLowBaseRefreshProgress(startPayload);
+      if (startPayload.success === false) {
+        setLowBaseStatus(startPayload.message || "低位吸筹筛选刷新未完成");
+        message.warning(startPayload.message || "低位吸筹筛选刷新未完成");
+        return;
+      }
+
+      setLowBaseStatus(buildLowBaseRefreshProgressStatus(startPayload));
+      for (let attempt = 0; attempt < 4320; attempt += 1) {
+        await sleep(2000);
+        const statusPayload = await fetchJson("/api/low-base/refresh-status");
+        setLowBaseRefreshProgress(statusPayload);
+        if (statusPayload.status === "failed" || statusPayload.success === false) {
+          setLowBaseStatus(statusPayload.message || "低位吸筹筛选刷新失败");
+          message.error(statusPayload.message || "低位吸筹筛选刷新失败");
+          return;
+        }
+        if (statusPayload.status === "completed" || statusPayload.running === false) {
+          const finalPayload = Array.isArray(statusPayload.items)
+            ? statusPayload
+            : await fetchJson("/api/low-base/ranking");
+          setLowBaseData(finalPayload);
+          setLowBaseRefreshProgress({ ...statusPayload, status: "completed", running: false });
+          setLowBaseStatus(buildLowBaseStatus(finalPayload));
+          message.success(finalPayload.message || "低位吸筹筛选已刷新");
+          return;
+        }
+        setLowBaseStatus(buildLowBaseRefreshProgressStatus(statusPayload));
+      }
+      setLowBaseStatus("低位吸筹筛选轮询超时，请稍后刷新榜单查看结果。");
+      message.warning("低位吸筹筛选轮询超时");
+    } catch (error) {
+      setLowBaseStatus(error.message || "刷新低位吸筹回踩榜失败");
+      message.error(error.message || "刷新低位吸筹回踩榜失败");
+    } finally {
+      setLowBaseLoading(false);
+    }
+  };
+
   const handleRunBacktest = () => runBacktestRequest({
     symbols: formState.symbols || "",
     date: formState.date || TODAY,
@@ -2936,6 +3549,13 @@ function AppContent() {
     date: demandBacktestFormState.date || TODAY,
     target: "demandBacktest",
     endpoint: "/api/box-backtest",
+  });
+
+  const handleRunLowBaseBacktest = () => runBacktestRequest({
+    symbols: lowBaseBacktestFormState.symbols || "",
+    date: lowBaseBacktestFormState.date || TODAY,
+    target: "lowBaseBacktest",
+    endpoint: "/api/low-base-backtest",
   });
 
   const handleRunCrashReboundBacktest = () => runBacktestRequest({
@@ -2954,6 +3574,7 @@ function AppContent() {
 
   useEffect(() => {
     loadDemandSupport();
+    loadLowBaseSupport();
     loadMonitors();
   }, []);
 
@@ -2967,6 +3588,8 @@ function AppContent() {
     { key: PAGE_OVERVIEW, label: "总览页" },
     { key: PAGE_DEMAND_SUPPORT, label: "Demand回踩" },
     { key: PAGE_DEMAND_BACKTEST, label: "Demand回测" },
+    { key: PAGE_LOW_BASE_SUPPORT, label: "低位吸筹回踩" },
+    { key: PAGE_LOW_BASE_BACKTEST, label: "低位吸筹回测" },
     { key: PAGE_CRASH_REBOUND, label: "暴跌回弹" },
     { key: PAGE_CRASH_REBOUND_BACKTEST, label: "暴跌回弹回测" },
     { key: PAGE_BOX_BACKTEST, label: "箱体回测" },
@@ -3014,6 +3637,30 @@ function AppContent() {
             scanModeText="全市场Demand扫描"
             manualModeText="单股Demand回测"
             emptyText="输入参数后运行Demand回测"
+          />
+        `
+    : activePage === PAGE_LOW_BASE_SUPPORT
+      ? html`
+          <${LowBaseSupportPage}
+            loading=${lowBaseLoading}
+            data=${lowBaseData}
+            statusText=${lowBaseStatus}
+            progress=${lowBaseRefreshProgress}
+            onRefresh=${refreshLowBaseSupport}
+            onOpenDetail=${openDetail}
+          />
+        `
+    : activePage === PAGE_LOW_BASE_BACKTEST
+      ? html`
+          <${LowBaseBacktestPage}
+            loading=${lowBaseBacktestLoading}
+            runningLabel=${!lowBaseBacktestFormState.symbols.trim() ? "运行全市场低位吸筹扫描" : "运行低位吸筹回测"}
+            statusText=${lowBaseBacktestStatus}
+            formState=${lowBaseBacktestFormState}
+            onChangeForm=${updateLowBaseBacktestForm}
+            onRun=${handleRunLowBaseBacktest}
+            onOpenDetail=${openDetail}
+            data=${lowBaseBacktestData}
           />
         `
     : activePage === PAGE_CRASH_REBOUND
@@ -3106,7 +3753,7 @@ function AppContent() {
               <div className="brand-badge">Weinstein Console</div>
               <div className="brand-title">温斯坦回测看板</div>
               <div className="brand-copy">
-                总览页保留个股搜索入口，Demand回踩页展示当前榜单，箱体回测页按历史日期重算Demand支撑与回踩机会，普通回测页继续承载原有逻辑。
+                总览页保留个股搜索入口，Demand回踩和低位吸筹页分别展示独立榜单，回测页按历史日期重算对应结构。
               </div>
             </div>
 

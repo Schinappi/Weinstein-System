@@ -49,6 +49,7 @@ const BOX_SCAN_RULE_LABEL = "按日线Demand支撑质量 + 历史反弹 + 当前
 const LOW_BASE_SCAN_RULE_LABEL = "按完整低位吸筹评分排序显示前100个，并保留候选标记；量能仅展示不计分";
 const CRASH_REBOUND_RULE_LABEL = "按急涨幅度 + 急跌幅度 + 两段流畅度排序显示前100个";
 const DEMAND_VIEWED_STORAGE_KEY = "winstan-demand-viewed-v1";
+const LOW_BASE_VIEWED_STORAGE_KEY = "winstan-low-base-viewed-v1";
 const DEMAND_VIEWED_TTL_MS = 15 * 24 * 60 * 60 * 1000;
 
 function normalizeSymbolKey(symbol) {
@@ -112,6 +113,38 @@ function formatElapsedSeconds(value, fallback = "--") {
 
 function formatBoolean(value) {
   return value ? "是" : "否";
+}
+
+function readLowBaseViewedMap(now = Date.now()) {
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(LOW_BASE_VIEWED_STORAGE_KEY) || "{}");
+    const cleaned = {};
+    Object.entries(parsed || {}).forEach(([symbol, timestamp]) => {
+      const key = normalizeSymbolKey(symbol);
+      const viewedAt = Number(timestamp);
+      if (key && Number.isFinite(viewedAt) && now - viewedAt <= DEMAND_VIEWED_TTL_MS) cleaned[key] = viewedAt;
+    });
+    if (JSON.stringify(cleaned) !== JSON.stringify(parsed || {})) {
+      window.localStorage.setItem(LOW_BASE_VIEWED_STORAGE_KEY, JSON.stringify(cleaned));
+    }
+    return cleaned;
+  } catch (_error) {
+    return {};
+  }
+}
+
+function writeLowBaseViewedMap(viewedMap) {
+  try {
+    window.localStorage.setItem(LOW_BASE_VIEWED_STORAGE_KEY, JSON.stringify(viewedMap || {}));
+  } catch (_error) {
+  }
+}
+
+function lowBaseRowClassName(record, viewedMap) {
+  return [
+    record?.is_new_hit ? "ranking-row-new-hit" : "",
+    viewedMap?.[normalizeSymbolKey(record?.symbol)] ? "ranking-row-viewed" : "",
+  ].filter(Boolean).join(" ");
 }
 
 function formatAmount(value, fallback = "--") {
@@ -1537,6 +1570,7 @@ function LowBaseSupportPage({
   progress,
   onRefresh,
   onOpenDetail,
+  viewedMap,
 }) {
   const items = data?.items || [];
   const progressTotal = Number(progress?.total || 0);
@@ -1584,6 +1618,7 @@ function LowBaseSupportPage({
               <${Button} type="primary" size="large" onClick=${onRefresh} loading=${loading}>刷新榜单<//>
               <${Tag} color="green">低位静默基底<//>
               <${Tag} color="cyan">回踩观察池<//>
+              <${Tag} color="geekblue">已查看保留15天<//>
               <${Tag} color="geekblue">非买入信号<//>
             </div>
           </div>
@@ -1660,7 +1695,7 @@ function LowBaseSupportPage({
             columns=${columns}
             dataSource=${items}
             rowKey=${(row) => row.symbol}
-            rowClassName=${(record) => record.is_new_hit ? "ranking-row-new-hit" : ""}
+            rowClassName=${(record) => lowBaseRowClassName(record, viewedMap)}
             pagination=${{ pageSize: 20, showSizeChanger: false, hideOnSinglePage: true }}
             loading=${loading}
             scroll=${{ x: 3100 }}
@@ -3122,6 +3157,7 @@ function AppContent() {
   const [boxFormState, setBoxFormState] = useState({ symbols: "", date: TODAY });
   const [detailState, setDetailState] = useState({ open: false, symbol: "", symbols: [], viewScope: "" });
   const [demandViewedMap, setDemandViewedMap] = useState(() => readDemandViewedMap());
+  const [lowBaseViewedMap, setLowBaseViewedMap] = useState(() => readLowBaseViewedMap());
   const polling = usePollingBacktestJob();
   const demandBacktestPolling = usePollingBacktestJob();
   const lowBaseBacktestPolling = usePollingBacktestJob();
@@ -3163,6 +3199,30 @@ function AppContent() {
     openDetail(symbol, sourceItems, "demand");
   };
 
+  const markLowBaseViewed = (symbol) => {
+    const key = normalizeSymbolKey(symbol);
+    if (!key) return;
+    setLowBaseViewedMap((previous) => {
+      const now = Date.now();
+      const next = {};
+      Object.entries(previous || {}).forEach(([savedSymbol, timestamp]) => {
+        const savedKey = normalizeSymbolKey(savedSymbol);
+        const viewedAt = Number(timestamp);
+        if (savedKey && Number.isFinite(viewedAt) && now - viewedAt <= DEMAND_VIEWED_TTL_MS) {
+          next[savedKey] = viewedAt;
+        }
+      });
+      next[key] = now;
+      writeLowBaseViewedMap(next);
+      return next;
+    });
+  };
+
+  const openLowBaseDetail = (symbol, sourceItems) => {
+    markLowBaseViewed(symbol);
+    openDetail(symbol, sourceItems, "low-base");
+  };
+
   const navigateDetail = (direction) => {
     const list = detailState.symbols || [];
     const currentIndex = list.indexOf(detailState.symbol);
@@ -3172,6 +3232,8 @@ function AppContent() {
     const nextSymbol = list[nextIndex];
     if (detailState.viewScope === "demand") {
       markDemandViewed(nextSymbol);
+    } else if (detailState.viewScope === "low-base") {
+      markLowBaseViewed(nextSymbol);
     }
     setDetailState((prev) => ({ ...prev, symbol: nextSymbol }));
   };
@@ -3647,7 +3709,8 @@ function AppContent() {
             statusText=${lowBaseStatus}
             progress=${lowBaseRefreshProgress}
             onRefresh=${refreshLowBaseSupport}
-            onOpenDetail=${openDetail}
+            onOpenDetail=${openLowBaseDetail}
+            viewedMap=${lowBaseViewedMap}
           />
         `
     : activePage === PAGE_LOW_BASE_BACKTEST

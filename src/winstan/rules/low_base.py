@@ -26,11 +26,26 @@ MIN_BASE_DURATION_WEEKS = 6
 MAX_BASE_DURATION_WEEKS = 40
 MAX_BASE_CLOSE_RANGE_PCT = 8.0
 BOTTOM_BONUS_CLOSE_RANGE_PCT = 5.0
+RECENT_LOW_LOOKBACK_DAILY = 20
+RECENT_LOW_LOOKBACK_WEEKLY = 8
+# A low-base candidate must still be close to the recent stopping low.  This
+# prevents a post-rally consolidation from being presented as a low-level base.
+MAX_BASE_REBOUND_FROM_RECENT_LOW_PCT = 10.0
 SUPPORT_ZONE_LOWER_QUANTILE = 0.10
 SUPPORT_PRICE_QUANTILE = 0.20
 SUPPORT_ZONE_UPPER_QUANTILE = 0.35
 BOX_TOP_QUANTILE = 0.90
 MAX_CANDIDATE_VOLUME_RATIO = 0.85
+# 趋势斜率"走平"硬门槛：每天平均涨跌幅度超过此值即视为单调趋势（非震荡）
+TREND_SLOPE_MAX_DAILY_PCT = 0.10
+# 触底点搜索范围（交易日）：横盘窗口起点从"最近这波下跌的触底点"开始算。
+# 太宽会找到更早的旧底（如半年前的低点），太窄会漏掉当前这波下跌的底。
+TROUGH_LOOKBACK_BARS = 60
+# 触底点识别（趋势转走平）：摆动低点之前 N 天的斜率低于此值 = 在下跌；
+# 之后到最新的斜率高于此值 = 已走平。两者同时满足才是"下跌结束触底"。
+TROUGH_DECLINE_LOOKBACK_BARS = 20
+TROUGH_DECLINE_SLOPE_PCT = -0.20
+TROUGH_FLAT_SLOPE_PCT = -0.05
 
 
 @dataclass(frozen=True)
@@ -51,6 +66,7 @@ class QuietBaseWindow:
     avg_abs_change_pct: float | None
     recent_close_range_pct: float | None
     drift_pct: float | None
+    trend_slope_pct: float | None
 
 
 def compute_low_base_quality(
@@ -107,31 +123,37 @@ def compute_low_base_quality(
     approach_gap_pct = _approach_gap_pct(latest_close, support)
     avg_penetration_pct = _avg_close_penetration_pct(bars, base.start_idx, zone_lower, support)
     avg_swing_pct = _base_swing_pct(support, box_top)
+    recent_low_rebound_pct, recent_low_date = _recent_low_rebound_metrics(
+        bars,
+        base.start_idx,
+        support,
+        source_label,
+    )
 
     prior_score = _score_prior_decline(prior_decline_pct)
     duration_score = _score_base_duration(base.duration_weeks)
     volatility_score = _score_quiet_base(
         close_range_pct=base.close_range_pct,
         avg_abs_change_pct=base.avg_abs_change_pct,
+        trend_slope_pct=base.trend_slope_pct,
+        source_label=source_label,
+    )
+    volatility_range_score, volatility_noise_score, volatility_trend_score = _score_quiet_base_components(
+        close_range_pct=base.close_range_pct,
+        avg_abs_change_pct=base.avg_abs_change_pct,
+        trend_slope_pct=base.trend_slope_pct,
         source_label=source_label,
     )
     volume_score = 0.0
     bottom_score = _score_bottom_stability(
-        close_range_pct=base.close_range_pct,
-        recent_close_range_pct=base.recent_close_range_pct,
+        touch_count=touch_count,
         recent_close_break_pct=recent_close_break_pct,
-    )
-    breakout_score = _score_breakout_readiness(
-        distance_to_top_pct=distance_to_top_pct,
-        ema_flat_score=ema_flat_score,
-        direction_volume_score=direction_volume_score,
-        recent_intraday_break_pct=recent_intraday_break_pct,
-        recent_close_break_pct=recent_close_break_pct,
+        false_break_count=false_break_count,
     )
     total = round(
         min(
             100.0,
-            max(0.0, prior_score + duration_score + volatility_score + bottom_score + breakout_score),
+            max(0.0, prior_score + duration_score + volatility_score + bottom_score),
         ),
         1,
     )
@@ -139,8 +161,12 @@ def compute_low_base_quality(
     support_active = bool(
         base.close_range_pct is not None
         and base.close_range_pct <= MAX_BASE_CLOSE_RANGE_PCT
-        and base.drift_pct is not None
-        and base.drift_pct <= _max_base_drift_pct(source_label)
+        and base.trend_slope_pct is not None
+        and abs(base.trend_slope_pct) <= TREND_SLOPE_MAX_DAILY_PCT * (1.8 if source_label == "weekly" else 1.0)
+        and (
+            recent_low_rebound_pct is None
+            or recent_low_rebound_pct <= MAX_BASE_REBOUND_FROM_RECENT_LOW_PCT
+        )
     )
     candidate = (
         prior_decline_pct is not None
@@ -159,7 +185,6 @@ def compute_low_base_quality(
         duration_score=duration_score,
         volatility_score=volatility_score,
         bottom_score=bottom_score,
-        breakout_score=breakout_score,
         prior_decline_pct=prior_decline_pct,
         prior_range=_format_range(prior_start, prior_end),
         base_range=_format_range(base.start_date, base.end_date),
@@ -175,11 +200,21 @@ def compute_low_base_quality(
         touch_count=touch_count,
         touch_low_progress_pct=touch_low_progress_pct,
     )
+    if (
+        recent_low_rebound_pct is not None
+        and recent_low_rebound_pct > MAX_BASE_REBOUND_FROM_RECENT_LOW_PCT
+    ):
+        reason += (
+            f" / 不列入候选：相对近期低点{recent_low_rebound_pct:.1f}%"
+            f"，超过{MAX_BASE_REBOUND_FROM_RECENT_LOW_PCT:.0f}%上限"
+        )
     support_reason = _support_reason(
         close_range_pct=base.close_range_pct,
         recent_close_range_pct=base.recent_close_range_pct,
         approach_gap_pct=approach_gap_pct,
-        drift_pct=base.drift_pct,
+        trend_slope_pct=base.trend_slope_pct,
+        recent_low_rebound_pct=recent_low_rebound_pct,
+        recent_low_date=recent_low_date,
     )
 
     return {
@@ -200,9 +235,14 @@ def compute_low_base_quality(
         "low_base_score_prior_decline": round(prior_score, 1),
         "low_base_score_duration": round(duration_score, 1),
         "low_base_score_volatility": round(volatility_score, 1),
+        "low_base_score_volatility_range": round(volatility_range_score, 1),
+        "low_base_score_volatility_noise": round(volatility_noise_score, 1),
+        "low_base_score_volatility_trend": round(volatility_trend_score, 1),
         "low_base_score_volume": round(volume_score, 1),
         "low_base_score_bottom_stability": round(bottom_score, 1),
-        "low_base_score_breakout_readiness": round(breakout_score, 1),
+        "low_base_score_bottom_touch": round(_bottom_touch_score(touch_count), 1),
+        "low_base_score_bottom_hold": round(_bottom_hold_score(recent_close_break_pct), 1),
+        "low_base_score_bottom_false_break": round(_bottom_false_break_score(false_break_count), 1),
         "low_base_prior_decline_pct": round(prior_decline_pct, 2) if prior_decline_pct is not None else None,
         "low_base_prior_decline_start_date": _format_date(prior_start),
         "low_base_prior_decline_end_date": _format_date(prior_end),
@@ -223,6 +263,11 @@ def compute_low_base_quality(
             round(base.recent_close_range_pct, 2) if base.recent_close_range_pct is not None else None
         ),
         "low_base_base_drift_pct": round(base.drift_pct, 2) if base.drift_pct is not None else None,
+        "low_base_trend_slope_pct": round(base.trend_slope_pct, 4) if base.trend_slope_pct is not None else None,
+        "low_base_recent_low_rebound_pct": (
+            round(recent_low_rebound_pct, 2) if recent_low_rebound_pct is not None else None
+        ),
+        "low_base_recent_low_date": _format_date(recent_low_date),
         "low_base_volume_decay_ratio": round(volume_ratio, 2) if volume_ratio is not None else None,
         "low_base_volume_recent_avg": round(volume_recent, 2) if volume_recent is not None else None,
         "low_base_volume_baseline_avg": round(volume_baseline, 2) if volume_baseline is not None else None,
@@ -303,9 +348,14 @@ def _default_result(reason: str) -> dict[str, object]:
         "low_base_score_prior_decline": 0.0,
         "low_base_score_duration": 0.0,
         "low_base_score_volatility": 0.0,
+        "low_base_score_volatility_range": 0.0,
+        "low_base_score_volatility_noise": 0.0,
+        "low_base_score_volatility_trend": 0.0,
         "low_base_score_volume": 0.0,
         "low_base_score_bottom_stability": 0.0,
-        "low_base_score_breakout_readiness": 0.0,
+        "low_base_score_bottom_touch": 0.0,
+        "low_base_score_bottom_hold": 0.0,
+        "low_base_score_bottom_false_break": 0.0,
         "low_base_prior_decline_pct": None,
         "low_base_prior_decline_start_date": "",
         "low_base_prior_decline_end_date": "",
@@ -318,6 +368,9 @@ def _default_result(reason: str) -> dict[str, object]:
         "low_base_base_avg_abs_change_pct": None,
         "low_base_recent_close_range_pct": None,
         "low_base_base_drift_pct": None,
+        "low_base_trend_slope_pct": None,
+        "low_base_recent_low_rebound_pct": None,
+        "low_base_recent_low_date": "",
         "low_base_volume_decay_ratio": None,
         "low_base_volume_recent_avg": None,
         "low_base_volume_baseline_avg": None,
@@ -363,46 +416,62 @@ def _prepare_bars(frame: pd.DataFrame) -> pd.DataFrame:
     return bars.dropna(subset=["trade_date", "high", "low", "close"]).reset_index(drop=True)
 
 
+def _find_trough_idx(bars: pd.DataFrame, end_idx: int) -> int:
+    """找触底点 = 最近一个"下跌趋势转为走平"的摆动低点。
+
+    判断依据：该摆动低点之前是一段下跌（前 N 天斜率显著负），之后到最新已走平
+    （斜率接近 0）。这样能区分"大跌/阴跌的底"与"震荡中的下探"——
+    震荡下探之前是震荡（斜率不显著负），下跌中途的低点之后仍在跌（斜率仍负）。
+    """
+    closes = pd.to_numeric(bars["close"], errors="coerce")
+    order = 2
+
+    # 摆动低点（收盘价局部最小）
+    swing_lows = []
+    for i in range(order, end_idx - order + 1):
+        if (
+            closes.iloc[i] < closes.iloc[i - order : i].min()
+            and closes.iloc[i] < closes.iloc[i + 1 : i + 1 + order].min()
+        ):
+            swing_lows.append(i)
+
+    # 从最近往回，找"之前下跌、之后走平"的摆动低点
+    for low_idx in reversed(swing_lows):
+        left_seg = closes.iloc[max(0, low_idx - TROUGH_DECLINE_LOOKBACK_BARS) : low_idx + 1]
+        left_slope = _trend_slope_pct(left_seg)
+        right_seg = closes.iloc[low_idx : end_idx + 1]
+        right_slope = _trend_slope_pct(right_seg)
+        if left_slope is not None and right_slope is not None:
+            if left_slope < TROUGH_DECLINE_SLOPE_PCT and right_slope > TROUGH_FLAT_SLOPE_PCT:
+                return low_idx
+
+    # 回退：最近 TROUGH_LOOKBACK_BARS 内最低收盘
+    search_start = max(0, end_idx - TROUGH_LOOKBACK_BARS)
+    return int(closes.iloc[search_start : end_idx + 1].idxmin())
+
+
 def _find_quiet_base_window(
     bars: pd.DataFrame,
     source_label: str,
 ) -> QuietBaseWindow:
     bars_per_week = 5 if source_label == "daily" else 1
     min_base_bars = MIN_BASE_DURATION_WEEKS * bars_per_week
-    max_base_bars = min(len(bars), MAX_BASE_DURATION_WEEKS * bars_per_week)
     if len(bars) < min_base_bars:
         return _empty_base_window()
 
     end_idx = len(bars) - 1
-    best_window: QuietBaseWindow | None = None
-    best_key: tuple[float, ...] | None = None
 
-    for duration_bars in range(min_base_bars, max_base_bars + 1):
-        start_idx = end_idx - duration_bars + 1
-        if start_idx < 0:
-            continue
-        segment = bars.iloc[start_idx : end_idx + 1]
-        candidate = _build_quiet_base_window(segment, start_idx, end_idx, source_label)
-        if candidate is None:
-            continue
-        quiet_ok = (
-            candidate.close_range_pct is not None
-            and candidate.close_range_pct <= MAX_BASE_CLOSE_RANGE_PCT
-            and candidate.drift_pct is not None
-            and candidate.drift_pct <= _max_base_drift_pct(source_label)
-        )
-        key = (
-            1.0 if quiet_ok else 0.0,
-            -(candidate.close_range_pct or 999.0),
-            -(candidate.recent_close_range_pct or 999.0),
-            float(candidate.duration_bars),
-            -(candidate.avg_abs_change_pct or 999.0),
-            -(candidate.drift_pct or 999.0),
-        )
-        if best_key is None or key > best_key:
-            best_key = key
-            best_window = candidate
-    return best_window or _empty_base_window()
+    # 触底点 = 下跌趋势转为走平的转折点。横盘窗口 = 触底点 -> 最新一天，
+    # 从"下跌完触底"才开始算，而不是把下跌段误算进横盘。
+    trough_idx = _find_trough_idx(bars, end_idx)
+
+    # 触底后横盘时间必须满足最小持续（否则尚未形成充分基底）
+    if end_idx - trough_idx + 1 < min_base_bars:
+        return _empty_base_window()
+
+    segment = bars.iloc[trough_idx : end_idx + 1]
+    candidate = _build_quiet_base_window(segment, trough_idx, end_idx, source_label)
+    return candidate if candidate is not None else _empty_base_window()
 
 
 def _build_quiet_base_window(
@@ -427,6 +496,7 @@ def _build_quiet_base_window(
     drift_pct = None
     if first_close is not None and first_close > 0 and last_close is not None:
         drift_pct = abs(last_close / first_close - 1.0) * 100.0
+    trend_slope_pct = _trend_slope_pct(closes)
 
     support_price = _series_quantile(closes, SUPPORT_PRICE_QUANTILE) or close_low
     zone_lower = _series_quantile(closes, SUPPORT_ZONE_LOWER_QUANTILE) or close_low
@@ -460,6 +530,7 @@ def _build_quiet_base_window(
         avg_abs_change_pct=avg_abs_change_pct,
         recent_close_range_pct=recent_close_range_pct,
         drift_pct=drift_pct,
+        trend_slope_pct=trend_slope_pct,
     )
 
 
@@ -481,6 +552,7 @@ def _empty_base_window() -> QuietBaseWindow:
         avg_abs_change_pct=None,
         recent_close_range_pct=None,
         drift_pct=None,
+        trend_slope_pct=None,
     )
 
 
@@ -505,6 +577,33 @@ def _prior_decline_metrics(
     if not np.isfinite(peak) or peak <= support:
         return None, None, None
     return (peak / support - 1.0) * 100.0, bars.at[peak_idx, "trade_date"], bars.at[base_start_idx, "trade_date"]
+
+
+def _recent_low_rebound_metrics(
+    bars: pd.DataFrame,
+    base_start_idx: int,
+    support: float,
+    source_label: str,
+) -> tuple[float | None, object | None]:
+    """Measure how far the proposed base sits above the recent stopping low.
+
+    The low-base screen is intended to find an accumulation area near the
+    stopping low, not a quiet box formed after a sizeable rally.  Use the
+    intraday low because it captures the actual rejection/stopping point more
+    faithfully than a close-only minimum.
+    """
+    if support <= 0 or "low" not in bars.columns or base_start_idx < 0:
+        return None, None
+    lookback = RECENT_LOW_LOOKBACK_DAILY if source_label == "daily" else RECENT_LOW_LOOKBACK_WEEKLY
+    start = max(0, int(base_start_idx) - lookback)
+    recent = pd.to_numeric(bars.iloc[start : int(base_start_idx) + 1]["low"], errors="coerce").dropna()
+    if recent.empty:
+        return None, None
+    low_idx = recent.idxmin()
+    recent_low = float(recent.loc[low_idx])
+    if not np.isfinite(recent_low) or recent_low <= 0:
+        return None, None
+    return (support / recent_low - 1.0) * 100.0, bars.at[low_idx, "trade_date"]
 
 
 def _volume_decay_metrics(
@@ -653,12 +752,18 @@ def _score_prior_decline(value: float | None) -> float:
         return 0.0
     if value > 60.0:
         return 15.0
+    if value >= 50.0:
+        return 14.0
     if value >= 40.0:
-        return 12.75
+        return 12.0
+    if value >= 30.0:
+        return 10.0
     if value >= 25.0:
-        return 9.0
+        return 8.0
+    if value >= 20.0:
+        return 6.0
     if value >= 15.0:
-        return 4.5
+        return 4.0
     return 0.0
 
 
@@ -666,27 +771,66 @@ def _score_base_duration(weeks: int) -> float:
     if weeks < MIN_BASE_DURATION_WEEKS:
         return 0.0
     if weeks < 8:
-        return 6.0
+        return 8.0
+    if weeks < 12:
+        return 15.0
     if weeks < 16:
-        return 12.0
-    if weeks <= 30:
         return 20.0
+    if weeks <= 30:
+        return 25.0
     if weeks <= 40:
-        return 16.0
-    return 10.0
+        return 20.0
+    return 12.0
+
+
+def _score_trend(trend_slope_pct: float | None, source_label: str) -> float:
+    """趋势斜率分 (0-5)：|斜率|越小越走平，越大越像单调趋势。"""
+    if trend_slope_pct is None:
+        return 0.0
+    abs_slope = abs(trend_slope_pct)
+    max_slope = TREND_SLOPE_MAX_DAILY_PCT * (1.8 if source_label == "weekly" else 1.0)
+    if max_slope <= 0:
+        return 0.0
+    ratio = abs_slope / max_slope
+    if ratio <= 0.25:
+        return 5.0
+    if ratio <= 0.5:
+        return 4.0
+    if ratio <= 0.75:
+        return 3.0
+    if ratio <= 1.0:
+        return 2.0
+    return 0.0
 
 
 def _score_quiet_base(
     *,
     close_range_pct: float | None,
     avg_abs_change_pct: float | None,
+    trend_slope_pct: float | None,
     source_label: str,
 ) -> float:
+    range_score, noise_score, trend_score = _score_quiet_base_components(
+        close_range_pct=close_range_pct,
+        avg_abs_change_pct=avg_abs_change_pct,
+        trend_slope_pct=trend_slope_pct,
+        source_label=source_label,
+    )
+    return min(30.0, range_score + noise_score + trend_score)
+
+
+def _score_quiet_base_components(
+    *,
+    close_range_pct: float | None,
+    avg_abs_change_pct: float | None,
+    trend_slope_pct: float | None,
+    source_label: str,
+) -> tuple[float, float, float]:
     if close_range_pct is None:
-        return 0.0
+        return 0.0, 0.0, 0.0
     scale = 1.0 if source_label == "daily" else 1.8
     if close_range_pct <= 3.5 * scale:
-        range_score = 15.0
+        range_score = 16.0
     elif close_range_pct <= BOTTOM_BONUS_CLOSE_RANGE_PCT * scale:
         range_score = 13.0
     elif close_range_pct <= 6.5 * scale:
@@ -701,18 +845,20 @@ def _score_quiet_base(
     if avg_abs_change_pct is None:
         noise_score = 0.0
     elif avg_abs_change_pct <= 0.9 * scale:
-        noise_score = 10.0
+        noise_score = 9.0
     elif avg_abs_change_pct <= 1.2 * scale:
-        noise_score = 8.0
+        noise_score = 7.0
     elif avg_abs_change_pct <= 1.6 * scale:
-        noise_score = 6.0
+        noise_score = 5.0
     elif avg_abs_change_pct <= 2.0 * scale:
-        noise_score = 4.0
+        noise_score = 3.0
     elif avg_abs_change_pct <= 2.4 * scale:
-        noise_score = 2.0
+        noise_score = 1.0
     else:
         noise_score = 0.0
-    return min(25.0, range_score + noise_score)
+
+    trend_score = _score_trend(trend_slope_pct, source_label)
+    return range_score, noise_score, trend_score
 
 
 def _score_direction_volume(ratio: float | None) -> float:
@@ -731,80 +877,62 @@ def _score_direction_volume(ratio: float | None) -> float:
     return 0.0
 
 
+def _bottom_touch_score(touch_count: int) -> float:
+    """触底次数 (0-10)：价格反复回到支撑区，说明下方承接有效。"""
+    if touch_count >= 5:
+        return 10.0
+    if touch_count >= 4:
+        return 9.0
+    if touch_count >= 3:
+        return 7.0
+    if touch_count >= 2:
+        return 5.0
+    if touch_count >= 1:
+        return 3.0
+    return 0.0
+
+
+def _bottom_hold_score(recent_close_break_pct: float) -> float:
+    """支撑保持 (0-12)：近20根收盘价跌破支撑区的最大幅度，越小越稳。"""
+    if recent_close_break_pct <= 0.0:
+        return 12.0
+    if recent_close_break_pct <= 0.5:
+        return 10.0
+    if recent_close_break_pct <= 1.0:
+        return 8.0
+    if recent_close_break_pct <= 1.5:
+        return 6.0
+    if recent_close_break_pct <= 2.0:
+        return 4.0
+    if recent_close_break_pct <= 3.0:
+        return 2.0
+    return 0.0
+
+
+def _bottom_false_break_score(false_break_count: int) -> float:
+    """假跌破控制 (0-8)：盘中砸破支撑但收盘收回的次数越少，支撑越真实（负向）。"""
+    if false_break_count == 0:
+        return 8.0
+    if false_break_count == 1:
+        return 6.0
+    if false_break_count == 2:
+        return 4.0
+    if false_break_count == 3:
+        return 2.0
+    return 0.0
+
+
 def _score_bottom_stability(
     *,
-    close_range_pct: float | None,
-    recent_close_range_pct: float | None,
+    touch_count: int,
     recent_close_break_pct: float,
+    false_break_count: int,
 ) -> float:
-    if close_range_pct is None:
-        return 0.0
-    if close_range_pct <= 6.0:
-        range_bonus = 16.0
-    elif close_range_pct <= 8.0:
-        range_bonus = 14.0
-    elif close_range_pct <= 10.0:
-        range_bonus = 11.0
-    elif close_range_pct <= 12.0:
-        range_bonus = 6.0
-    else:
-        range_bonus = 0.0
-
-    if recent_close_range_pct is None:
-        recent_bonus = 0.0
-    elif recent_close_range_pct <= 1.5:
-        recent_bonus = 5.0
-    elif recent_close_range_pct <= 2.5:
-        recent_bonus = 4.0
-    elif recent_close_range_pct <= 3.5:
-        recent_bonus = 3.0
-    elif recent_close_range_pct <= 5.0:
-        recent_bonus = 1.0
-    else:
-        recent_bonus = 0.0
-
-    if recent_close_break_pct <= 0.0:
-        support_hold_bonus = 4.0
-    elif recent_close_break_pct <= 1.0:
-        support_hold_bonus = 2.0
-    else:
-        support_hold_bonus = 0.0
-    return min(25.0, range_bonus + recent_bonus + support_hold_bonus)
-
-
-def _score_breakout_readiness(
-    *,
-    distance_to_top_pct: float | None,
-    ema_flat_score: float,
-    direction_volume_score: float,
-    recent_intraday_break_pct: float | None,
-    recent_close_break_pct: float,
-) -> float:
-    if distance_to_top_pct is None:
-        distance_score = 0.0
-    elif distance_to_top_pct <= 0.0:
-        distance_score = 1.0
-    elif distance_to_top_pct <= 5.0:
-        distance_score = 5.0
-    elif distance_to_top_pct <= 12.0:
-        distance_score = 4.0
-    elif distance_to_top_pct <= 25.0:
-        distance_score = 2.0
-    else:
-        distance_score = 0.0
-
-    if recent_intraday_break_pct is None:
-        recovery_score = 0.5
-    else:
-        recovered = max(0.0, recent_intraday_break_pct - max(recent_close_break_pct, 0.0))
-        recovery_score = 2.0 if recovered >= 1.0 else 1.0 if recovered > 0.0 else 0.5
-
     return min(
-        15.0,
-        distance_score
-        + min(max(ema_flat_score, 0.0), 5.0)
-        + min(max(direction_volume_score, 0.0), 5.0)
-        + recovery_score,
+        30.0,
+        _bottom_touch_score(touch_count)
+        + _bottom_hold_score(recent_close_break_pct)
+        + _bottom_false_break_score(false_break_count),
     )
 
 
@@ -822,10 +950,9 @@ def _build_reason(**kwargs: object) -> str:
     parts = [
         f"{kwargs['grade']} 静默基底 {float(kwargs['total']):.0f}",
         f"前期下跌 {float(kwargs['prior_score']):.1f}/15",
-        f"横盘持续 {float(kwargs['duration_score']):.1f}/20",
-        f"横盘静默 {float(kwargs['volatility_score']):.1f}/25",
-        f"底部稳定加分 {float(kwargs['bottom_score']):.1f}/25",
-        f"突破准备 {float(kwargs['breakout_score']):.1f}/15",
+        f"横盘持续 {float(kwargs['duration_score']):.1f}/25",
+        f"横盘静默 {float(kwargs['volatility_score']):.1f}/30",
+        f"底部稳定 {float(kwargs['bottom_score']):.1f}/30",
     ]
     prior_decline_pct = kwargs.get("prior_decline_pct")
     if prior_decline_pct is not None:
@@ -1016,14 +1143,38 @@ def _support_reason(
     close_range_pct: float | None,
     recent_close_range_pct: float | None,
     approach_gap_pct: float | None,
-    drift_pct: float | None,
+    trend_slope_pct: float | None,
+    recent_low_rebound_pct: float | None,
+    recent_low_date: object | None,
 ) -> str:
     close_text = "--" if close_range_pct is None else f"{close_range_pct:.2f}%"
     recent_text = "--" if recent_close_range_pct is None else f"{recent_close_range_pct:.2f}%"
     approach_text = "--" if approach_gap_pct is None else f"{approach_gap_pct:.2f}%"
-    drift_text = "--" if drift_pct is None else f"{drift_pct:.2f}%"
-    return f"底部横盘收盘振幅 {close_text} / 近10振幅 {recent_text} / 漂移 {drift_text} / 距底部 {approach_text}"
+    trend_text = "--" if trend_slope_pct is None else f"{trend_slope_pct:+.3f}%/天"
+    rebound_text = "--" if recent_low_rebound_pct is None else f"{recent_low_rebound_pct:.2f}%"
+    low_date_text = _format_date(recent_low_date) or "--"
+    return (
+        f"底部横盘收盘振幅 {close_text} / 近10振幅 {recent_text} / 趋势斜率 {trend_text} "
+        f"/ 距底部 {approach_text} / 相对近期低点反弹 {rebound_text}（低点{low_date_text}，上限{MAX_BASE_REBOUND_FROM_RECENT_LOW_PCT:.0f}%）"
+    )
 
 
 def _max_base_drift_pct(source_label: str) -> float:
     return 6.0 if source_label == "daily" else 10.0
+
+
+def _trend_slope_pct(closes: pd.Series) -> float | None:
+    """线性回归斜率，标准化为每根 bar 的百分比变动。
+
+    正=单调上升，负=单调下降，0=走平。用于区分"震荡走平"与"单调趋势"，
+    替代首末漂移（drift_pct）——后者无法区分"开始即最低、结束即最高"的震荡。
+    """
+    numeric = pd.to_numeric(closes, errors="coerce").dropna()
+    if len(numeric) < 2:
+        return None
+    midpoint = float(numeric.mean())
+    if midpoint <= 0:
+        return None
+    x = np.arange(len(numeric), dtype=float)
+    slope, _ = np.polyfit(x, numeric.to_numpy(dtype=float), 1)
+    return float(slope / midpoint * 100.0)

@@ -238,11 +238,11 @@ function buildLowBaseColumns({ includeRank = true } = {}) {
       title: "横盘静默",
       dataIndex: "low_base_score_volatility",
       key: "low_base_score_volatility",
-      width: 190,
+      width: 230,
       render: (_, row) => renderLowBaseScoreDetail(
         row.low_base_score_volatility,
-        25,
-        `${row.low_base_volatility_range || "--"} / 全区 ${formatPercent(row.low_base_volatility_contraction_ratio, 1)} / 近10 ${formatPercent(row.low_base_volatility_recent_pct, 1)} / 单根 ${formatPercent(row.low_base_volatility_baseline_pct, 1)}`
+        30,
+        `振幅 ${formatNumber(row.low_base_score_volatility_range, 1)}分 + 单根 ${formatNumber(row.low_base_score_volatility_noise, 1)}分 + 趋势 ${formatNumber(row.low_base_score_volatility_trend, 1)}分 / 斜率 ${formatNumber(row.low_base_trend_slope_pct, 4)}%/天 / 全区 ${formatPercent(row.low_base_volatility_contraction_ratio, 1)} / 单根 ${formatPercent(row.low_base_volatility_baseline_pct, 1)}`
       ),
     },
     {
@@ -260,14 +260,14 @@ function buildLowBaseColumns({ includeRank = true } = {}) {
       `,
     },
     {
-      title: "底部稳定加分",
+      title: "底部稳定",
       dataIndex: "low_base_score_bottom_stability",
       key: "low_base_score_bottom_stability",
-      width: 260,
+      width: 280,
       render: (_, row) => renderLowBaseScoreDetail(
         row.low_base_score_bottom_stability,
-        25,
-        row.low_base_bottom_stability_range
+        30,
+        `触底 ${formatNumber(row.low_base_score_bottom_touch, 1)}分(${formatInt(row.low_base_touch_count)}次) + 支撑 ${formatNumber(row.low_base_score_bottom_hold, 1)}分 + 假跌破 ${formatNumber(row.low_base_score_bottom_false_break, 1)}分(${formatInt(row.low_base_false_break_count)}次)`
       ),
     },
     {
@@ -277,30 +277,8 @@ function buildLowBaseColumns({ includeRank = true } = {}) {
       width: 220,
       render: (_, row) => renderLowBaseScoreDetail(
         row.low_base_score_duration,
-        20,
+        25,
         `${row.low_base_base_range || "--"} / ${formatInt(row.low_base_duration_weeks)}周`
-      ),
-    },
-    {
-      title: "突破准备",
-      dataIndex: "low_base_score_breakout_readiness",
-      key: "low_base_score_breakout_readiness",
-      width: 230,
-      render: (_, row) => renderLowBaseScoreDetail(
-        row.low_base_score_breakout_readiness,
-        15,
-        row.low_base_breakout_readiness_range
-      ),
-    },
-    {
-      title: "方向量能",
-      dataIndex: "low_base_score_direction_volume",
-      key: "low_base_score_direction_volume",
-      width: 220,
-      render: (_, row) => renderLowBaseScoreDetail(
-        row.low_base_score_direction_volume,
-        5,
-        `${row.low_base_direction_volume_range || "--"} / ${formatNumber(row.low_base_direction_volume_ratio, 2)}x`
       ),
     },
     {

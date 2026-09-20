@@ -27,7 +27,7 @@ _low_base_scan_jobs_by_date: dict[str, str] = {}
 _low_base_scan_result_cache: dict[str, dict] = {}
 _low_base_scan_lock = threading.Lock()
 LOW_BASE_SCAN_TOP_N = 100
-LOW_BASE_SCAN_RESULT_VERSION = 4
+LOW_BASE_SCAN_RESULT_VERSION = 5
 
 
 def _is_current_low_base_scan_result(payload: dict | None) -> bool:
@@ -256,9 +256,14 @@ def _serialize_low_base_result(result: dict[str, object]) -> dict[str, object]:
         "low_base_score_prior_decline",
         "low_base_score_duration",
         "low_base_score_volatility",
+        "low_base_score_volatility_range",
+        "low_base_score_volatility_noise",
+        "low_base_score_volatility_trend",
         "low_base_score_volume",
         "low_base_score_bottom_stability",
-        "low_base_score_breakout_readiness",
+        "low_base_score_bottom_touch",
+        "low_base_score_bottom_hold",
+        "low_base_score_bottom_false_break",
         "low_base_prior_decline_pct",
         "low_base_prior_decline_start_date",
         "low_base_prior_decline_end_date",
@@ -267,6 +272,9 @@ def _serialize_low_base_result(result: dict[str, object]) -> dict[str, object]:
         "low_base_volatility_recent_pct",
         "low_base_volatility_baseline_pct",
         "low_base_volatility_range",
+        "low_base_trend_slope_pct",
+        "low_base_recent_low_rebound_pct",
+        "low_base_recent_low_date",
         "low_base_volume_decay_ratio",
         "low_base_volume_recent_avg",
         "low_base_volume_baseline_avg",

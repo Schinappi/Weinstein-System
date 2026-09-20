@@ -61,7 +61,7 @@ QUASI_GATE_LABELS = {
 OVERVIEW_SNAPSHOT_VERSION = 9
 BOX_BACKTEST_SNAPSHOT_VERSION = 8
 CRASH_REBOUND_SNAPSHOT_VERSION = 1
-LOW_BASE_BACKTEST_SNAPSHOT_VERSION = 3
+LOW_BASE_BACKTEST_SNAPSHOT_VERSION = 4
 DEMAND_SCREEN_EXCLUDED_SYMBOL_PREFIXES = ("920",)
 
 
@@ -1241,9 +1241,14 @@ class DashboardService:
                 "low_base_score_prior_decline": _to_float(r.get("low_base_score_prior_decline")),
                 "low_base_score_duration": _to_float(r.get("low_base_score_duration")),
                 "low_base_score_volatility": _to_float(r.get("low_base_score_volatility")),
+                "low_base_score_volatility_range": _to_float(r.get("low_base_score_volatility_range")),
+                "low_base_score_volatility_noise": _to_float(r.get("low_base_score_volatility_noise")),
+                "low_base_score_volatility_trend": _to_float(r.get("low_base_score_volatility_trend")),
                 "low_base_score_volume": _to_float(r.get("low_base_score_volume")),
                 "low_base_score_bottom_stability": _to_float(r.get("low_base_score_bottom_stability")),
-                "low_base_score_breakout_readiness": _to_float(r.get("low_base_score_breakout_readiness")),
+                "low_base_score_bottom_touch": _to_float(r.get("low_base_score_bottom_touch")),
+                "low_base_score_bottom_hold": _to_float(r.get("low_base_score_bottom_hold")),
+                "low_base_score_bottom_false_break": _to_float(r.get("low_base_score_bottom_false_break")),
                 "low_base_prior_decline_pct": _to_float(r.get("low_base_prior_decline_pct")),
                 "low_base_prior_decline_start_date": _to_text(r.get("low_base_prior_decline_start_date")),
                 "low_base_prior_decline_end_date": _to_text(r.get("low_base_prior_decline_end_date")),
@@ -1252,6 +1257,9 @@ class DashboardService:
                 "low_base_volatility_recent_pct": _to_float(r.get("low_base_volatility_recent_pct")),
                 "low_base_volatility_baseline_pct": _to_float(r.get("low_base_volatility_baseline_pct")),
                 "low_base_volatility_range": _to_text(r.get("low_base_volatility_range")),
+                "low_base_trend_slope_pct": _to_float(r.get("low_base_trend_slope_pct")),
+                "low_base_recent_low_rebound_pct": _to_float(r.get("low_base_recent_low_rebound_pct")),
+                "low_base_recent_low_date": _to_text(r.get("low_base_recent_low_date")),
                 "low_base_volume_decay_ratio": _to_float(r.get("low_base_volume_decay_ratio")),
                 "low_base_volume_recent_avg": _to_float(r.get("low_base_volume_recent_avg")),
                 "low_base_volume_baseline_avg": _to_float(r.get("low_base_volume_baseline_avg")),

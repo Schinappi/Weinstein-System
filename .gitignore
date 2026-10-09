@@ -3,6 +3,9 @@ __pycache__/
 
 .venv/
 .env
+.env.*
+.env.bak*
+*.env.bak*
 
 data/raw/
 data/parquet/

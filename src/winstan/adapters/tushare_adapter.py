@@ -45,6 +45,15 @@ class TushareAdapter(BaseDataAdapter):
         self._call_timestamps.append(now)
 
     @staticmethod
+    def _is_daily_quota_error(exc: Exception) -> bool:
+        """True for a per-day interface quota, which retrying cannot fix.
+
+        Distinct from the per-minute throttle, which *is* worth retrying.
+        """
+        message = str(exc)
+        return "次/天" in message or "每天最多" in message or "频率超限" in message
+
+    @staticmethod
     def _is_connection_error(exc: Exception) -> bool:
         message = str(exc).lower()
         return (
@@ -69,6 +78,8 @@ class TushareAdapter(BaseDataAdapter):
                     message = frame.strip().lower()
                     if "token无效" in frame or "token invalid" in message or "expired" in message or "超期" in frame:
                         return pd.DataFrame(), "auth_error"
+                    if self._is_daily_quota_error(frame):
+                        return pd.DataFrame(), "quota_error"
                     return pd.DataFrame(), "other_error"
                 return pd.DataFrame(), "other_error"
             except KeyboardInterrupt:
@@ -77,6 +88,8 @@ class TushareAdapter(BaseDataAdapter):
                 message = str(exc).lower()
                 if self._is_connection_error(exc):
                     return pd.DataFrame(), "connection_error"
+                if self._is_daily_quota_error(exc):
+                    return pd.DataFrame(), "quota_error"
                 if "timeout" in message or "too many requests" in message or "每分钟最多调用400次" in str(exc):
                     sleep_seconds = self._config.tushare_retry_sleep_seconds * (attempt + 1)
                     time.sleep(sleep_seconds)
@@ -224,7 +237,9 @@ class TushareAdapter(BaseDataAdapter):
                 trade_date=start,
             )
             batch_runtime = time.perf_counter() - batch_started_at
+            market_rows = 0
             if batch_failure is None and batch_frame is not None and not batch_frame.empty:
+                market_rows = len(batch_frame)
                 batch_frame = batch_frame[batch_frame["ts_code"].isin(symbol_list)].copy()
                 if not batch_frame.empty:
                     adj_batch_runtime = 0.0
@@ -270,7 +285,30 @@ class TushareAdapter(BaseDataAdapter):
                     if normalized.empty:
                         return pd.DataFrame(columns=normalized.columns)
                     return normalized
-            # batch failed or empty — fall through to per-stock loop
+            if batch_failure is None:
+                # The API answered, but nothing landed on the requested symbols.
+                # Either the whole market was empty for this date (a holiday, or
+                # today's data not published yet) or just these symbols had no bar
+                # that day — and a per-symbol call would answer the same either
+                # way, so stop here rather than repeat it thousands of times.
+                reason = "market_no_bars" if market_rows == 0 else "symbols_absent"
+                print(
+                    "[tushare] fetch_daily_bars done "
+                    f"symbols={len(symbol_list)} rows=0 elapsed={round(batch_runtime, 2)}s "
+                    f"daily_api={round(batch_runtime, 2)}s mode=batch trade_date={start} "
+                    f"{reason} market_rows={market_rows}"
+                )
+                return pd.DataFrame(columns=BaseDataAdapter.ensure_standard_columns(pd.DataFrame(), self.source_name).columns)
+            if batch_failure in {"quota_error", "auth_error"}:
+                # Asking per symbol cannot fix either of these — abort rather than
+                # grind through thousands of calls that must fail the same way.
+                self._stock_daily_remote_unavailable = True
+                print(
+                    "[tushare] fetch_daily_bars aborted "
+                    f"symbols={len(symbol_list)} trade_date={start} reason={batch_failure}"
+                )
+                return pd.DataFrame(columns=BaseDataAdapter.ensure_standard_columns(pd.DataFrame(), self.source_name).columns)
+            # batch call failed — fall through to per-stock loop
 
         progress_every = 50 if len(symbol_list) >= 200 else 20 if len(symbol_list) >= 50 else 10
         for index, symbol in enumerate(symbol_list, start=1):
@@ -290,7 +328,7 @@ class TushareAdapter(BaseDataAdapter):
             daily_api_runtime_seconds += time.perf_counter() - daily_started_at
             if daily_failure_reason is not None:
                 failed_symbols += 1
-                if daily_failure_reason in {"connection_error", "auth_error"}:
+                if daily_failure_reason in {"connection_error", "auth_error", "quota_error"}:
                     self._stock_daily_remote_unavailable = True
                 print(
                     "[tushare] daily failed "
@@ -322,7 +360,7 @@ class TushareAdapter(BaseDataAdapter):
                 )
                 adj_api_runtime_seconds += time.perf_counter() - adj_started_at
                 if adj_failure_reason is not None:
-                    if adj_failure_reason in {"connection_error", "auth_error"}:
+                    if adj_failure_reason in {"connection_error", "auth_error", "quota_error"}:
                         self._stock_daily_remote_unavailable = True
                     print(
                         "[tushare] adj_factor failed "

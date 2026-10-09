@@ -168,15 +168,58 @@ function renderStockCell(row) {
   `;
 }
 
-function renderLowBaseScoreDetail(score, maxScore, detail) {
+function renderLowBaseScoreDetail(score, maxScore, detail, options = {}) {
+  const { tooltip, wrap } = options;
+  const copyClass = wrap ? "score-detail-copy score-detail-copy-wrap" : "score-detail-copy";
   return html`
     <div className="score-detail">
       <div className=${Number(score) >= Number(maxScore) * 0.75 ? "positive-text" : ""}>
         ${formatNumber(score, 1)} / ${maxScore}
       </div>
-      <div className="score-detail-copy" title=${detail || ""}>${detail || "--"}</div>
+      <div className=${copyClass} title=${tooltip || detail || ""}>${detail || "--"}</div>
     </div>
   `;
+}
+
+function lowBaseQuietDetail(row) {
+  const range = formatNumber(row.low_base_score_volatility_range, 1);
+  const noise = formatNumber(row.low_base_score_volatility_noise, 1);
+  const trend = formatNumber(row.low_base_score_volatility_trend, 1);
+  const whole = formatPercent(row.low_base_volatility_contraction_ratio, 1);
+  const single = formatPercent(row.low_base_volatility_baseline_pct, 1);
+  const slope = formatNumber(row.low_base_trend_slope_pct, 4);
+  const detail = [
+    `区间振幅 ${range}/16分（${whole}）`,
+    `单日波动 ${noise}/9分（${single}）`,
+    `走平 ${trend}/5分（斜率${slope}%/天）`,
+  ].join("\n");
+  const tooltip = [
+    "横盘静默 = 横盘期价格有多安静（满分30 = 区间振幅16 + 单日波动9 + 走平5）",
+    `区间振幅（横盘区收盘价最低→最高幅度）：≤3.5%满16，≤5%→14，≤6.5%→12，≤8%→10，≤10%→8，≤12%→6，≤14%→4，≤16%→3，≤18%→2，≤20%→1，>20%→0；本股 ${whole}`,
+    `单日波动（平均每根日K涨跌幅）：≤0.9%满9，≤1.2%→7，≤1.6%→5，≤2.0%→3，≤2.4%→1，>2.4%→0；本股 ${single}`,
+    `走平（趋势斜率绝对值）：≤0.025%/天满5，≤0.05%→4，≤0.075%→3，≤0.10%→2，>0.10%→0；本股 ${slope}%/天`,
+  ].join("\n");
+  return { detail, tooltip };
+}
+
+function lowBaseBottomDetail(row) {
+  const touch = formatNumber(row.low_base_score_bottom_touch, 1);
+  const touchCount = formatInt(row.low_base_touch_count);
+  const hold = formatNumber(row.low_base_score_bottom_hold, 1);
+  const falseBreak = formatNumber(row.low_base_score_bottom_false_break, 1);
+  const falseBreakCount = formatInt(row.low_base_false_break_count);
+  const detail = [
+    `触底承接 ${touch}/10分（${touchCount}次）`,
+    `支撑保持 ${hold}/12分`,
+    `假跌破 ${falseBreak}/8分（${falseBreakCount}次）`,
+  ].join("\n");
+  const tooltip = [
+    "底部稳定 = 支撑是否真实（满分30 = 触底承接10 + 支撑保持12 + 假跌破8）",
+    `触底承接（价格反复回到支撑区，承接有效）：≥5次满10，4→9，3→7，2→5，1→3，0→0；本股 ${touchCount}次`,
+    `支撑保持（近20根收盘跌破支撑区的最大幅度，越小越稳）：0%满12，≤0.5%→10，≤1%→8，≤1.5%→6，≤2%→4，≤3%→2，>3%→0`,
+    `假跌破（盘中砸破支撑但收盘收回的次数，越少越真实）：0次满8，1→6，2→4，3→2，≥4→0；本股 ${falseBreakCount}次`,
+  ].join("\n");
+  return { detail, tooltip };
 }
 
 function lowBaseGradeTag(value) {
@@ -239,11 +282,10 @@ function buildLowBaseColumns({ includeRank = true } = {}) {
       dataIndex: "low_base_score_volatility",
       key: "low_base_score_volatility",
       width: 230,
-      render: (_, row) => renderLowBaseScoreDetail(
-        row.low_base_score_volatility,
-        30,
-        `振幅 ${formatNumber(row.low_base_score_volatility_range, 1)}分 + 单根 ${formatNumber(row.low_base_score_volatility_noise, 1)}分 + 趋势 ${formatNumber(row.low_base_score_volatility_trend, 1)}分 / 斜率 ${formatNumber(row.low_base_trend_slope_pct, 4)}%/天 / 全区 ${formatPercent(row.low_base_volatility_contraction_ratio, 1)} / 单根 ${formatPercent(row.low_base_volatility_baseline_pct, 1)}`
-      ),
+      render: (_, row) => {
+        const d = lowBaseQuietDetail(row);
+        return renderLowBaseScoreDetail(row.low_base_score_volatility, 30, d.detail, { tooltip: d.tooltip, wrap: true });
+      },
     },
     {
       title: "量能参考",
@@ -264,11 +306,10 @@ function buildLowBaseColumns({ includeRank = true } = {}) {
       dataIndex: "low_base_score_bottom_stability",
       key: "low_base_score_bottom_stability",
       width: 280,
-      render: (_, row) => renderLowBaseScoreDetail(
-        row.low_base_score_bottom_stability,
-        30,
-        `触底 ${formatNumber(row.low_base_score_bottom_touch, 1)}分(${formatInt(row.low_base_touch_count)}次) + 支撑 ${formatNumber(row.low_base_score_bottom_hold, 1)}分 + 假跌破 ${formatNumber(row.low_base_score_bottom_false_break, 1)}分(${formatInt(row.low_base_false_break_count)}次)`
-      ),
+      render: (_, row) => {
+        const d = lowBaseBottomDetail(row);
+        return renderLowBaseScoreDetail(row.low_base_score_bottom_stability, 30, d.detail, { tooltip: d.tooltip, wrap: true });
+      },
     },
     {
       title: "横盘持续",
@@ -1588,9 +1629,10 @@ function LowBaseSupportPage({
             <div className="hero-kicker">Quiet Base</div>
             <div className="hero-title">低位吸筹回踩榜</div>
             <div className="hero-copy">
-              这里量化的是“大跌后的低位长期收缩整理”，不是证明庄家行为。模型按前期下跌、横盘持续至少 6 周、
-              横盘静默、底部稳定加分和突破准备共同构成主要评分；量能只作为参考展示不计分，其中底部稳定主档位按横盘收盘振幅落在 6%/8%/10%/12% 四档加分，
-              当前量相对横盘期均量放大时，会作为选择方向的关注加分。
+              这里量化的是“大跌后的低位长期收缩整理”，不是证明庄家行为。满分 100 分，由四项构成：前期下跌 15 分、
+              横盘持续 25 分（至少 6 周）、横盘静默 30 分、底部稳定 30 分；量能仅作参考展示不计分。
+              「横盘静默」衡量横盘期价格有多安静：区间振幅（收盘价最低→最高幅度，0~20% 均有分，≤3.5% 满 16 分）、
+              单日波动（平均每根日 K 涨跌幅，≤0.9% 满 9 分）、走平（趋势斜率接近 0，≤0.025%/天 满 5 分）。
             </div>
             <div className="hero-actions">
               <${Button} type="primary" size="large" onClick=${onRefresh} loading=${loading}>刷新榜单<//>
@@ -1609,16 +1651,16 @@ function LowBaseSupportPage({
               <div className="meta-pill-value">15分</div>
             </div>
             <div className="meta-pill">
+              <div className="meta-pill-label">横盘持续</div>
+              <div className="meta-pill-value">25分</div>
+            </div>
+            <div className="meta-pill">
               <div className="meta-pill-label">横盘静默</div>
-              <div className="meta-pill-value">20分</div>
+              <div className="meta-pill-value">30分</div>
             </div>
             <div className="meta-pill">
-              <div className="meta-pill-label">量能参考</div>
-              <div className="meta-pill-value">不计分</div>
-            </div>
-            <div className="meta-pill">
-              <div className="meta-pill-label">底部稳定加分</div>
-              <div className="meta-pill-value">20分</div>
+              <div className="meta-pill-label">底部稳定</div>
+              <div className="meta-pill-value">30分</div>
             </div>
           </div>
         <//>
@@ -3049,7 +3091,7 @@ function LowBaseBacktestPage({
               <div className="toolbar-copy">
                 ${isScanMode
                   ? `全市场扫描${LOW_BASE_SCAN_RULE_LABEL}，点击行可查看个股详情。`
-                  : "手动模式会展示候选与非候选的五项主评分、量能参考、横盘区间细节和方向量能加分。"}
+                  : "手动模式会展示候选与非候选的四项主评分、量能参考和横盘区间细节。"}
               </div>
             </div>
             <div className="toolbar-actions">

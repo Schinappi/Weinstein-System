@@ -25,7 +25,6 @@ RECENT_STABILITY_BARS = 10
 MIN_BASE_DURATION_WEEKS = 6
 MAX_BASE_DURATION_WEEKS = 40
 MAX_BASE_CLOSE_RANGE_PCT = 8.0
-BOTTOM_BONUS_CLOSE_RANGE_PCT = 5.0
 RECENT_LOW_LOOKBACK_DAILY = 20
 RECENT_LOW_LOOKBACK_WEEKLY = 8
 # A low-base candidate must still be close to the recent stopping low.  This
@@ -46,6 +45,11 @@ TROUGH_LOOKBACK_BARS = 60
 TROUGH_DECLINE_LOOKBACK_BARS = 20
 TROUGH_DECLINE_SLOPE_PCT = -0.20
 TROUGH_FLAT_SLOPE_PCT = -0.05
+# 暴跌底斜率阈值：前 N 天斜率低于此值（更陡）视为"单边暴跌"的底，
+# 优先于普通阴跌/震荡回落。用于区分"暴跌首次触底"与"暴跌后的震荡二次下探"。
+TROUGH_CRASH_SLOPE_PCT = -1.0
+# 暴跌底搜索范围（交易日）：只在此范围内找暴跌底，避免抓到太早的历史暴跌。
+TROUGH_CRASH_LOOKBACK_BARS = 120
 
 
 @dataclass(frozen=True)
@@ -67,6 +71,7 @@ class QuietBaseWindow:
     recent_close_range_pct: float | None
     drift_pct: float | None
     trend_slope_pct: float | None
+    reason: str = ""
 
 
 def compute_low_base_quality(
@@ -79,7 +84,7 @@ def compute_low_base_quality(
     source_label = "daily" if daily is not None and not daily.empty else "weekly"
     bars = _prepare_bars(source)
     if bars.empty:
-        return _default_result("insufficient data")
+        return _default_result("无有效K线数据（缺少开高低收字段或数据为空）")
 
     base = _find_quiet_base_window(bars, source_label)
     support = base.support_price
@@ -94,7 +99,7 @@ def compute_low_base_quality(
         or box_top is None
         or support <= 0
     ):
-        return _default_result("no quiet base window")
+        return _default_result(base.reason or "未识别到横盘窗口")
 
     prior_decline_pct, prior_start, prior_end = _prior_decline_metrics(
         bars,
@@ -417,11 +422,13 @@ def _prepare_bars(frame: pd.DataFrame) -> pd.DataFrame:
 
 
 def _find_trough_idx(bars: pd.DataFrame, end_idx: int) -> int:
-    """找触底点 = 最近一个"下跌趋势转为走平"的摆动低点。
+    """找触底点。
 
-    判断依据：该摆动低点之前是一段下跌（前 N 天斜率显著负），之后到最新已走平
-    （斜率接近 0）。这样能区分"大跌/阴跌的底"与"震荡中的下探"——
-    震荡下探之前是震荡（斜率不显著负），下跌中途的低点之后仍在跌（斜率仍负）。
+    分两级：
+    1. 暴跌底：前 N 天斜率低于 TROUGH_CRASH_SLOPE_PCT（单边暴跌），优先采用——
+       这能锁定"暴跌首次触底"，忽略之后的震荡二次下探。
+    2. 趋势转走平底：前 N 天斜率显著负（在下跌）+ 之后到最新已走平（斜率接近 0）。
+       用于阴跌（无单边暴跌）的"最近回落底"。
     """
     closes = pd.to_numeric(bars["close"], errors="coerce")
     order = 2
@@ -435,7 +442,21 @@ def _find_trough_idx(bars: pd.DataFrame, end_idx: int) -> int:
         ):
             swing_lows.append(i)
 
-    # 从最近往回，找"之前下跌、之后走平"的摆动低点
+    # 第一优先：暴跌底。最近 TROUGH_CRASH_LOOKBACK_BARS 内、前 N 天斜率 < -1.0 的
+    # 摆动低点中，取收盘价最低的那个（即暴跌段的最低点，锁定首次触底，
+    # 忽略之后的反弹回落与震荡二次下探）。
+    crash_lows = []
+    for low_idx in swing_lows:
+        if low_idx < end_idx - TROUGH_CRASH_LOOKBACK_BARS:
+            continue
+        left_seg = closes.iloc[max(0, low_idx - TROUGH_DECLINE_LOOKBACK_BARS) : low_idx + 1]
+        left_slope = _trend_slope_pct(left_seg)
+        if left_slope is not None and left_slope < TROUGH_CRASH_SLOPE_PCT:
+            crash_lows.append(low_idx)
+    if crash_lows:
+        return min(crash_lows, key=lambda i: float(closes.iloc[i]))
+
+    # 第二优先：趋势转走平底（之前下跌、之后走平）
     for low_idx in reversed(swing_lows):
         left_seg = closes.iloc[max(0, low_idx - TROUGH_DECLINE_LOOKBACK_BARS) : low_idx + 1]
         left_slope = _trend_slope_pct(left_seg)
@@ -457,7 +478,10 @@ def _find_quiet_base_window(
     bars_per_week = 5 if source_label == "daily" else 1
     min_base_bars = MIN_BASE_DURATION_WEEKS * bars_per_week
     if len(bars) < min_base_bars:
-        return _empty_base_window()
+        return _empty_base_window(
+            f"历史数据不足：识别横盘需≥{MIN_BASE_DURATION_WEEKS}周（{min_base_bars}根K线），"
+            f"当前仅 {len(bars)} 根"
+        )
 
     end_idx = len(bars) - 1
 
@@ -466,12 +490,22 @@ def _find_quiet_base_window(
     trough_idx = _find_trough_idx(bars, end_idx)
 
     # 触底后横盘时间必须满足最小持续（否则尚未形成充分基底）
-    if end_idx - trough_idx + 1 < min_base_bars:
-        return _empty_base_window()
+    hold_bars = end_idx - trough_idx + 1
+    if hold_bars < min_base_bars:
+        hold_days = hold_bars - 1
+        hold_weeks = hold_days / bars_per_week
+        trough_date = _format_date(bars.iloc[trough_idx].get("trade_date"))
+        return _empty_base_window(
+            f"触底后横盘时间不足：最近触底于 {trough_date}，"
+            f"触底后仅 {hold_days} 个交易日（约{hold_weeks:.1f}周），"
+            f"未达 {MIN_BASE_DURATION_WEEKS} 周最低蓄势期"
+        )
 
     segment = bars.iloc[trough_idx : end_idx + 1]
     candidate = _build_quiet_base_window(segment, trough_idx, end_idx, source_label)
-    return candidate if candidate is not None else _empty_base_window()
+    if candidate is None:
+        return _empty_base_window("横盘窗口构建失败（数据异常）")
+    return candidate
 
 
 def _build_quiet_base_window(
@@ -534,7 +568,7 @@ def _build_quiet_base_window(
     )
 
 
-def _empty_base_window() -> QuietBaseWindow:
+def _empty_base_window(reason: str = "") -> QuietBaseWindow:
     return QuietBaseWindow(
         start_idx=0,
         end_idx=-1,
@@ -553,6 +587,7 @@ def _empty_base_window() -> QuietBaseWindow:
         recent_close_range_pct=None,
         drift_pct=None,
         trend_slope_pct=None,
+        reason=reason,
     )
 
 
@@ -829,16 +864,27 @@ def _score_quiet_base_components(
     if close_range_pct is None:
         return 0.0, 0.0, 0.0
     scale = 1.0 if source_label == "daily" else 1.8
+    # 区间振幅得分：0~20% 均有分（越小越安静），>20% 才归零。
     if close_range_pct <= 3.5 * scale:
         range_score = 16.0
-    elif close_range_pct <= BOTTOM_BONUS_CLOSE_RANGE_PCT * scale:
-        range_score = 13.0
+    elif close_range_pct <= 5.0 * scale:
+        range_score = 14.0
     elif close_range_pct <= 6.5 * scale:
-        range_score = 10.0
+        range_score = 12.0
     elif close_range_pct <= MAX_BASE_CLOSE_RANGE_PCT * scale:
-        range_score = 7.0
+        range_score = 10.0
     elif close_range_pct <= 10.0 * scale:
+        range_score = 8.0
+    elif close_range_pct <= 12.0 * scale:
+        range_score = 6.0
+    elif close_range_pct <= 14.0 * scale:
+        range_score = 4.0
+    elif close_range_pct <= 16.0 * scale:
         range_score = 3.0
+    elif close_range_pct <= 18.0 * scale:
+        range_score = 2.0
+    elif close_range_pct <= 20.0 * scale:
+        range_score = 1.0
     else:
         range_score = 0.0
 
@@ -965,11 +1011,8 @@ def _build_reason(**kwargs: object) -> str:
         recent_text = "--" if recent_close_range_pct is None else f"{float(recent_close_range_pct):.2f}%"
         avg_text = "--" if avg_abs_change_pct is None else f"{float(avg_abs_change_pct):.2f}%"
         parts.append(
-            f"收盘振幅 {float(close_range_pct):.2f}% / 近{RECENT_STABILITY_BARS}振幅 {recent_text} / 单根均变动 {avg_text}"
+            f"区间振幅 {float(close_range_pct):.2f}%（>10%静默不足） / 近{RECENT_STABILITY_BARS}振幅 {recent_text} / 单日波动 {avg_text}"
         )
-    quietness_value = kwargs.get("quietness_value")
-    if quietness_value is not None:
-        parts.append(f"整体振幅 {float(quietness_value):.2f}%")
     volume_ratio = kwargs.get("volume_ratio")
     if volume_ratio is not None:
         parts.append(f"量能参考 {kwargs.get('volume_range') or '--'} {float(volume_ratio):.2f}x（不计分）")
@@ -978,9 +1021,7 @@ def _build_reason(**kwargs: object) -> str:
         parts.append(f"近20均成交额 {float(recent_amount_avg) / 100000000.0:.2f}亿")
     direction_volume_ratio = kwargs.get("direction_volume_ratio")
     if direction_volume_ratio is not None:
-        parts.append(
-            f"方向量能 {float(direction_volume_ratio):.2f}x / 加分 {float(kwargs.get('direction_volume_score') or 0):.1f}"
-        )
+        parts.append(f"方向量能 {float(direction_volume_ratio):.2f}x（仅展示不计分）")
     touch_progress = kwargs.get("touch_low_progress_pct")
     progress_text = "--" if touch_progress is None else f"{float(touch_progress):.1f}%"
     parts.append(f"触底{int(kwargs.get('touch_count') or 0)}次 / 低点进展 {progress_text}")
@@ -1033,7 +1074,7 @@ def _direction_volume_range(
 
 def _quiet_base_range(source_label: str) -> str:
     unit = _unit_label(source_label)
-    return f"横盘全区收盘振幅 / 近{RECENT_STABILITY_BARS}{unit}收盘振幅 / 单根均变动"
+    return f"横盘全区收盘振幅 / 近{RECENT_STABILITY_BARS}{unit}收盘振幅 / 单日波动"
 
 
 def _volume_decay_range(start: object | None, source_label: str) -> str:

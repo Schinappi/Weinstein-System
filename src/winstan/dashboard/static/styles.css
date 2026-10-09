@@ -408,6 +408,13 @@ body {
   text-overflow: ellipsis;
 }
 
+.score-detail-copy-wrap {
+  white-space: pre-line;
+  overflow: visible;
+  text-overflow: clip;
+  max-width: 260px;
+}
+
 .refresh-progress-head {
   display: flex;
   justify-content: space-between;

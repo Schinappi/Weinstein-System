@@ -95,6 +95,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._send_json(self.service.get_low_base_refresh_status())
             return
 
+        if path == "/api/data/update-status":
+            self._send_json(self.service.get_data_update_status())
+            return
+
         if path == "/api/search":
             query = parse_qs(parsed.query).get("q", [""])[0]
             self._send_json({"items": self.service.search_stocks(query)})
@@ -158,6 +162,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if path == "/api/low-base/refresh":
             result = self.service.refresh_low_base_ranking()
             self._send_json(result)
+            return
+
+        if path == "/api/data/update":
+            self._send_json(self.service.start_data_update())
             return
 
         if path == "/api/backtest":

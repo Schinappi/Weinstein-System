@@ -64,10 +64,13 @@ CRASH_REBOUND_SNAPSHOT_VERSION = 1
 LOW_BASE_BACKTEST_SNAPSHOT_VERSION = 4
 DEMAND_SCREEN_EXCLUDED_SYMBOL_PREFIXES = ("920",)
 
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
+
 
 class DashboardService:
     def __init__(self, config_path: str | Path) -> None:
-        self.config = load_config(Path(config_path))
+        self.config_path = Path(config_path)
+        self.config = load_config(self.config_path)
         self.parquet_store = ParquetStore(self.config.parquet_root)
         self.duckdb_store = DuckDBStore(self.config.duckdb_path)
         self.watchlist_store = WatchlistStore(self.config.duckdb_path)
@@ -95,6 +98,9 @@ class DashboardService:
         self._low_base_refresh_lock = RLock()
         self._low_base_refresh_running: bool = False
         self._low_base_refresh_result: dict[str, object] = {"status": "idle"}
+        self._data_update_lock = RLock()
+        self._data_update_running: bool = False
+        self._data_update_result: dict[str, object] = {"status": "idle"}
 
     @property
     def router(self) -> DataSourceRouter:
@@ -642,6 +648,105 @@ class DashboardService:
             running = self._low_base_refresh_running
         result["running"] = running
         if running and result.get("started_at") and result.get("elapsed_seconds") is None:
+            result["elapsed_seconds"] = round(time.time() - float(result["started_at"]), 1)
+        return result
+
+    def start_data_update(self) -> dict[str, object]:
+        """Run the K-line incremental update in the background.
+
+        Pulls the latest daily bars and fills in symbols not yet cached
+        (`--include-missing`). Phase-1 re-screening is deliberately skipped here:
+        this button only refreshes data; the ranking pages have their own
+        「刷新榜单」 buttons for re-screening on top of the new data.
+        """
+        import time
+
+        with self._data_update_lock:
+            if self._data_update_running:
+                result = dict(self._data_update_result)
+                result.update({"success": False, "status": "busy", "message": "K线数据更新正在运行中，请等待本次更新完成"})
+                return result
+            self._data_update_running = True
+            self._data_update_result = {
+                "success": True,
+                "status": "started",
+                "running": True,
+                "started_at": time.time(),
+                "message": "K线数据更新已在后台启动",
+                "elapsed_seconds": 0.0,
+                "phase1_skipped_reason": "skip_phase1",
+            }
+
+        Thread(target=self._data_update_bg_worker, daemon=True).start()
+        return dict(self._data_update_result)
+
+    def _data_update_bg_worker(self) -> None:
+        import os
+        import subprocess
+        import sys
+        import time
+
+        t0 = time.time()
+        script = PROJECT_ROOT / "scripts" / "update_daily_bars.py"
+        env = dict(os.environ)
+        env.setdefault("PYTHONIOENCODING", "utf-8")
+
+        def _finish(status: str, success: bool, message: str, **extra: object) -> None:
+            with self._data_update_lock:
+                self._data_update_running = False
+                self._data_update_result = {
+                    "success": success,
+                    "status": status,
+                    "running": False,
+                    "message": message,
+                    "elapsed_seconds": round(time.time() - t0, 1),
+                    **extra,
+                }
+
+        try:
+            proc = subprocess.run(
+                [sys.executable, "-u", str(script), "--config", str(self.config_path),
+                 "--include-missing", "--skip-phase1"],
+                cwd=str(PROJECT_ROOT),
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+        except Exception as exc:
+            _finish("failed", False, f"K线数据更新启动失败: {exc}")
+            return
+
+        elapsed = time.time() - t0
+        update_status = self._get_update_status()
+        success = proc.returncode == 0 and bool(update_status.get("success"))
+        if success:
+            message = (
+                f"K线数据更新完成：更新 {update_status.get('stock_symbols_updated') or 0} 只 / "
+                f"新增 {update_status.get('stock_rows_added') or 0} 行，耗时 {round(elapsed)}s"
+            )
+        else:
+            tail = (proc.stdout or "").strip().splitlines()[-3:]
+            detail = " | ".join(tail) if tail else f"退出码 {proc.returncode}"
+            message = f"K线数据更新失败：{update_status.get('message') or detail}"
+        _finish(
+            "completed" if success else "failed",
+            success,
+            message,
+            returncode=proc.returncode,
+            update_status=update_status,
+        )
+
+    def get_data_update_status(self) -> dict[str, object]:
+        import time
+
+        with self._data_update_lock:
+            result = dict(self._data_update_result)
+            running = self._data_update_running
+        result["running"] = running
+        if running and result.get("started_at"):
             result["elapsed_seconds"] = round(time.time() - float(result["started_at"]), 1)
         return result
 

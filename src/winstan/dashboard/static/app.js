@@ -33,7 +33,7 @@ const { TextArea } = Input;
 const { Title, Paragraph, Text } = Typography;
 
 const TODAY = dayjs().format("YYYY-MM-DD");
-const APP_VERSION = "v2026.08.16.2";
+const APP_VERSION = "v2026.10.18.1";
 const PAGE_OVERVIEW = "overview";
 const PAGE_BACKTEST = "backtest";
 const PAGE_MONITOR = "monitor";
@@ -1737,6 +1737,8 @@ function SearchPanel({ onOpenDetail }) {
   const [query, setQuery] = useState("");
   const [loading, setLoading] = useState(false);
   const [items, setItems] = useState([]);
+  const [dataUpdating, setDataUpdating] = useState(false);
+  const [dataUpdateStatus, setDataUpdateStatus] = useState("");
 
   const runSearch = async (value = query) => {
     setLoading(true);
@@ -1747,6 +1749,39 @@ function SearchPanel({ onOpenDetail }) {
       message.error(error.message || "查询失败");
     } finally {
       setLoading(false);
+    }
+  };
+
+  const startDataUpdate = async () => {
+    setDataUpdating(true);
+    setDataUpdateStatus("正在启动 K 线数据更新…");
+    try {
+      const startPayload = await fetchJson("/api/data/update", { method: "POST" });
+      if (!startPayload.success && startPayload.status === "busy") {
+        setDataUpdateStatus(startPayload.message || "K 线数据更新已在运行中");
+        return;
+      }
+      setDataUpdateStatus(startPayload.message || "K 线数据更新已在后台启动");
+      const deadline = Date.now() + 3 * 60 * 60 * 1000;
+      while (Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 3000));
+        const status = await fetchJson("/api/data/update-status");
+        setDataUpdateStatus(status.message || "K 线数据更新中…");
+        if (!status.running) {
+          if (status.success) {
+            message.success(status.message || "K 线数据更新完成");
+          } else {
+            message.error(status.message || "K 线数据更新失败");
+          }
+          break;
+        }
+      }
+    } catch (error) {
+      message.error(error.message || "K 线数据更新失败");
+      setDataUpdateStatus(error.message || "K 线数据更新失败");
+    } finally {
+      setDataUpdating(false);
+      runSearch(query);
     }
   };
 
@@ -1770,8 +1805,10 @@ function SearchPanel({ onOpenDetail }) {
             size="large"
           />
           <${Button} type="primary" size="large" onClick=${() => runSearch()} loading=${loading}>查询<//>
+          <${Button} size="large" onClick=${startDataUpdate} loading=${dataUpdating}>更新K线数据<//>
         </div>
       </div>
+      ${dataUpdateStatus ? html`<div className="toolbar-copy" style=${{ marginBottom: 12 }}>${dataUpdateStatus}</div>` : null}
       <div className="search-result-grid">
         ${(items || []).map(
           (item) => html`

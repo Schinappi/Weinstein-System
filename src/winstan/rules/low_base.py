@@ -24,7 +24,13 @@ RECENT_BREAK_LOOKBACK_BARS = 20
 RECENT_STABILITY_BARS = 10
 MIN_BASE_DURATION_WEEKS = 6
 MAX_BASE_DURATION_WEEKS = 40
-MAX_BASE_CLOSE_RANGE_PCT = 8.0
+# 区间振幅评分阶梯的归零点：振幅超过此值，区间振幅一项得 0 分
+# （见 _score_quiet_base_components 的最后一级）。
+QUIET_BASE_MAX_RANGE_PCT = 20.0
+# 候选硬门槛用的振幅上限，与评分归零点对齐。评分在 20% 以上已给 0 分，
+# 门槛若更严（曾经是 8%）就会把评分仍认可的中位区间挡在候选之外，
+# 同一个振幅出现「评分有分、候选判死」两套标准。
+MAX_BASE_CANDIDATE_RANGE_PCT = QUIET_BASE_MAX_RANGE_PCT
 RECENT_LOW_LOOKBACK_DAILY = 20
 RECENT_LOW_LOOKBACK_WEEKLY = 8
 # A low-base candidate must still be close to the recent stopping low.  This
@@ -165,7 +171,7 @@ def compute_low_base_quality(
 
     support_active = bool(
         base.close_range_pct is not None
-        and base.close_range_pct <= MAX_BASE_CLOSE_RANGE_PCT
+        and base.close_range_pct <= MAX_BASE_CANDIDATE_RANGE_PCT
         and base.trend_slope_pct is not None
         and abs(base.trend_slope_pct) <= TREND_SLOPE_MAX_DAILY_PCT * (1.8 if source_label == "weekly" else 1.0)
         and (
@@ -871,7 +877,7 @@ def _score_quiet_base_components(
         range_score = 14.0
     elif close_range_pct <= 6.5 * scale:
         range_score = 12.0
-    elif close_range_pct <= MAX_BASE_CLOSE_RANGE_PCT * scale:
+    elif close_range_pct <= 8.0 * scale:
         range_score = 10.0
     elif close_range_pct <= 10.0 * scale:
         range_score = 8.0
@@ -883,7 +889,7 @@ def _score_quiet_base_components(
         range_score = 3.0
     elif close_range_pct <= 18.0 * scale:
         range_score = 2.0
-    elif close_range_pct <= 20.0 * scale:
+    elif close_range_pct <= QUIET_BASE_MAX_RANGE_PCT * scale:
         range_score = 1.0
     else:
         range_score = 0.0
@@ -1010,8 +1016,11 @@ def _build_reason(**kwargs: object) -> str:
     if close_range_pct is not None:
         recent_text = "--" if recent_close_range_pct is None else f"{float(recent_close_range_pct):.2f}%"
         avg_text = "--" if avg_abs_change_pct is None else f"{float(avg_abs_change_pct):.2f}%"
+        range_text = f"{float(close_range_pct):.2f}%"
+        if float(close_range_pct) > MAX_BASE_CANDIDATE_RANGE_PCT:
+            range_text += f"（超过{MAX_BASE_CANDIDATE_RANGE_PCT:.0f}%上限）"
         parts.append(
-            f"区间振幅 {float(close_range_pct):.2f}%（>10%静默不足） / 近{RECENT_STABILITY_BARS}振幅 {recent_text} / 单日波动 {avg_text}"
+            f"区间振幅 {range_text} / 近{RECENT_STABILITY_BARS}振幅 {recent_text} / 单日波动 {avg_text}"
         )
     volume_ratio = kwargs.get("volume_ratio")
     if volume_ratio is not None:

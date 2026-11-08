@@ -33,7 +33,7 @@ const { TextArea } = Input;
 const { Title, Paragraph, Text } = Typography;
 
 const TODAY = dayjs().format("YYYY-MM-DD");
-const APP_VERSION = "v2026.10.18.1";
+const APP_VERSION = "v2026.11.08.1";
 const PAGE_OVERVIEW = "overview";
 const PAGE_BACKTEST = "backtest";
 const PAGE_MONITOR = "monitor";
@@ -155,12 +155,92 @@ function formatAmount(value, fallback = "--") {
   return numeric.toFixed(0);
 }
 
+function symbolCode(symbol) {
+  return String(symbol || "").split(".")[0];
+}
+
+function legacyCopyText(text) {
+  const textarea = document.createElement("textarea");
+  textarea.value = String(text || "");
+  textarea.setAttribute("readonly", "");
+  textarea.style.position = "fixed";
+  textarea.style.top = "-9999px";
+  textarea.style.opacity = "0";
+  document.body.appendChild(textarea);
+  textarea.select();
+  try {
+    document.execCommand("copy");
+  } catch (_error) {
+    // best effort
+  }
+  document.body.removeChild(textarea);
+}
+
+function copyTextToClipboard(text) {
+  const value = String(text || "");
+  // Clipboard API needs a secure context (https / localhost). The dashboard is
+  // served on http://<ip>:8765, so fall back to the deprecated-but-universal
+  // execCommand path which still works on insecure origins.
+  if (navigator.clipboard && window.isSecureContext) {
+    navigator.clipboard.writeText(value).catch(() => legacyCopyText(value));
+    return;
+  }
+  legacyCopyText(value);
+}
+
+function copySymbolCode(symbol) {
+  const code = symbolCode(symbol);
+  copyTextToClipboard(code);
+  message.success(`已复制 ${code}`);
+}
+
+function renderSymbolCopyIcon(symbol) {
+  return html`
+    <span
+      className="symbol-copy"
+      title="复制代码"
+      onClick=${(event) => {
+        event.stopPropagation();
+        copySymbolCode(symbol);
+      }}
+    >
+      <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+        <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+      </svg>
+    </span>
+  `;
+}
+
+function isPrefix3(symbol) {
+  return String(symbol || "").startsWith("3");
+}
+
+function filterItemsByShow3(items, show3) {
+  if (show3) return items || [];
+  return (items || []).filter((item) => !isPrefix3(item?.symbol));
+}
+
+function renderShow3Filter(show3, onToggle) {
+  return html`
+    <${Button}
+      size="small"
+      type=${show3 ? "default" : "primary"}
+      onClick=${() => onToggle(!show3)}
+      title=${show3 ? "点击隐藏 3 开头(创业板)个股" : "当前已隐藏 3 开头(创业板)个股，点击恢复显示"}
+    >
+      ${show3 ? "隐藏3开头" : "显示3开头"}
+    </${Button}>
+  `;
+}
+
 function renderStockCell(row) {
   const isNewHit = Boolean(row?.is_new_hit);
   return html`
     <div className=${`symbol-cell${isNewHit ? " symbol-cell-new-hit" : ""}`}>
       <div className="symbol-headline">
         <div className="symbol-code">${row.symbol}</div>
+        ${renderSymbolCopyIcon(row.symbol)}
         ${isNewHit ? html`<span className="new-hit-pill">新增</span>` : null}
       </div>
       <div className="symbol-name">${row.name || "--"}</div>
@@ -1304,6 +1384,7 @@ function DemandSupportPage({
   viewedMap,
 }) {
   const items = data?.items || [];
+  const [show3, setShow3] = useState(true);
   const metrics = useMemo(() => {
     const avgScore = items.length
       ? items.reduce((sum, item) => sum + Number(item.demand_support_score || 0), 0) / items.length
@@ -1555,6 +1636,7 @@ function DemandSupportPage({
               <div className="toolbar-copy">${statusText || "展示箱底支撑与完整 Swing 候选。"}</div>
             </div>
             <div className="toolbar-actions">
+              ${renderShow3Filter(show3, setShow3)}
               <${Tag} color=${loading ? "processing" : "success"}>${loading ? "加载中" : "已就绪"}<//>
               <${Tag} color="default">点击行查看个股详情<//>
             </div>
@@ -1562,7 +1644,7 @@ function DemandSupportPage({
           <${Table}
             className="backtest-table"
             columns=${columns}
-            dataSource=${items}
+            dataSource=${filterItemsByShow3(items, show3)}
             rowKey=${(row) => row.symbol}
             rowClassName=${(record) => demandRowClassName(record, viewedMap)}
             pagination=${{ pageSize: 20, showSizeChanger: false, hideOnSinglePage: true }}
@@ -1592,6 +1674,7 @@ function LowBaseSupportPage({
   viewedMap,
 }) {
   const items = data?.items || [];
+  const [show3, setShow3] = useState(true);
   const progressTotal = Number(progress?.total || 0);
   const progressProcessed = Number(progress?.processed || 0);
   const progressPercent = progressTotal > 0
@@ -1706,6 +1789,7 @@ function LowBaseSupportPage({
               <div className="toolbar-copy">${statusText || LOW_BASE_SCAN_RULE_LABEL}</div>
             </div>
             <div className="toolbar-actions">
+              ${renderShow3Filter(show3, setShow3)}
               <${Tag} color=${loading ? "processing" : "success"}>${loading ? "筛选中" : "已就绪"}<//>
               <${Tag} color="default">点击行查看个股详情<//>
             </div>
@@ -1713,7 +1797,7 @@ function LowBaseSupportPage({
           <${Table}
             className="backtest-table"
             columns=${columns}
-            dataSource=${items}
+            dataSource=${filterItemsByShow3(items, show3)}
             rowKey=${(row) => row.symbol}
             rowClassName=${(record) => lowBaseRowClassName(record, viewedMap)}
             pagination=${{ pageSize: 20, showSizeChanger: false, hideOnSinglePage: true }}
@@ -1866,7 +1950,10 @@ function MonitorPage({ loading, statusText, data, onRefresh, onDelete, onOpenDet
       width: 180,
       render: (_, row) => html`
         <div className="symbol-cell">
-          <div className="symbol-code">${row.symbol}</div>
+          <div className="symbol-headline">
+            <div className="symbol-code">${row.symbol}</div>
+            ${renderSymbolCopyIcon(row.symbol)}
+          </div>
           <div className="symbol-name">${row.name || "--"}</div>
         </div>
       `,
@@ -1938,7 +2025,10 @@ function MonitorPage({ loading, statusText, data, onRefresh, onDelete, onOpenDet
       width: 170,
       render: (_, row) => html`
         <div className="symbol-cell">
-          <div className="symbol-code">${row.symbol}</div>
+          <div className="symbol-headline">
+            <div className="symbol-code">${row.symbol}</div>
+            ${renderSymbolCopyIcon(row.symbol)}
+          </div>
           <div className="symbol-name">${row.name || "--"}</div>
         </div>
       `,
@@ -2134,15 +2224,17 @@ function BacktestPage({
   const items = data?.items || [];
   const isScanMode = data?.mode === "scan";
   const [symbolFilter, setSymbolFilter] = useState("");
+  const [show3, setShow3] = useState(true);
   const normalizedFilter = symbolFilter.trim().toUpperCase();
   const filteredItems = useMemo(() => {
-    if (!normalizedFilter) return items;
-    return items.filter((item) => {
+    const base = show3 ? items : items.filter((item) => !isPrefix3(item?.symbol));
+    if (!normalizedFilter) return base;
+    return base.filter((item) => {
       const symbol = String(item.symbol || "").toUpperCase();
       const name = String(item.name || "").toUpperCase();
       return symbol.includes(normalizedFilter) || name.includes(normalizedFilter);
     });
-  }, [items, normalizedFilter]);
+  }, [items, normalizedFilter, show3]);
 
   useEffect(() => {
     setSymbolFilter("");
@@ -2338,9 +2430,10 @@ function BacktestPage({
           </div>
           <div className="toolbar-row" style=${{ marginBottom: 16, gap: 12 }}>
             <div className="toolbar-copy">
-              ${normalizedFilter ? `当前筛选后 ${filteredItems.length} 条结果` : `当前共 ${items.length} 条结果`}
+              ${(normalizedFilter || !show3) ? `当前筛选后 ${filteredItems.length} 条结果` : `当前共 ${items.length} 条结果`}
             </div>
             <div className="toolbar-actions" style=${{ minWidth: "min(100%, 360px)" }}>
+              ${renderShow3Filter(show3, setShow3)}
               <${Input}
                 allowClear=${true}
                 value=${symbolFilter}
@@ -2398,15 +2491,17 @@ function CrashReboundResultPage({
   const items = data?.items || [];
   const isScanMode = data?.mode === "scan";
   const [symbolFilter, setSymbolFilter] = useState("");
+  const [show3, setShow3] = useState(true);
   const normalizedFilter = symbolFilter.trim().toUpperCase();
   const filteredItems = useMemo(() => {
-    if (!normalizedFilter) return items;
-    return items.filter((item) => {
+    const base = show3 ? items : items.filter((item) => !isPrefix3(item?.symbol));
+    if (!normalizedFilter) return base;
+    return base.filter((item) => {
       const symbol = String(item.symbol || "").toUpperCase();
       const name = String(item.name || "").toUpperCase();
       return symbol.includes(normalizedFilter) || name.includes(normalizedFilter);
     });
-  }, [items, normalizedFilter]);
+  }, [items, normalizedFilter, show3]);
 
   useEffect(() => {
     setSymbolFilter("");
@@ -2651,9 +2746,10 @@ function CrashReboundResultPage({
           </div>
           <div className="toolbar-row" style=${{ marginBottom: 16, gap: 12 }}>
             <div className="toolbar-copy">
-              ${normalizedFilter ? `当前筛选后 ${filteredItems.length} 条结果` : `当前共 ${items.length} 条结果`}
+              ${(normalizedFilter || !show3) ? `当前筛选后 ${filteredItems.length} 条结果` : `当前共 ${items.length} 条结果`}
             </div>
             <div className="toolbar-actions" style=${{ minWidth: "min(100%, 360px)" }}>
+              ${renderShow3Filter(show3, setShow3)}
               <${Input}
                 allowClear=${true}
                 value=${symbolFilter}
@@ -2710,15 +2806,17 @@ function BoxBacktestPage({
   const items = data?.items || [];
   const isScanMode = data?.mode === "scan";
   const [symbolFilter, setSymbolFilter] = useState("");
+  const [show3, setShow3] = useState(true);
   const normalizedFilter = symbolFilter.trim().toUpperCase();
   const filteredItems = useMemo(() => {
-    if (!normalizedFilter) return items;
-    return items.filter((item) => {
+    const base = show3 ? items : items.filter((item) => !isPrefix3(item?.symbol));
+    if (!normalizedFilter) return base;
+    return base.filter((item) => {
       const symbol = String(item.symbol || "").toUpperCase();
       const name = String(item.name || "").toUpperCase();
       return symbol.includes(normalizedFilter) || name.includes(normalizedFilter);
     });
-  }, [items, normalizedFilter]);
+  }, [items, normalizedFilter, show3]);
 
   useEffect(() => {
     setSymbolFilter("");
@@ -2975,9 +3073,10 @@ function BoxBacktestPage({
           </div>
           <div className="toolbar-row" style=${{ marginBottom: 16, gap: 12 }}>
             <div className="toolbar-copy">
-              ${normalizedFilter ? `当前筛选后 ${filteredItems.length} 条结果` : `当前共 ${items.length} 条结果`}
+              ${(normalizedFilter || !show3) ? `当前筛选后 ${filteredItems.length} 条结果` : `当前共 ${items.length} 条结果`}
             </div>
             <div className="toolbar-actions" style=${{ minWidth: "min(100%, 360px)" }}>
+              ${renderShow3Filter(show3, setShow3)}
               <${Input}
                 allowClear=${true}
                 value=${symbolFilter}
@@ -3026,15 +3125,17 @@ function LowBaseBacktestPage({
   const items = data?.items || [];
   const isScanMode = data?.mode === "scan";
   const [symbolFilter, setSymbolFilter] = useState("");
+  const [show3, setShow3] = useState(true);
   const normalizedFilter = symbolFilter.trim().toUpperCase();
   const filteredItems = useMemo(() => {
-    if (!normalizedFilter) return items;
-    return items.filter((item) => {
+    const base = show3 ? items : items.filter((item) => !isPrefix3(item?.symbol));
+    if (!normalizedFilter) return base;
+    return base.filter((item) => {
       const symbol = String(item.symbol || "").toUpperCase();
       const name = String(item.name || "").toUpperCase();
       return symbol.includes(normalizedFilter) || name.includes(normalizedFilter);
     });
-  }, [items, normalizedFilter]);
+  }, [items, normalizedFilter, show3]);
 
   useEffect(() => {
     setSymbolFilter("");
@@ -3139,9 +3240,10 @@ function LowBaseBacktestPage({
           </div>
           <div className="toolbar-row" style=${{ marginBottom: 16, gap: 12 }}>
             <div className="toolbar-copy">
-              ${normalizedFilter ? `当前筛选后 ${filteredItems.length} 条结果` : `当前共 ${items.length} 条结果`}
+              ${(normalizedFilter || !show3) ? `当前筛选后 ${filteredItems.length} 条结果` : `当前共 ${items.length} 条结果`}
             </div>
             <div className="toolbar-actions" style=${{ minWidth: "min(100%, 360px)" }}>
+              ${renderShow3Filter(show3, setShow3)}
               <${Input}
                 allowClear=${true}
                 value=${symbolFilter}

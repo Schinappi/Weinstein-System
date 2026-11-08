@@ -345,6 +345,21 @@ body {
   font-size: 12px;
 }
 
+.symbol-copy {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  color: var(--muted);
+  opacity: 0.55;
+  transition: opacity 0.15s ease, color 0.15s ease;
+}
+
+.symbol-copy:hover {
+  opacity: 1;
+  color: var(--accent);
+}
+
 .rank-chip {
   display: inline-flex;
   min-width: 36px;

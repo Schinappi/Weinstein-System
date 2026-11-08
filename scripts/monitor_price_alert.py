@@ -22,7 +22,8 @@ from winstan.storage.price_monitor_store import PriceMonitorStore
 
 # Adjust this value to change the normal polling interval.
 CHECK_INTERVAL_SECONDS = 3 * 60
-TARGET_DISTANCE_THRESHOLD_PCT = 2.0
+# 触发区间：现价 >= 目标价，且高出目标价不超过 5%（单向，只看上涨到目标价上方附近）。
+TARGET_EXCESS_MAX_PCT = 5.0
 REQUEST_TIMEOUT_SECONDS = 15
 PUSHPLUS_TOKEN_ENV = "PUSHPLUS_TOKEN"
 PUSHPLUS_ENDPOINT = "https://www.pushplus.plus/send"
@@ -125,12 +126,12 @@ def _send_pushplus_alert(alerts: list[dict[str, object]]) -> bool:
         LOGGER.error("Missing %s; add it to .env or the process environment.", PUSHPLUS_TOKEN_ENV)
         return False
 
-    content_lines = ["以下监控股票当前价格已进入目标价 ±2% 范围：", ""]
+    content_lines = ["以下监控股票现价已高于目标价、且不超出 5%：", ""]
     for alert in alerts:
         content_lines.append(
             f"{alert['symbol']} {alert['name']} | "
             f"现价 {alert['price']:.2f} | 目标价 {alert['target_price']:.2f} | "
-            f"距离 {alert['distance_pct']:+.2f}%"
+            f"高出 {alert['distance_pct']:.2f}%"
         )
     payload = {
         "token": token,
@@ -185,17 +186,19 @@ def check_once(store: PriceMonitorStore) -> int:
 
         price = float(quote["price"])
         distance_pct = (price - target_price) / target_price * 100.0
-        inside_threshold = abs(distance_pct) <= TARGET_DISTANCE_THRESHOLD_PCT
+        hit = 0.0 <= distance_pct <= TARGET_EXCESS_MAX_PCT
         old = previous_state.get(monitor_id, {})
-        old_target = _safe_float(old.get("target_price"))
-        was_inside = bool(old.get("inside")) and old_target == target_price
+        # 一次性提醒：一旦成功推送过就不再对该监控重复提醒，
+        # 即使价格暂时离开触发区间后又回来、或目标价被修改。
+        already_notified = bool(old.get("notified"))
         next_state[monitor_id] = {
             "symbol": symbol,
             "target_price": target_price,
-            "inside": inside_threshold if not inside_threshold else was_inside,
+            "hit": hit,
+            "notified": already_notified,
             "last_price": price,
         }
-        if inside_threshold and not was_inside:
+        if hit and not already_notified:
             new_alerts.append({
                 "monitor_id": monitor_id,
                 "symbol": symbol,
@@ -209,7 +212,7 @@ def check_once(store: PriceMonitorStore) -> int:
         for alert in new_alerts:
             monitor_id = str(alert["monitor_id"])
             if monitor_id in next_state:
-                next_state[monitor_id]["inside"] = True
+                next_state[monitor_id]["notified"] = True
     _save_alert_state(next_state)
     LOGGER.info(
         "Checked %d monitor(s), got %d quote(s), new hit(s)=%d.",
